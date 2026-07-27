@@ -70,6 +70,8 @@ class AppSettings(BaseSettings):
     AZURE_OPENAI_KEY: str = ""
     AZURE_OPENAI_DEPLOYMENT: str = ""
     BEDROCK_MODEL: str = ""
+    AWS_ACCESS_KEY_ID: str = ""
+    AWS_SECRET_ACCESS_KEY: str = ""
 
     # Logging
     LOG_LEVEL: str = "INFO"

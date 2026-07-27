@@ -20,7 +20,7 @@ class ModelDiscoveryService:
             if not api_key:
                 results.append({
                     "name": provider_name,
-                    "display_name": provider_class.display_name(),
+                    "display_name": provider_class().display_name(),
                     "connected": False,
                     "models": [],
                     "model_count": 0,
@@ -39,7 +39,7 @@ class ModelDiscoveryService:
             except Exception:
                 results.append({
                     "name": provider_name,
-                    "display_name": provider_class.display_name(),
+                    "display_name": provider_class().display_name(),
                     "connected": False,
                     "models": [],
                     "model_count": 0,
