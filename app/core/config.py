@@ -28,7 +28,7 @@ class AppSettings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
-    SESSION_TOKEN_TTL_MINUTES: int = 10080
+    SESSION_TOKEN_TTL_MINUTES: int = 60
     PASSWORD_MIN_LENGTH: int = 8
     CSP_ENABLED: bool = True
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:3001,http://localhost:5173"
