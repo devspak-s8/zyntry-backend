@@ -94,5 +94,5 @@ class ModelDiscoveryService:
 _model_discovery = ModelDiscoveryService()
 
 
-async def get_model_discovery() -> ModelDiscoveryService:
+def get_model_discovery() -> ModelDiscoveryService:
     return _model_discovery
