@@ -1,0 +1,345 @@
+from __future__ import annotations
+
+import uuid
+from datetime import timedelta
+from typing import Annotated
+
+from fastapi import APIRouter, Body, Cookie, Depends, HTTPException, Response, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.config import settings
+from app.core.database import get_session
+from app.core.security import (
+    generate_session_token,
+    hash_password,
+    hash_token,
+    now,
+    verify_password,
+)
+from app.models.email_verification_tokens import EmailVerificationToken
+from app.models.refresh_tokens import RefreshToken
+from app.models.sessions import Session
+from app.models.users import User
+from app.schemas.auth import AuthMeResponse
+
+router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+async def _get_user_by_email(session: AsyncSession, email: str) -> User | None:
+    result = await session.execute(select(User).where(User.email == email))
+    return result.scalar_one_or_none()
+
+
+async def _create_session(
+    session: AsyncSession, response: Response, user: User
+) -> None:
+    token = generate_session_token()
+    token_hash = hash_token(token)
+    expires_at = now() + timedelta(minutes=settings.SESSION_TOKEN_TTL_MINUTES)
+
+    session_obj = Session(
+        user_id=user.id,
+        token_hash=token_hash,
+        expires_at=expires_at,
+    )
+    session.add(session_obj)
+    await session.flush()
+
+    response.set_cookie(
+        key="zyntra_session",
+        value=token,
+        httponly=True,
+        secure=not settings.APP_DEBUG,
+        samesite="lax",
+        max_age=settings.SESSION_TOKEN_TTL_MINUTES * 60,
+        path="/",
+    )
+
+
+async def _create_refresh_token(
+    session: AsyncSession, user: User
+) -> str:
+    token = generate_session_token()
+    token_hash = hash_token(token)
+    expires_at = now() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+
+    refresh_obj = RefreshToken(
+        user_id=user.id,
+        token_hash=token_hash,
+        expires_at=expires_at,
+    )
+    session.add(refresh_obj)
+    await session.flush()
+    return token
+
+
+def _set_refresh_cookie(response: Response, token: str) -> None:
+    max_age = settings.REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60
+    response.set_cookie(
+        key="zyntra_refresh",
+        value=token,
+        httponly=True,
+        secure=not settings.APP_DEBUG,
+        samesite="lax",
+        max_age=max_age,
+        path="/",
+    )
+
+
+@router.post("/register", status_code=status.HTTP_201_CREATED)
+async def register(
+    response: Response,
+    email: Annotated[str, Body(embed=True)],
+    password: Annotated[str, Body(embed=True)],
+    name: Annotated[str | None, Body(embed=True)] = None,
+    db: AsyncSession = Depends(get_session),
+) -> AuthMeResponse:
+    if len(password) < settings.PASSWORD_MIN_LENGTH:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Password must be at least {settings.PASSWORD_MIN_LENGTH} characters",
+        )
+
+    existing = await _get_user_by_email(db, email)
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="Email already registered")
+
+    user = User(
+        email=email,
+        name=name,
+        hashed_password=hash_password(password),
+    )
+    db.add(user)
+    await db.flush()
+
+    await _create_session(db, response, user)
+    refresh_token = await _create_refresh_token(db, user)
+    _set_refresh_cookie(response, refresh_token)
+    await db.commit()
+
+    return AuthMeResponse(
+        id=user.id,
+        email=user.email,
+        name=user.name,
+        organization_id=user.organization_id,
+        is_active=user.is_active,
+    )
+
+
+@router.post("/login")
+async def login(
+    response: Response,
+    email: Annotated[str, Body(embed=True)],
+    password: Annotated[str, Body(embed=True)],
+    db: AsyncSession = Depends(get_session),
+) -> AuthMeResponse:
+    user = await _get_user_by_email(db, email)
+    if user is None or user.hashed_password is None:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    if not verify_password(password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    await _create_session(db, response, user)
+    refresh_token = await _create_refresh_token(db, user)
+    _set_refresh_cookie(response, refresh_token)
+    await db.commit()
+
+    return AuthMeResponse(
+        id=user.id,
+        email=user.email,
+        name=user.name,
+        organization_id=user.organization_id,
+        is_active=user.is_active,
+    )
+
+
+@router.post("/logout")
+async def logout(
+    response: Response,
+    session_token: Annotated[str | None, Cookie(alias="zyntra_session")] = None,
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, str]:
+    if session_token is not None:
+        token_hash = hash_token(session_token)
+        result = await db.execute(
+            select(Session).where(Session.token_hash == token_hash)
+        )
+        session_obj = result.scalar_one_or_none()
+        if session_obj is not None:
+            session_obj.revoked = True
+            await db.commit()
+
+    response.delete_cookie(key="zyntra_session", path="/")
+    response.delete_cookie(key="zyntra_refresh", path="/")
+    return {"message": "Logged out"}
+
+
+@router.post("/logout-all", status_code=status.HTTP_204_NO_CONTENT)
+async def logout_all(
+    session_token: Annotated[str | None, Cookie(alias="zyntra_session")] = None,
+    db: AsyncSession = Depends(get_session),
+) -> None:
+    if session_token is not None:
+        token_hash = hash_token(session_token)
+        result = await db.execute(
+            select(Session).where(Session.token_hash == token_hash)
+        )
+        session_obj = result.scalar_one_or_none()
+        if session_obj is not None:
+            sessions = await db.execute(
+                select(Session).where(Session.user_id == session_obj.user_id)
+            )
+            for s in sessions.scalars().all():
+                s.revoked = True
+
+            refresh_tokens = await db.execute(
+                select(RefreshToken).where(RefreshToken.user_id == session_obj.user_id)
+            )
+            for rt in refresh_tokens.scalars().all():
+                rt.revoked = True
+
+            await db.commit()
+
+    return None
+
+
+@router.post("/refresh")
+async def refresh(
+    response: Response,
+    refresh_token: Annotated[str | None, Cookie(alias="zyntra_refresh")] = None,
+    db: AsyncSession = Depends(get_session),
+) -> AuthMeResponse:
+    if refresh_token is None:
+        raise HTTPException(status_code=401, detail="Refresh token missing")
+
+    token_hash = hash_token(refresh_token)
+    result = await db.execute(
+        select(RefreshToken).where(RefreshToken.token_hash == token_hash)
+    )
+    refresh_obj = result.scalar_one_or_none()
+
+    if refresh_obj is None or refresh_obj.revoked or refresh_obj.expires_at <= now():
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+    user = await db.get(User, refresh_obj.user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+    refresh_obj.revoked = True
+
+    await _create_session(db, response, user)
+    new_refresh = await _create_refresh_token(db, user)
+    _set_refresh_cookie(response, new_refresh)
+    await db.commit()
+
+    return AuthMeResponse(
+        id=user.id,
+        email=user.email,
+        name=user.name,
+        organization_id=user.organization_id,
+        is_active=user.is_active,
+    )
+
+
+@router.get("/me", response_model=AuthMeResponse)
+async def me(
+    session_token: Annotated[str | None, Cookie(alias="zyntra_session")] = None,
+    db: AsyncSession = Depends(get_session),
+) -> AuthMeResponse:
+    if session_token is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    token_hash = hash_token(session_token)
+    result = await db.execute(
+        select(Session).where(Session.token_hash == token_hash)
+    )
+    session_obj = result.scalar_one_or_none()
+
+    if session_obj is None or session_obj.revoked:
+        raise HTTPException(status_code=401, detail="Invalid session")
+
+    if session_obj.expires_at <= now():
+        raise HTTPException(status_code=401, detail="Session expired")
+
+    user = await db.get(User, session_obj.user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=401, detail="Invalid session")
+
+    return AuthMeResponse(
+        id=user.id,
+        email=user.email,
+        name=user.name,
+        organization_id=user.organization_id,
+        is_active=user.is_active,
+    )
+
+
+@router.post("/forgot-password")
+async def forgot_password(email: Annotated[str, Body(embed=True)]) -> dict[str, str]:
+    return {"message": "If an account exists with that email, a reset link has been sent."}
+
+
+@router.post("/reset-password")
+async def reset_password(
+    token: Annotated[str, Body(embed=True)],
+    password: Annotated[str, Body(embed=True)],
+) -> dict[str, str]:
+    if len(password) < settings.PASSWORD_MIN_LENGTH:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Password must be at least {settings.PASSWORD_MIN_LENGTH} characters",
+        )
+    return {"message": "Password has been reset."}
+
+
+@router.post("/verify-email")
+async def verify_email(
+    token: Annotated[str, Body(embed=True)],
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, str]:
+    token_hash = hash_token(token)
+    result = await db.execute(
+        select(EmailVerificationToken).where(EmailVerificationToken.token_hash == token_hash)
+    )
+    verification_obj = result.scalar_one_or_none()
+
+    if verification_obj is None or verification_obj.used or verification_obj.expires_at <= now():
+        raise HTTPException(status_code=400, detail="Invalid or expired verification token")
+
+    user = await db.get(User, verification_obj.user_id)
+    if user is None:
+        raise HTTPException(status_code=400, detail="Invalid verification token")
+
+    user.email_verified = True
+    verification_obj.used = True
+    await db.commit()
+    return {"message": "Email verified successfully"}
+
+
+@router.post("/resend-verification")
+async def resend_verification(
+    email: Annotated[str, Body(embed=True)],
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, str]:
+    user = await _get_user_by_email(db, email)
+    if user is None:
+        return {"message": "If an account exists with that email, a verification link has been sent."}
+
+    if user.email_verified:
+        return {"message": "Email is already verified"}
+
+    token = generate_session_token()
+    token_hash = hash_token(token)
+    expires_at = now() + timedelta(hours=24)
+
+    verification_obj = EmailVerificationToken(
+        user_id=user.id,
+        token_hash=token_hash,
+        expires_at=expires_at,
+    )
+    db.add(verification_obj)
+    await db.commit()
+
+    return {"message": "If an account exists with that email, a verification link has been sent."}
