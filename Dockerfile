@@ -11,10 +11,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml ./
+COPY backend/pyproject.toml /app/pyproject.toml
 RUN pip install --upgrade pip && pip install .
 
-COPY . .
+COPY backend/ ./
 
 EXPOSE 8000
 
