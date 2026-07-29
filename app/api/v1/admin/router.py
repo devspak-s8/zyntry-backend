@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+import uuid
 from datetime import datetime, timezone
 from typing import Annotated
 
@@ -12,53 +14,51 @@ from app.core.config import settings
 from app.core.database import get_session
 from app.models.users import User
 from app.repositories import UnitOfWork
-from app.schemas.admin import AdminStats, AdminProjectRead, AdminRuntimeRead, AdminSystemInfo, AdminUserRead
+from app.schemas.admin import AdminProjectRead, AdminRuntimeRead, AdminSystemInfo, AdminUserRead
 from app.models.organizations import Organization
 from app.models.projects import Project
 from app.models.runtimes import Runtime
-from app.models.users import User as UserModel
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
-@router.get("/stats", response_model=AdminStats)
+@router.get("/stats", response_model=dict)
 async def admin_stats(
     current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_session),
-) -> AdminStats:
+) -> dict:
     uow = UnitOfWork(db)
-    try:
-        users_count = len(await uow.users.list(limit=10000, offset=0))
-        orgs_count = len(await uow.organizations.list(limit=10000, offset=0))
-        projects_count = len(await uow.projects.list_all(limit=10000, offset=0))
-        runtimes_count = len(await uow.runtimes.list_all(limit=10000, offset=0))
-        sources_count = len(await uow.knowledge_sources.list_all(limit=10000, offset=0))
-        api_keys_count = len(await uow.api_keys.list_all(limit=10000, offset=0))
-        webhooks_count = len(await uow.webhook_subscriptions.list_all(limit=10000, offset=0))
-    except Exception:
-        users_count = 0
-        orgs_count = 0
-        projects_count = 0
-        runtimes_count = 0
-        sources_count = 0
-        api_keys_count = 0
-        webhooks_count = 0
-    return AdminStats(
-        total_users=users_count,
-        total_organizations=orgs_count,
-        total_projects=projects_count,
-        total_runtimes=runtimes_count,
-        total_knowledge_sources=sources_count,
-        total_api_keys=api_keys_count,
-        total_webhooks=webhooks_count,
-        total_requests_24h=0,
-        total_errors_24h=0,
-        avg_latency_ms_24h=0.0,
-        total_cost_cents_24h=0,
-        active_runtimes=0,
-        queued_runtimes=0,
-        failed_runtimes=0,
-    )
+    now = datetime.now(timezone.utc)
+    day_ago = now - __import__("datetime").timedelta(days=1)
+
+    users_count = await db.scalar(select(func.count()).select_from(User))
+    orgs_count = await db.scalar(select(func.count()).select_from(Organization))
+    projects_count = await db.scalar(select(func.count()).select_from(Project))
+    runtimes_count = await db.scalar(select(func.count()).select_from(Runtime))
+
+    active_runtimes = await db.scalar(select(func.count()).select_from(Runtime).where(Runtime.status == "active"))
+    queued_runtimes = await db.scalar(select(func.count()).select_from(Runtime).where(Runtime.status == "queued"))
+    failed_runtimes = await db.scalar(select(func.count()).select_from(Runtime).where(Runtime.status == "failed"))
+
+    from app.models.billing import Wallet, WalletTransaction, UsageLog
+    total_wallet_balance = await db.scalar(select(func.coalesce(func.sum(Wallet.balance), 0)).where(Wallet.status == "active"))
+    requests_24h = await db.scalar(select(func.count()).select_from(UsageLog).where(UsageLog.created_at >= day_ago))
+    cost_24h = await db.scalar(select(func.coalesce(func.sum(UsageLog.cost), 0)).where(UsageLog.created_at >= day_ago))
+    avg_latency_24h = await db.scalar(select(func.coalesce(func.avg(UsageLog.latency_ms), 0)).where(UsageLog.created_at >= day_ago))
+
+    return {
+        "total_users": users_count or 0,
+        "total_organizations": orgs_count or 0,
+        "total_projects": projects_count or 0,
+        "total_runtimes": runtimes_count or 0,
+        "total_wallet_balance": float(total_wallet_balance or 0),
+        "total_requests_24h": requests_24h or 0,
+        "total_cost_24h": float(cost_24h or 0),
+        "avg_latency_ms_24h": float(avg_latency_24h or 0),
+        "active_runtimes": active_runtimes or 0,
+        "queued_runtimes": queued_runtimes or 0,
+        "failed_runtimes": failed_runtimes or 0,
+    }
 
 
 @router.get("/users", response_model=list[AdminUserRead])
@@ -134,15 +134,22 @@ async def admin_system_info(
     current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_session),
 ) -> AdminSystemInfo:
-    import time
     import sys
+    from app.core.cache import cache as redis_cache
+
+    redis_status = "connected"
+    try:
+        await redis_cache.client.ping()
+    except Exception:
+        redis_status = "disconnected"
+
     return AdminSystemInfo(
         app_name=settings.APP_NAME,
         app_env=settings.APP_ENV,
         app_version=settings.API_VERSION,
-        database_url=settings.DATABASE_URL,
-        redis_url=settings.redis_url,
-        celery_broker_url=settings.CELERY_BROKER_URL,
+        database_url=settings.DATABASE_URL.split("@")[-1] if "@" in settings.DATABASE_URL else "configured",
+        redis_url=f"redis://***:{settings.REDIS_PORT}",
+        celery_broker_url="configured",
         vector_provider=settings.VECTOR_PROVIDER,
         rate_limit_per_minute=settings.RATE_LIMIT_PER_MINUTE,
         enable_memory=settings.ENABLE_MEMORY,
@@ -150,6 +157,7 @@ async def admin_system_info(
         enable_analytics=settings.ENABLE_ANALYTICS,
         enable_tools=settings.ENABLE_TOOLS,
         enable_router=settings.ENABLE_ROUTER,
-        uptime_seconds=0.0,
+        uptime_seconds=time.time(),
         python_version=f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+        redis_status=redis_status,
     )

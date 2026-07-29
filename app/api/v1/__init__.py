@@ -10,6 +10,8 @@ from app.api.v1.billing.router import router as billing_router
 from app.api.v1.chat.router import router as chat_router
 from app.api.v1.embeddings.router import router as embeddings_router
 from app.api.v1.events.router import router as events_router
+from app.api.v1.invoke.router import router as invoke_router
+from app.api.v1.router.router import router as router_router
 from app.api.v1.knowledge.router import router as knowledge_router
 from app.api.v1.logs.router import router as logs_router
 from app.api.v1.memory.router import router as memory_router
@@ -36,6 +38,8 @@ api_router.include_router(knowledge_router)
 api_router.include_router(memory_router)
 api_router.include_router(chat_router)
 api_router.include_router(embeddings_router)
+api_router.include_router(invoke_router)
+api_router.include_router(router_router)
 api_router.include_router(models_router)
 api_router.include_router(providers_router)
 api_router.include_router(tools_router)

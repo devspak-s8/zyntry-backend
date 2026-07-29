@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.analytics import UsageEvent
+from app.models.billing import UsageLog
 
 
 class UsageEventRepository:
@@ -38,22 +40,37 @@ class UsageEventRepository:
             .where(UsageEvent.project_id == project_id)
         )
         row = result.one_or_none()
-        if not row:
-            return {
-                "total_requests": 0,
-                "total_tokens": 0,
-                "total_cost_cents": 0,
-                "avg_latency_ms": 0,
-                "error_count": 0,
-                "provider_breakdown": {},
-                "model_breakdown": {},
-            }
+
+        cost_result = await self.session.execute(
+            select(
+                func.coalesce(func.sum(UsageLog.cost), 0).label("total_cost"),
+                func.coalesce(func.avg(UsageLog.latency_ms), 0).label("avg_latency"),
+                func.count().label("total_logs"),
+            )
+            .where(UsageLog.project_id == project_id)
+        )
+        cost_row = cost_result.one_or_none()
+
+        provider_result = await self.session.execute(
+            select(UsageLog.provider, func.coalesce(func.sum(UsageLog.cost), 0))
+            .where(UsageLog.project_id == project_id)
+            .group_by(UsageLog.provider)
+        )
+        provider_breakdown = {row[0]: float(row[1]) for row in provider_result.all() if row[0]}
+
+        model_result = await self.session.execute(
+            select(UsageLog.model, func.coalesce(func.sum(UsageLog.cost), 0))
+            .where(UsageLog.project_id == project_id)
+            .group_by(UsageLog.model)
+        )
+        model_breakdown = {row[0]: float(row[1]) for row in model_result.all() if row[0]}
+
         return {
-            "total_requests": row.total_requests or 0,
-            "total_tokens": row.total_quantity or 0,
-            "total_cost_cents": 0,
-            "avg_latency_ms": 0,
+            "total_requests": row.total_requests or 0 if row else 0,
+            "total_tokens": int(row.total_quantity or 0) if row else 0,
+            "total_cost_cents": int((cost_row.total_cost or 0) * 100) if cost_row else 0,
+            "avg_latency_ms": float(cost_row.avg_latency or 0) if cost_row else 0,
             "error_count": 0,
-            "provider_breakdown": {},
-            "model_breakdown": {},
+            "provider_breakdown": provider_breakdown,
+            "model_breakdown": model_breakdown,
         }

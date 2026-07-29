@@ -98,6 +98,10 @@ class AppSettings(BaseSettings):
     BILLING_CURRENCY: str = "usd"
     BILLING_AUTO_TOP_UP_ENABLED: bool = True
 
+    BACHS_API_KEY: str = ""
+    BACHS_WEBHOOK_SECRET: str = ""
+    BACHS_PRODUCT_ID: str = ""
+
     # GitHub App
     GITHUB_APP_ID: str = ""
     GITHUB_PRIVATE_KEY: str = ""

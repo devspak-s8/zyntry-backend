@@ -28,6 +28,9 @@ engine: AsyncEngine = create_async_engine(
     _normalize_async_url(settings.DATABASE_URL),
     echo=settings.APP_DEBUG,
     pool_pre_ping=True,
+    pool_size=20,
+    max_overflow=10,
+    pool_recycle=1800,
 )
 
 async_session_factory: async_sessionmaker[AsyncSession] = async_sessionmaker(

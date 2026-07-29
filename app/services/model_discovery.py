@@ -16,34 +16,13 @@ class ModelDiscoveryService:
     async def discover_all_models(self) -> list[dict]:
         results: list[dict] = []
         for provider_name, provider_class in PROVIDER_REGISTRY.items():
-            api_key = self._get_api_key(provider_name)
-            if not api_key:
-                results.append({
-                    "name": provider_name,
-                    "display_name": provider_class().display_name(),
-                    "connected": False,
-                    "models": [],
-                    "model_count": 0,
-                })
-                continue
-            try:
-                provider = provider_class()
-                models = await provider.list_models(api_key)
-                results.append({
-                    "name": provider_name,
-                    "display_name": provider.display_name(),
-                    "connected": True,
-                    "models": [self._model_to_dict(m) for m in models],
-                    "model_count": len(models),
-                })
-            except Exception:
-                results.append({
-                    "name": provider_name,
-                    "display_name": provider_class().display_name(),
-                    "connected": False,
-                    "models": [],
-                    "model_count": 0,
-                })
+            results.append({
+                "name": provider_name,
+                "display_name": provider_class().display_name(),
+                "connected": False,
+                "models": [],
+                "model_count": 0,
+            })
         return results
 
     async def get_models_by_provider(self, provider_name: str) -> list[ModelInfo]:

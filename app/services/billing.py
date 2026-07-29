@@ -2,23 +2,19 @@ from __future__ import annotations
 
 import uuid
 from decimal import Decimal
-from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
-from app.core.security import now
 from app.models.billing import (
     Budget,
-    PricingRule,
     TransactionType,
     UsageLog,
     Wallet,
-    WalletTransaction,
     WalletStatus,
+    WalletTransaction,
 )
 from app.repositories import UnitOfWork
 from app.schemas.billing import (
-    AddCreditsRequest,
     BudgetCreate,
     BudgetUpdate,
     EstimateCostRequest,
@@ -45,27 +41,37 @@ class BillingService:
     async def get_wallet(self, user_id: uuid.UUID) -> Wallet:
         wallet = await self.uow.wallets.get_by_user(user_id)
         if wallet is None:
-            wallet = await self.uow.wallets.create(
-                user_id=user_id,
-                balance=Decimal("0.0000"),
-                currency="usd",
-                status=WalletStatus.ACTIVE,
-            )
-            await self.uow.commit()
+            try:
+                wallet = await self.uow.wallets.create(
+                    user_id=user_id,
+                    balance=Decimal("0.0000"),
+                    currency="usd",
+                    status=WalletStatus.ACTIVE,
+                )
+                await self.uow.commit()
+            except IntegrityError:
+                await self.uow.rollback()
+                wallet = await self.uow.wallets.get_by_user(user_id)
+                if wallet is None:
+                    raise
         return wallet
 
     async def create_wallet(self, user_id: uuid.UUID, currency: str = "usd") -> Wallet:
         existing = await self.uow.wallets.get_by_user(user_id)
         if existing:
             return existing
-        wallet = await self.uow.wallets.create(
-            user_id=user_id,
-            balance=Decimal("0.0000"),
-            currency=currency,
-            status=WalletStatus.ACTIVE,
-        )
-        await self.uow.commit()
-        return wallet
+        try:
+            wallet = await self.uow.wallets.create(
+                user_id=user_id,
+                balance=Decimal("0.0000"),
+                currency=currency,
+                status=WalletStatus.ACTIVE,
+            )
+            await self.uow.commit()
+            return wallet
+        except IntegrityError:
+            await self.uow.rollback()
+            return await self.uow.wallets.get_by_user(user_id)
 
     async def add_credit(self, user_id: uuid.UUID, amount: Decimal, reason: str, reference_id: str | None = None, metadata: dict | None = None) -> WalletTransaction:
         if amount <= Decimal("0"):
@@ -93,13 +99,10 @@ class BillingService:
             metadata=metadata or {},
         )
         locked_wallet.balance = balance_after
-        await self.uow.commit()
-
         budget = await self.uow.budgets.get_by_user(user_id)
         if budget and budget.limit_reached and balance_after > Decimal("0"):
             await self.uow.budgets.update(budget, limit_reached=False, current_spend=Decimal("0"))
-            await self.uow.commit()
-
+        await self.uow.commit()
         return transaction
 
     async def deduct_credit(self, user_id: uuid.UUID, amount: Decimal, reason: str, reference_id: str | None = None, metadata: dict | None = None) -> WalletTransaction:
@@ -131,9 +134,8 @@ class BillingService:
             metadata=metadata or {},
         )
         locked_wallet.balance = balance_after
-        await self.uow.commit()
-
         await self._update_budget_spend(user_id, amount)
+        await self.uow.commit()
         return transaction
 
     async def refund_transaction(self, user_id: uuid.UUID, body: RefundRequest) -> WalletTransaction:
@@ -166,17 +168,20 @@ class BillingService:
             metadata={"original_transaction_id": str(original.id)},
         )
         locked_wallet.balance = balance_after
-        await self.uow.commit()
-
         budget = await self.uow.budgets.get_by_user(user_id)
         if budget and budget.limit_reached and balance_after > Decimal("0"):
             await self.uow.budgets.update(budget, limit_reached=False, current_spend=budget.current_spend - original.amount)
-            await self.uow.commit()
-
+        await self.uow.commit()
         return transaction
 
     async def calculate_cost(self, provider: str, model: str, operation: str, input_tokens: int = 0, output_tokens: int = 0, embedding_tokens: int = 0, vector_searches: int = 0, storage_bytes: int = 0, requests: int = 1) -> Decimal:
         total = Decimal("0.0000")
+
+        rules = await self.uow.pricing_rules.list_by_provider(provider)
+        rule_map = {(r.operation, r.model): r for r in rules}
+
+        def lookup(op: str, mdl: str | None) -> PricingRule | None:
+            return rule_map.get((op, mdl)) or rule_map.get((op, None))
 
         token_operations = {
             "input_tokens": input_tokens,
@@ -186,68 +191,53 @@ class BillingService:
 
         for op, count in token_operations.items():
             if count > 0:
-                rule = await self.uow.pricing_rules.get_rule(provider, op, model)
-                if rule is None:
-                    rule = await self.uow.pricing_rules.get_rule(provider, op, None)
+                rule = lookup(op, model)
                 if rule:
                     total += rule.price_per_unit * Decimal(count)
 
         if vector_searches > 0:
-            rule = await self.uow.pricing_rules.get_rule(provider, "vector_search", model)
-            if rule is None:
-                rule = await self.uow.pricing_rules.get_rule(provider, "vector_search", None)
+            rule = lookup("vector_search", model)
             if rule:
                 total += rule.price_per_unit * Decimal(vector_searches)
 
         if storage_bytes > 0:
-            rule = await self.uow.pricing_rules.get_rule(provider, "storage", model)
-            if rule is None:
-                rule = await self.uow.pricing_rules.get_rule(provider, "storage", None)
+            rule = lookup("storage", model)
             if rule:
                 total += rule.price_per_unit * Decimal(storage_bytes)
 
         if requests > 0 and operation not in ("input_tokens", "output_tokens", "embeddings", "vector_search", "storage"):
-            rule = await self.uow.pricing_rules.get_rule(provider, operation, model)
-            if rule is None:
-                rule = await self.uow.pricing_rules.get_rule(provider, operation, None)
+            rule = lookup(operation, model)
             if rule:
                 total += rule.price_per_unit * Decimal(requests)
 
         return total
 
     async def estimate_request_cost(self, body: EstimateCostRequest) -> EstimateCostResponse:
-        cost = await self.calculate_cost(
-            provider=body.provider,
-            model=body.model,
-            operation=body.operation,
-            input_tokens=body.input_tokens,
-            output_tokens=body.output_tokens,
-            embedding_tokens=body.embedding_tokens,
-            vector_searches=body.vector_searches,
-            storage_bytes=body.storage_bytes,
-            requests=body.requests,
-        )
+        rules = await self.uow.pricing_rules.list_by_provider(body.provider)
+        rule_map = {(r.operation, r.model): r for r in rules}
 
+        def lookup(op: str, mdl: str | None) -> PricingRule | None:
+            return rule_map.get((op, mdl)) or rule_map.get((op, None))
+
+        cost = Decimal("0.0000")
         breakdown: dict[str, Decimal] = {}
+
         if body.input_tokens > 0:
-            rule = await self.uow.pricing_rules.get_rule(body.provider, "input_tokens", body.model)
-            if rule is None:
-                rule = await self.uow.pricing_rules.get_rule(body.provider, "input_tokens", None)
+            rule = lookup("input_tokens", body.model)
             if rule:
+                cost += rule.price_per_unit * Decimal(body.input_tokens)
                 breakdown["input_tokens"] = rule.price_per_unit * Decimal(body.input_tokens)
 
         if body.output_tokens > 0:
-            rule = await self.uow.pricing_rules.get_rule(body.provider, "output_tokens", body.model)
-            if rule is None:
-                rule = await self.uow.pricing_rules.get_rule(body.provider, "output_tokens", None)
+            rule = lookup("output_tokens", body.model)
             if rule:
+                cost += rule.price_per_unit * Decimal(body.output_tokens)
                 breakdown["output_tokens"] = rule.price_per_unit * Decimal(body.output_tokens)
 
         if body.embedding_tokens > 0:
-            rule = await self.uow.pricing_rules.get_rule(body.provider, "embeddings", body.model)
-            if rule is None:
-                rule = await self.uow.pricing_rules.get_rule(body.provider, "embeddings", None)
+            rule = lookup("embeddings", body.model)
             if rule:
+                cost += rule.price_per_unit * Decimal(body.embedding_tokens)
                 breakdown["embeddings"] = rule.price_per_unit * Decimal(body.embedding_tokens)
 
         return EstimateCostResponse(estimated_cost=cost, currency="usd", breakdown=breakdown)

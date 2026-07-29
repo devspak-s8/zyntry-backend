@@ -255,7 +255,13 @@ async def test_source_connection(
 ) -> dict:
     uow = UnitOfWork(db)
     service = KnowledgeService(uow)
-    result = await service.test_source(body.get("source_id"))
+    source_id = body.get("source_id")
+    if not source_id:
+        raise HTTPException(status_code=400, detail="source_id is required")
+    try:
+        result = await service.test_source(source_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     return result
 
 
@@ -267,7 +273,13 @@ async def discover_source_metadata(
 ) -> dict:
     uow = UnitOfWork(db)
     service = KnowledgeService(uow)
-    result = await service.discover_source(body.get("source_id"))
+    source_id = body.get("source_id")
+    if not source_id:
+        raise HTTPException(status_code=400, detail="source_id is required")
+    try:
+        result = await service.discover_source(source_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     return result
 
 

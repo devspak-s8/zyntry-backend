@@ -1,25 +1,22 @@
 from __future__ import annotations
 
-import hashlib
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Annotated
 
-import stripe
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
 from app.core.config import settings
 from app.core.database import get_session
+from app.models.billing import UsageLog
 from app.models.users import User
 from app.repositories import UnitOfWork
 from app.repositories.processed_webhook_events import ProcessedWebhookEventRepository
 from app.schemas.billing import (
-    AddCreditsRequest,
     BudgetCreate,
     BudgetRead,
     BudgetUpdate,
@@ -35,14 +32,17 @@ from app.schemas.billing import (
     WalletRead,
     WalletTransactionRead,
 )
+from app.services.bachs import BachsService, BachsError
 from app.services.billing import BillingService, InsufficientCredits
+from app.core.ws_events import emit_checkout_completed, emit_wallet_updated
 
 router = APIRouter(prefix="/wallet", tags=["wallet"])
 
 
-def _require_stripe() -> None:
-    if not settings.STRIPE_SECRET_KEY:
-        raise HTTPException(status_code=500, detail="Stripe is not configured")
+def _require_bachs() -> BachsService:
+    if not settings.BACHS_API_KEY:
+        raise HTTPException(status_code=500, detail="Bachs is not configured")
+    return BachsService()
 
 
 @router.get("", response_model=WalletRead)
@@ -71,63 +71,70 @@ async def create_checkout_session(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_session)],
 ) -> CheckoutSessionResponse:
-    _require_stripe()
-    stripe.api_key = settings.STRIPE_SECRET_KEY
-
+    bachs = _require_bachs()
     service = BillingService(db)
     wallet = await service.get_wallet(current_user.id)
 
     success_url = body.success_url or f"{settings.APP_URL}/billing?success=true"
     cancel_url = body.cancel_url or f"{settings.APP_URL}/billing?canceled=true"
 
+    amount_str = str(Decimal(body.amount).quantize(Decimal("0.01")))
+    reference = f"wallet-{current_user.id}-{int(datetime.now(timezone.utc).timestamp())}"
+
+    customer = None
+    existing_customers = await bachs.list_customers(search=current_user.email, limit=1)
+    items = existing_customers.get("items") or []
+    if items:
+        customer = items[0]
+    else:
+        customer = await bachs.create_customer(email=current_user.email, name=current_user.name or current_user.email)
+
+    checkout_customer = customer if customer and getattr(customer, "id", None) else None
+
     try:
-        checkout_session = stripe.checkout.Session.create(
-            payment_method_types=["card"],
-            line_items=[
-                {
-                    "price_data": {
-                        "currency": body.currency,
-                        "product_data": {
-                            "name": "Zyntra Credits",
-                        },
-                        "unit_amount": int(body.amount * 100),
-                    },
-                    "quantity": 1,
-                }
-            ],
-            mode="payment",
+        checkout = await bachs.create_checkout_session(
+            amount=amount_str,
+            currency=body.currency.upper(),
             success_url=success_url,
             cancel_url=cancel_url,
+            customer=checkout_customer,
             metadata={
                 "user_id": str(current_user.id),
                 "wallet_id": str(wallet.id),
-                "amount": str(body.amount),
+                "amount": amount_str,
+                "zyntry_wallet_topup": "true",
             },
+            reference=reference,
+            allowed_payment_method_types=["card"],
         )
-    except Exception as exc:
+    except BachsError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    return CheckoutSessionResponse(session_id=checkout_session.id, url=checkout_session.url or "")
+    await emit_checkout_completed(str(current_user.id), checkout.checkout_id, checkout.status)
+
+    return CheckoutSessionResponse(session_id=checkout.checkout_id, url=checkout.checkout_url, status=checkout.status)
 
 
-class WebhookBody(BaseModel):
-    id: str
-
-
-@router.post("/stripe-webhook", response_model=dict)
-async def stripe_webhook(
+@router.post("/bachs-webhook", response_model=dict)
+async def bachs_webhook(
     request: Request,
     db: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict:
-    if not settings.STRIPE_WEBHOOK_SECRET:
-        raise HTTPException(status_code=500, detail="Stripe webhook secret not configured")
+    if not settings.BACHS_WEBHOOK_SECRET:
+        raise HTTPException(status_code=500, detail="Bachs webhook secret not configured")
 
     payload = await request.body()
-    sig_header = request.headers.get("stripe-signature", "")
+    timestamp_header = request.headers.get("X-Bachs-Timestamp", "")
+    signature_header = request.headers.get("X-Bachs-Signature", "")
+
+    from app.services.baching import verify_bachs_signature
+    if not verify_bachs_signature(payload, settings.BACHS_WEBHOOK_SECRET, timestamp_header, signature_header):
+        raise HTTPException(status_code=400, detail="Invalid webhook signature")
+
     try:
-        event = stripe.Webhook.construct_event(payload, sig_header, settings.STRIPE_WEBHOOK_SECRET)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid webhook signature: {exc}") from exc
+        event = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
     event_id = event.get("id", "")
     event_type = event.get("type", "")
@@ -138,34 +145,46 @@ async def stripe_webhook(
         if existing:
             return {"received": True, "deduplicated": True}
 
-        if event_type == "checkout.session.completed":
-            session = event["data"]["object"]
-            metadata = session.get("metadata", {})
+        if event_type == "collection.succeeded":
+            data = event.get("data", {})
+            metadata = data.get("metadata") or {}
             user_id = metadata.get("user_id")
-            amount = Decimal(metadata.get("amount", "0"))
-            wallet_id = metadata.get("wallet_id")
+            amount_raw = metadata.get("amount")
 
-            if not user_id or not wallet_id:
-                raise HTTPException(status_code=400, detail="Missing metadata in checkout session")
+            if not user_id or not amount_raw:
+                raise HTTPException(status_code=400, detail="Missing metadata in Bachs event")
+
+            try:
+                amount = Decimal(str(amount_raw))
+            except Exception:
+                amount = Decimal("0")
 
             service = BillingService(db)
             try:
                 await service.add_credit(
                     user_id=uuid.UUID(user_id),
                     amount=amount,
-                    reason="Stripe payment",
+                    reason="Wallet top-up",
                     reference_id=event_id,
-                    metadata={"stripe_session_id": session["id"], "payment_status": session.get("payment_status")},
+                    metadata={
+                        "provider": "bachs",
+                        "checkout_id": data.get("checkout_id"),
+                        "charge_id": data.get("charge_id"),
+                        "payment_method": data.get("payment_method"),
+                        "currency": data.get("currency"),
+                    },
                 )
+                wallet = await service.get_wallet(uuid.UUID(user_id))
+                await emit_wallet_updated(user_id, str(wallet.id), str(wallet.balance), wallet.currency)
             except Exception:
                 raise
 
         processed_repo.create(
             event_id=event_id,
-            source="stripe",
+            source="bachs",
             event_type=event_type,
             status="processed",
-            payload=dict(event),
+            payload=event,
             received_at=datetime.now(timezone.utc),
         )
         await db.commit()
@@ -180,6 +199,8 @@ async def refund_transaction(
 ) -> WalletTransactionRead:
     service = BillingService(db)
     txn = await service.refund_transaction(current_user.id, body)
+    wallet = await service.get_wallet(current_user.id)
+    await emit_wallet_updated(str(current_user.id), str(wallet.id), str(wallet.balance), wallet.currency)
     return WalletTransactionRead(
         id=txn.id,
         wallet_id=txn.wallet_id,

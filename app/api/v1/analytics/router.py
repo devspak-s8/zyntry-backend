@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -35,7 +36,7 @@ async def list_usage_events(
             provider=e.get("provider"),
             project_id=e.get("project_id"),
             metadata=e.get("metadata", {}),
-            created_at=e.get("created_at", ""),
+            created_at=e.get("created_at") or datetime.now(timezone.utc),
         )
         for e in events
     ]

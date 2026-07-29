@@ -43,6 +43,7 @@ class AnalyticsService:
             "model": event.model,
             "provider": event.provider,
             "project_id": str(event.project_id) if event.project_id else None,
+            "created_at": event.created_at.isoformat() if event.created_at else None,
         }
 
     async def get_summary(self, project_id: str) -> dict:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.runtimes import Runtime, RuntimeBuildChunk, RuntimeBuildLog
@@ -123,9 +123,7 @@ class RuntimeBuildChunkRepository:
         await self.session.flush()
 
     async def delete_by_runtime(self, runtime_id: UUID) -> None:
-        result = await self.session.execute(
-            select(RuntimeBuildChunk).where(RuntimeBuildChunk.runtime_id == runtime_id)
+        await self.session.execute(
+            delete(RuntimeBuildChunk).where(RuntimeBuildChunk.runtime_id == runtime_id)
         )
-        for chunk in result.scalars().all():
-            await self.session.delete(chunk)
         await self.session.flush()

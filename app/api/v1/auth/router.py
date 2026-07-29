@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import uuid
 from datetime import timedelta
 from typing import Annotated
 
@@ -12,6 +11,7 @@ from app.core.config import settings
 from app.core.database import get_session
 from app.core.security import (
     generate_session_token,
+    generate_verification_token,
     hash_password,
     hash_token,
     now,
@@ -22,6 +22,7 @@ from app.models.refresh_tokens import RefreshToken
 from app.models.sessions import Session
 from app.models.users import User
 from app.schemas.auth import AuthMeResponse
+from app.services.email import send_verification_email
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -51,7 +52,7 @@ async def _create_session(
         value=token,
         httponly=True,
         secure=not settings.APP_DEBUG,
-        samesite="lax",
+        samesite="none" if not settings.APP_DEBUG else "lax",
         max_age=settings.SESSION_TOKEN_TTL_MINUTES * 60,
         path="/",
     )
@@ -113,10 +114,23 @@ async def register(
     db.add(user)
     await db.flush()
 
+    token = generate_verification_token()
+    token_hash = hash_token(token)
+    expires_at = now() + timedelta(hours=24)
+
+    verification_obj = EmailVerificationToken(
+        user_id=user.id,
+        token_hash=token_hash,
+        expires_at=expires_at,
+    )
+    db.add(verification_obj)
+    await db.commit()
+
+    await send_verification_email(email, name, token)
+
     await _create_session(db, response, user)
     refresh_token = await _create_refresh_token(db, user)
     _set_refresh_cookie(response, refresh_token)
-    await db.commit()
 
     return AuthMeResponse(
         id=user.id,
@@ -325,21 +339,36 @@ async def resend_verification(
 ) -> dict[str, str]:
     user = await _get_user_by_email(db, email)
     if user is None:
-        return {"message": "If an account exists with that email, a verification link has been sent."}
+        msg = (
+            "If an account exists with that email, "
+            "a verification link has been sent."
+        )
+        return {"message": msg}
 
     if user.email_verified:
         return {"message": "Email is already verified"}
 
-    token = generate_session_token()
+    result = await db.execute(
+        select(EmailVerificationToken).where(EmailVerificationToken.user_id == user.id)
+    )
+    existing = result.scalar_one_or_none()
+    token = generate_verification_token()
     token_hash = hash_token(token)
     expires_at = now() + timedelta(hours=24)
 
-    verification_obj = EmailVerificationToken(
-        user_id=user.id,
-        token_hash=token_hash,
-        expires_at=expires_at,
-    )
-    db.add(verification_obj)
+    if existing is not None:
+        existing.token_hash = token_hash
+        existing.expires_at = expires_at
+        existing.used = False
+    else:
+        verification_obj = EmailVerificationToken(
+            user_id=user.id,
+            token_hash=token_hash,
+            expires_at=expires_at,
+        )
+        db.add(verification_obj)
+
     await db.commit()
+    await send_verification_email(email, user.name, token)
 
     return {"message": "If an account exists with that email, a verification link has been sent."}

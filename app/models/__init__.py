@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from app.models.analytics import UsageEvent
 from app.models.apikeys import ApiKey
-from app.models.billing import WalletTransaction
+from app.models.billing import Wallet, WalletTransaction, PricingRule, UsageLog, Budget
 from app.models.chat import Conversation, Message
 from app.models.embeddings import Embedding
 from app.models.embedding_cache import EmbeddingCache
@@ -14,6 +14,7 @@ from app.models.models import Model, Provider
 from app.models.notifications import Notification
 from app.models.organizations import Organization
 from app.models.projects import Project
+from app.models.onboarding import ProviderConnection, OnboardingState
 from app.models.request_logs import RequestLog
 from app.models.runtimes import Runtime, RuntimeBuildChunk, RuntimeBuildLog
 from app.models.sessions import Session
@@ -44,7 +45,11 @@ __all__ = [
     "Conversation",
     "Message",
     "UsageEvent",
+    "Wallet",
     "WalletTransaction",
+    "PricingRule",
+    "UsageLog",
+    "Budget",
     "WebhookEvent",
     "WebhookSubscription",
     "Event",
@@ -55,4 +60,6 @@ __all__ = [
     "Notification",
     "HealthMetric",
     "RuntimeHealthCheck",
+    "ProviderConnection",
+    "OnboardingState",
 ]

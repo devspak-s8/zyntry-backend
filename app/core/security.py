@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import bcrypt
 
@@ -42,6 +42,11 @@ def generate_session_token() -> str:
     return secrets.token_urlsafe(48)
 
 
+def generate_verification_token() -> str:
+    chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    return "".join(secrets.choice(chars) for _ in range(6))
+
+
 def sign_payload(payload: bytes, secret: str | None = None) -> str:
     key = (secret or settings.SECRET_KEY).encode("utf-8")
     return hmac.new(key, payload, hashlib.sha256).hexdigest()
@@ -52,11 +57,11 @@ def constant_time_compare(a: str, b: str) -> bool:
 
 
 def now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def timedelta_minutes(minutes: int) -> timedelta:

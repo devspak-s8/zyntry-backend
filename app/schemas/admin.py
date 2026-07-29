@@ -67,3 +67,4 @@ class AdminSystemInfo(BaseModel):
     enable_router: bool
     uptime_seconds: float
     python_version: str
+    redis_status: str | None = None

@@ -59,6 +59,15 @@ class PricingRuleRepository(BaseRepository[PricingRule]):
         result = await self.session.execute(stmt.order_by(self.model.created_at.desc()))
         return list(result.scalars().all())
 
+    async def list_by_provider(self, provider: str) -> list[PricingRule]:
+        result = await self.session.execute(
+            select(self.model).where(
+                self.model.provider == provider,
+                self.model.active == True,
+            )
+        )
+        return list(result.scalars().all())
+
     async def get_rule(self, provider: str, operation: str, model: str | None = None) -> PricingRule | None:
         stmt = select(self.model).where(
             self.model.provider == provider,

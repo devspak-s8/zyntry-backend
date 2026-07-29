@@ -100,13 +100,13 @@ class RuntimeService:
         runtime.status = "queued"
         runtime.last_build_started = datetime.now(timezone.utc)
         runtime.error_message = None
-        await self._uow.runtimes.update(
+        await self.uow.runtimes.update(
             runtime,
             status="queued",
             last_build_started=datetime.now(timezone.utc),
             error_message=None,
         )
-        await self._uow.commit()
+        await self.uow.commit()
         from app.main import manager
         await manager.broadcast({"type": "RuntimeQueued", "runtime_id": str(runtime.id)})
         build_runtime_task.delay(str(runtime.id), trigger)

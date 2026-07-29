@@ -8,6 +8,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -70,10 +71,13 @@ class RuntimeWorker:
         if not self._runtime or not self._uow:
             return []
         kbs = await self._uow.knowledge_bases.get_by_project(self._runtime.project_id)
-        docs: list[Document] = []
-        for kb in kbs:
-            docs.extend(await self._uow.documents.get_by_kb(kb.id))
-        return docs
+        if not kbs:
+            return []
+        kb_ids = [kb.id for kb in kbs]
+        result = await self._uow.session.execute(
+            select(Document).where(Document.knowledge_base_id.in_(kb_ids))
+        )
+        return list(result.scalars().all())
 
     async def run(self) -> None:
         session, uow = await self._ensure_session()
@@ -165,11 +169,23 @@ class RuntimeWorker:
 
     async def _stage_extract_documents(self) -> None:
         docs = await self._get_documents()
-        for doc in docs:
-            content_hash = compute_content_hash(doc.content or "")
-            existing = await self._uow.runtime_build_chunks.get_by_document(self._runtime.id, doc.id)
-            if existing and existing[0].embedding_hash == content_hash:
-                continue
+        if docs:
+            doc_ids = [doc.id for doc in docs]
+            existing_chunks = await self._uow.session.execute(
+                select(RuntimeBuildChunk).where(
+                    RuntimeBuildChunk.runtime_id == self._runtime.id,
+                    RuntimeBuildChunk.document_id.in_(doc_ids),
+                )
+            )
+            chunk_lookup: dict[uuid.UUID, RuntimeBuildChunk] = {}
+            for chunk in existing_chunks.scalars().all():
+                if chunk.document_id not in chunk_lookup:
+                    chunk_lookup[chunk.document_id] = chunk
+            for doc in docs:
+                content_hash = compute_content_hash(doc.content or "")
+                existing = chunk_lookup.get(doc.id)
+                if existing and existing.embedding_hash == content_hash:
+                    continue
         self._runtime.status = "cleaning"
         await self._update_runtime_status("cleaning")
 
@@ -278,7 +294,8 @@ class RuntimeWorker:
                 chunk = chunk_map[idx]
                 chunk.embedded = True
                 self._generated_embeddings[str(chunk.id)] = embedding
-                await self._uow.runtime_build_chunks.update(chunk, embedded=True)
+            if embeddings:
+                await self._uow.session.flush()
         self._runtime.status = "indexing"
         await self._update_runtime_status("indexing")
         self._runtime.embeddings = sum(1 for c in chunks if c.embedded)
@@ -318,8 +335,8 @@ class RuntimeWorker:
                 "external_id": str(chunk.id),
             })
             chunk.indexed = True
-            await self._uow.runtime_build_chunks.update(chunk, indexed=True)
         if vectors:
+            await self._uow.session.flush()
             batch_size = getattr(settings, "VECTOR_BATCH_SIZE", 100)
             if hasattr(self._vector_store, "bulk_upsert"):
                 await self._vector_store.bulk_upsert(vectors, batch_size=batch_size)

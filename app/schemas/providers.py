@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 class ProviderConnectionCreate(BaseModel):
     provider_name: str = Field(min_length=1, max_length=64)
     display_name: str | None = None
-    api_key: str = Field(min_length=1)
+    api_key: str | None = Field(default=None, min_length=1)
     organization_id: str | None = None
     project_id: str | None = None
     config: dict[str, Any] = Field(default_factory=dict)

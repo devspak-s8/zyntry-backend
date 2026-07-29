@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any
-
 from app.repositories import UnitOfWork
-from app.schemas.providers import ProviderConnectionCreate, ProviderConnectionUpdate
+from app.schemas.providers import ProviderConnectionCreate
 
 
 class ProviderService:
@@ -15,6 +12,8 @@ class ProviderService:
         connections = []
         if project_id:
             connections = await self.uow.providers.get_by_project(project_id)
+        else:
+            connections = await self.uow.providers.list()
         return [
             {
                 "id": str(c.id),
@@ -47,6 +46,8 @@ class ProviderService:
                 "id": str(updated.id),
                 "provider_name": updated.provider_name,
                 "status": updated.status,
+                "created_at": updated.created_at.isoformat() if updated.created_at else "",
+                "updated_at": updated.updated_at.isoformat() if updated.updated_at else "",
             }
 
         created = await self.uow.providers.create(
@@ -63,12 +64,12 @@ class ProviderService:
             "id": str(created.id),
             "provider_name": created.provider_name,
             "status": created.status,
+            "created_at": created.created_at.isoformat() if created.created_at else "",
+            "updated_at": created.updated_at.isoformat() if created.updated_at else "",
         }
 
     async def disconnect(self, connection_id: str) -> None:
-        conn = await self.uow.providers.session.get(
-            self.uow.providers.__class__, connection_id
-        )
+        conn = await self.uow.providers.get(connection_id)
         if not conn:
             raise ValueError("Provider connection not found")
         await self.uow.providers.delete(conn)

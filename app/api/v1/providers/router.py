@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -7,9 +8,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
 from app.core.database import get_session
+from app.core.ws_events import emit_provider_updated
 from app.models.users import User
 from app.repositories import UnitOfWork
-from app.schemas.providers import ProviderConnectionCreate, ProviderConnectionRead, ProviderConnectionUpdate
+from app.schemas.providers import (
+    ProviderConnectionCreate,
+    ProviderConnectionRead,
+    ProviderConnectionUpdate,
+)
 from app.services.model_discovery import get_model_discovery
 from app.services.providers import ProviderService
 
@@ -82,6 +88,11 @@ async def list_provider_connections(
     project_id: str | None = None,
     db: AsyncSession = Depends(get_session),
 ) -> list[ProviderConnectionRead]:
+    if project_id is not None:
+        try:
+            uuid.UUID(project_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid project_id format") from None
     uow = UnitOfWork(db)
     service = ProviderService(uow)
     connections = await service.list_providers(project_id)
@@ -108,6 +119,11 @@ async def list_providers_with_models(
     project_id: str | None = None,
     db: AsyncSession = Depends(get_session),
 ) -> list[dict]:
+    if project_id is not None:
+        try:
+            uuid.UUID(project_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid project_id format") from None
     uow = UnitOfWork(db)
     service = ProviderService(uow)
     connections = await service.list_providers(project_id)
@@ -137,19 +153,38 @@ async def connect_provider(
 ) -> ProviderConnectionRead:
     uow = UnitOfWork(db)
     service = ProviderService(uow)
-    result = await service.connect(body)
-    return ProviderConnectionRead(
+    api_key = body.api_key
+    if not api_key:
+        discovery = get_model_discovery()
+        api_key = discovery._get_api_key(body.provider_name)
+    org_id = body.organization_id or (str(current_user.organization_id) if current_user.organization_id else None)
+    result = await service.connect(ProviderConnectionCreate(
+        provider_name=body.provider_name,
+        display_name=body.display_name,
+        api_key=api_key,
+        organization_id=org_id,
+        project_id=body.project_id,
+        config=body.config,
+    ))
+    response = ProviderConnectionRead(
         id=result["id"],
-        organization_id=body.organization_id,
+        organization_id=org_id,
         project_id=body.project_id,
         provider_name=result["provider_name"],
         display_name=body.display_name,
         status=result["status"],
         last_tested_at=None,
         is_active=True,
-        created_at="",
-        updated_at="",
+        created_at=result.get("created_at") or "",
+        updated_at=result.get("updated_at") or "",
     )
+    await emit_provider_updated(
+        str(current_user.id),
+        body.project_id or "",
+        result["provider_name"],
+        True,
+    )
+    return response
 
 
 @router.patch("/{connection_id}", response_model=ProviderConnectionRead)
@@ -160,7 +195,7 @@ async def update_provider_connection(
     db: AsyncSession = Depends(get_session),
 ) -> ProviderConnectionRead:
     uow = UnitOfWork(db)
-    existing = await uow.providers.session.get(uow.providers.__class__, connection_id)
+    existing = await uow.providers.get(connection_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Provider connection not found")
     updated = await uow.providers.update(
@@ -168,7 +203,7 @@ async def update_provider_connection(
         **{k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
     )
     await uow.commit()
-    return ProviderConnectionRead(
+    response = ProviderConnectionRead(
         id=str(updated.id),
         organization_id=str(updated.organization_id) if updated.organization_id else None,
         project_id=str(updated.project_id) if updated.project_id else None,
@@ -180,6 +215,13 @@ async def update_provider_connection(
         created_at=updated.created_at.isoformat() if updated.created_at else "",
         updated_at=updated.updated_at.isoformat() if updated.updated_at else "",
     )
+    await emit_provider_updated(
+        str(current_user.id),
+        str(updated.project_id) if updated.project_id else "",
+        updated.provider_name,
+        updated.is_active,
+    )
+    return response
 
 
 @router.delete("/{connection_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -189,4 +231,9 @@ async def disconnect_provider(
     db: AsyncSession = Depends(get_session),
 ) -> None:
     uow = UnitOfWork(db)
-    await ProviderService(uow).disconnect(connection_id)
+    connection = await uow.providers.get(connection_id)
+    if connection:
+        project_id = str(connection.project_id) if connection.project_id else ""
+        provider_name = connection.provider_name
+        await ProviderService(uow).disconnect(connection_id)
+        await emit_provider_updated(str(current_user.id), project_id, provider_name, False)

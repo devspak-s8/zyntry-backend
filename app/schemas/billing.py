@@ -41,7 +41,6 @@ class WalletTransactionCreate(BaseModel):
 
 class AddCreditsRequest(BaseModel):
     amount: Decimal = Field(gt=0, description="Credit amount to add")
-    stripe_payment_intent_id: str | None = None
     metadata: dict | None = None
 
 
@@ -93,7 +92,7 @@ class UsageLogRead(ORMModel):
     created_at: datetime
 
 
-class UsageSummary(BaseModel):
+class UsageSummary(ORMModel):
     total_cost: Decimal
     total_requests: int
     total_input_tokens: int
@@ -148,13 +147,13 @@ class EstimateCostRequest(BaseModel):
     requests: int = Field(ge=1, default=1)
 
 
-class EstimateCostResponse(BaseModel):
+class EstimateCostResponse(ORMModel):
     estimated_cost: Decimal
     currency: str
     breakdown: dict[str, Decimal]
 
 
-class InsufficientCreditsError(BaseModel):
+class InsufficientCreditsError(ORMModel):
     error: str = "Insufficient Credits"
     required: Decimal
     balance: Decimal
@@ -170,6 +169,11 @@ class CheckoutSessionRequest(BaseModel):
 class CheckoutSessionResponse(BaseModel):
     session_id: str
     url: str
+    status: str | None = None
+
+
+class BachsWebhookResponse(BaseModel):
+    received: bool
 
 
 class StripeWebhookResponse(BaseModel):
