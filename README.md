@@ -1,8 +1,8 @@
-# Zyntra Backend
+# Zyntry Backend
 
 AI Backend Platform providing a single API to orchestrate LLM providers, knowledge
-retrieval (RAG), memory, tool calling, workflow execution, prompt management, model
-routing, analytics, billing, and SDK support.
+retrieval (RAG), session memory, tool calling, workflow execution, model
+routing, billing, webhooks, events, and runtime management.
 
 ## Tech Stack
 
