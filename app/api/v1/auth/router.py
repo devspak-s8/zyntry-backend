@@ -82,7 +82,7 @@ def _set_refresh_cookie(response: Response, token: str) -> None:
         value=token,
         httponly=True,
         secure=not settings.APP_DEBUG,
-        samesite="lax",
+        samesite="none" if not settings.APP_DEBUG else "lax",
         max_age=max_age,
         path="/",
     )
