@@ -22,7 +22,13 @@ from app.models.users import User
 
 def _parse_cors_origins(value: str) -> list[str]:
     if not value:
-        return ["http://localhost:3000", "http://localhost:3001", "http://localhost:5173"]
+        return [
+            "http://localhost:3000",
+            "http://localhost:3001",
+            "http://localhost:5173",
+            "http://zyntry.space",
+            "https://zyntry.space",
+        ]
     return [origin.strip() for origin in value.split(",") if origin.strip()]
 
 

@@ -31,7 +31,7 @@ class AppSettings(BaseSettings):
     SESSION_TOKEN_TTL_MINUTES: int = 60
     PASSWORD_MIN_LENGTH: int = 8
     CSP_ENABLED: bool = True
-    CORS_ORIGINS: str = "http://localhost:3000,http://localhost:3001,http://localhost:5173"
+    CORS_ORIGINS: str = "http://localhost:3000,http://localhost:3001,http://localhost:5173,http://zyntry.space,https://zyntry.space"
 
     # Database
     DATABASE_URL: str = "postgresql+asyncpg://zyntra:zyntra@localhost:5432/zyntra"
