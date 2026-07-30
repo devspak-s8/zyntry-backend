@@ -90,7 +90,7 @@ async def create_checkout_session(
     else:
         customer = await bachs.create_customer(email=current_user.email, name=current_user.name or current_user.email)
 
-    checkout_customer = customer if customer and customer.id else None
+    checkout_customer = customer if customer else None
 
     try:
         checkout = await bachs.create_checkout_session(
