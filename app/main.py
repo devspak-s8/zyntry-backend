@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 import json
+import re
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
-from app.core.database import async_session_factory
 
 from app.api import router as api_router
 from app.api.v1.logs.router import router as logs_router
 from app.core.config import settings
-from app.core.database import init_models
+from app.core.database import async_session_factory, init_models
 from app.core.logging import configure_logging
 from app.core.security import hash_token, now
 from app.middleware import RateLimitMiddleware, RequestContextMiddleware, SecurityHeadersMiddleware
@@ -21,14 +21,6 @@ from app.models.users import User
 
 
 def _parse_cors_origins(value: str) -> list[str]:
-    if not value:
-        return [
-            "http://localhost:3000",
-            "http://localhost:3001",
-            "http://localhost:5173",
-            "http://zyntry.space",
-            "https://zyntry.space",
-        ]
     return [origin.strip() for origin in value.split(",") if origin.strip()]
 
 
@@ -102,7 +94,7 @@ def create_app() -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=_parse_cors_origins(settings.CORS_ORIGINS),
+        allow_origin_regex=r"https?://(localhost|zyntry\.space|.*\.zyntry\.space|.*\.railway\.app|.*\.railway\.internal)(:\d+)?",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -118,6 +110,10 @@ def create_app() -> FastAPI:
     @app.get("/health", tags=["health"])
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.options("/api/v1/auth/refresh", tags=["auth"])
+    async def auth_refresh_preflight() -> Response:
+        return Response(status_code=200)
 
     @app.websocket("/ws/logs")
     async def websocket_logs(websocket: WebSocket):
@@ -140,8 +136,8 @@ def create_app() -> FastAPI:
     @app.websocket("/api/v1/ws")
     async def websocket_api(websocket: WebSocket):
         origin = websocket.headers.get("origin", "")
-        allowed_origins = _parse_cors_origins(settings.CORS_ORIGINS)
-        if origin and origin not in allowed_origins:
+        allowed_regex = re.compile(r"https?://(localhost|zyntry\.space|.*\.zyntry\.space|.*\.railway\.app|.*\.railway\.internal)(:\d+)?")
+        if origin and not allowed_regex.match(origin):
             await websocket.close(code=4003, reason="Origin not allowed")
             return
 
