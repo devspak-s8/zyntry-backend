@@ -32,7 +32,7 @@ from app.schemas.billing import (
     WalletRead,
     WalletTransactionRead,
 )
-from app.services.bachs import BachsCustomer, BachsService, BachsError
+from app.services.bachs import BachsService, BachsError
 from app.services.billing import BillingService, InsufficientCredits
 from app.core.ws_events import emit_checkout_completed, emit_wallet_updated
 
@@ -86,7 +86,11 @@ async def create_checkout_session(
     items = existing_customers.get("items") or []
     if items:
         c = items[0]
-        customer = BachsCustomer(id=c.get("id"), email=c.get("email") or current_user.email, name=c.get("name") or current_user.name or current_user.email)
+        customer = BachsCustomer(
+            id=c.get("id"),
+            email=c.get("email") or current_user.email,
+            name=c.get("name") or current_user.name or current_user.email,
+        )
     else:
         customer = await bachs.create_customer(email=current_user.email, name=current_user.name or current_user.email)
 
