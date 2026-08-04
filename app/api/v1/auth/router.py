@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_session
+from app.core.redis import redis_client
 from app.core.security import (
     generate_session_token,
     generate_verification_token,
@@ -18,6 +19,7 @@ from app.core.security import (
     verify_password,
 )
 from app.models.email_verification_tokens import EmailVerificationToken
+from app.models.organizations import Organization
 from app.models.refresh_tokens import RefreshToken
 from app.models.sessions import Session
 from app.models.users import User
@@ -114,6 +116,15 @@ async def register(
     db.add(user)
     await db.flush()
 
+    organization = Organization(
+        name=f"{name or email}'s Organization",
+        slug=f"org-{user.id.hex[:8]}",
+    )
+    db.add(organization)
+    await db.flush()
+    user.organization_id = organization.id
+    await db.flush()
+
     token = generate_verification_token()
     token_hash = hash_token(token)
     expires_at = now() + timedelta(hours=24)
@@ -131,6 +142,7 @@ async def register(
     await _create_session(db, response, user)
     refresh_token = await _create_refresh_token(db, user)
     _set_refresh_cookie(response, refresh_token)
+    await db.commit()
 
     return AuthMeResponse(
         id=user.id,
@@ -176,6 +188,7 @@ async def logout(
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
     if session_token is not None:
+        await redis_client.delete(f"session:{session_token}")
         token_hash = hash_token(session_token)
         result = await db.execute(
             select(Session).where(Session.token_hash == token_hash)

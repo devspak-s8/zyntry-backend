@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import datetime
 
 from app.repositories import UnitOfWork
@@ -58,6 +59,10 @@ class KnowledgeService:
             knowledge_base_id=data.knowledge_base_id,
         )
         await self.uow.commit()
+        kb = await self.uow.knowledge_bases.get(uuid.UUID(data.knowledge_base_id))
+        project_id = str(kb.project_id) if kb else None
+        if project_id:
+            await self._maybe_trigger_runtime(project_id, trigger="document_uploaded")
         return {
             "id": str(doc.id),
             "title": doc.title,
@@ -85,6 +90,10 @@ class KnowledgeService:
             doc_metadata=metadata,
         )
         await self.uow.commit()
+        kb = await self.uow.knowledge_bases.get(uuid.UUID(knowledge_base_id))
+        project_id = str(kb.project_id) if kb else None
+        if project_id:
+            await self._maybe_trigger_runtime(project_id, trigger="document_uploaded")
         return {
             "id": str(doc.id),
             "title": doc.title,

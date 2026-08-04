@@ -11,6 +11,7 @@ from app.models.health_metrics import HealthMetric, RuntimeHealthCheck
 from app.models.knowledge import Document, KnowledgeBase, KnowledgeSource, SyncJob, SyncSchedule
 from app.models.memory import MemoryRecord
 from app.models.models import Model, Provider
+from app.models.model_providers import ModelProvider
 from app.models.notifications import Notification
 from app.models.organizations import Organization
 from app.models.projects import Project

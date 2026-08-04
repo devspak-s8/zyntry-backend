@@ -47,6 +47,7 @@ class RuntimeWorker:
         self.runtime_id = runtime_id
         self.trigger = trigger
         self._session: AsyncSession | None = None
+        self._session_gen: Any = None
         self._uow: UnitOfWork | None = None
         self._runtime: Runtime | None = None
         self._vector_store: Any = None
@@ -56,8 +57,8 @@ class RuntimeWorker:
 
     async def _ensure_session(self) -> tuple[AsyncSession, UnitOfWork]:
         if self._session is None:
-            session_gen = get_session()
-            self._session = await session_gen.__anext__()
+            self._session_gen = get_session()
+            self._session = await self._session_gen.__anext__()
             self._uow = UnitOfWork(self._session)
         return self._session, self._uow  # type: ignore[return-value]
 
@@ -111,6 +112,8 @@ class RuntimeWorker:
         finally:
             if self._embedding_provider:
                 await self._embedding_provider.close()
+            if self._session_gen is not None:
+                await self._session_gen.aclose()
 
     async def _run_stage(self, stage: str) -> None:
         if not self._runtime or not self._uow:
@@ -142,7 +145,7 @@ class RuntimeWorker:
                 )
                 self._runtime.status = "failed"
                 self._runtime.error_message = str(e)
-                await uow.runtimes.update(self._runtime, status="failed", error_message=str(e))
+                await self._uow.runtimes.update(self._runtime, status="failed", error_message=str(e))
                 raise
         else:
             await asyncio.sleep(random.uniform(0.1, 0.5))

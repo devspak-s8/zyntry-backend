@@ -25,3 +25,4 @@ class ProjectRead(ORMModel):
     created_at: str
     settings: dict
     status: str
+    connected_providers: list[str] = []

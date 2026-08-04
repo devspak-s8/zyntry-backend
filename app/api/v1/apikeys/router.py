@@ -14,6 +14,7 @@ from app.models.users import User
 from app.repositories import UnitOfWork
 from app.schemas.apikeys import (
     ApiKeyCreate,
+    ApiKeyCreateResponse,
     ApiKeyExpireRequest,
     ApiKeyRead,
     ApiKeyRotateResponse,
@@ -68,12 +69,12 @@ async def get_api_key(
     )
 
 
-@router.post("", response_model=ApiKeyRead, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=ApiKeyCreateResponse, status_code=status.HTTP_201_CREATED)
 async def create_api_key(
     body: ApiKeyCreate,
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
-) -> ApiKeyRead:
+) -> ApiKeyCreateResponse:
     import uuid
 
     org_id = current_user.organization_id
@@ -104,6 +105,7 @@ async def create_api_key(
             hashed_key=hash_token(raw_key),
             prefix=raw_key[:16],
             organization_id=org_id,
+            user_id=current_user.id,
             project_id=proj_id,
             scopes=body.scopes,
         )
@@ -112,7 +114,7 @@ async def create_api_key(
         await uow.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to create API key: {exc}")
 
-    return ApiKeyRead(
+    return ApiKeyCreateResponse(
         id=key.id,
         name=key.name,
         prefix=key.prefix,
@@ -124,6 +126,7 @@ async def create_api_key(
         usage_stats=key.usage_stats,
         created_at=key.created_at,
         updated_at=key.updated_at,
+        key=raw_key,
     )
 
 

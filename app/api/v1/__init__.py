@@ -17,6 +17,7 @@ from app.api.v1.logs.router import router as logs_router
 from app.api.v1.memory.router import router as memory_router
 from app.api.v1.models.router import router as models_router
 from app.api.v1.notifications.router import router as notifications_router
+from app.api.v1.runtime_assistant import router as runtime_assistant_router
 from app.api.v1.onboarding.router import router as onboarding_router
 from app.api.v1.organizations.router import router as organizations_router
 from app.api.v1.providers.router import router as providers_router
@@ -52,3 +53,4 @@ api_router.include_router(webhooks_router)
 api_router.include_router(events_router)
 api_router.include_router(logs_router)
 api_router.include_router(notifications_router)
+api_router.include_router(runtime_assistant_router)

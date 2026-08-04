@@ -126,3 +126,74 @@ async def delete_user(
     except Exception as exc:
         await uow.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to delete user: {exc}")
+
+
+@router.get("/me/settings", response_model=dict[str, object])
+async def get_user_settings(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, object]:
+    return current_user.settings or {}
+
+
+@router.patch("/me/settings", response_model=dict[str, object])
+async def update_user_settings(
+    body: dict[str, object],
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, object]:
+    uow = UnitOfWork(db)
+    try:
+        await uow.users.update(current_user, settings=body)
+        await uow.commit()
+    except Exception as exc:
+        await uow.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to update settings: {exc}")
+    return body
+
+
+@router.post("/me/2fa/enable")
+async def enable_two_factor(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, str]:
+    import secrets
+    secret = secrets.token_base32()
+    uow = UnitOfWork(db)
+    try:
+        await uow.users.update(current_user, two_factor_secret=secret, two_factor_enabled=True)
+        await uow.commit()
+    except Exception as exc:
+        await uow.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to enable 2FA: {exc}")
+    return {"secret": secret, "status": "enabled"}
+
+
+@router.post("/me/2fa/disable")
+async def disable_two_factor(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, str]:
+    uow = UnitOfWork(db)
+    try:
+        await uow.users.update(current_user, two_factor_secret=None, two_factor_enabled=False)
+        await uow.commit()
+    except Exception as exc:
+        await uow.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to disable 2FA: {exc}")
+    return {"status": "disabled"}
+
+
+@router.post("/me/tokens/revoke-all")
+async def revoke_all_tokens(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, str]:
+    uow = UnitOfWork(db)
+    try:
+        await uow.users.update(current_user, settings={**(current_user.settings or {}), "tokens_revoked": True})
+        await uow.commit()
+    except Exception as exc:
+        await uow.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to revoke tokens: {exc}")
+    return {"status": "all tokens revoked"}

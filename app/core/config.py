@@ -123,6 +123,12 @@ class AppSettings(BaseSettings):
     ENABLE_TOOLS: bool = True
     ENABLE_ROUTER: bool = True
 
+    # Admin Platform
+    ADMIN_IP_ALLOWLIST: str = ""
+    ADMIN_IP_BAN_CHECK: bool = True
+    ADMIN_MFA_REQUIRED: bool = False
+    ADMIN_SESSION_TTL_MINUTES: int = 60
+
     @property
     def is_production(self) -> bool:
         return self.APP_ENV.lower() == "production"

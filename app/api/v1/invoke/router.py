@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -14,14 +15,33 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.dependencies_api_key import get_api_key_user
 from app.core.config import settings
 from app.core.database import get_session
+from app.models.request_logs import RequestLog
 from app.models.users import User
 from app.repositories import UnitOfWork
 from app.schemas.billing import InsufficientCreditsError
 from app.services.billing import BillingService, InsufficientCredits
+from app.services.guardrails import GuardrailService
 from app.services.model_router import ModelRouter, RoutingGoal, RoutingPreference
 from app.services.runtime_cache import runtime_cache
 
 router = APIRouter()
+guardrail_service = GuardrailService()
+
+
+def _normalize_runtime_status(status_val: Any) -> str | None:
+    if status_val is None:
+        return None
+    try:
+        return str(status_val).strip().lower()
+    except Exception:
+        return str(status_val)
+
+
+def _is_runtime_ready(status_val: Any) -> bool:
+    norm_status = _normalize_runtime_status(status_val)
+    if norm_status is None:
+        return True
+    return norm_status not in {"failed", "cancelled"}
 
 
 class InvokeRequest(BaseModel):
@@ -34,6 +54,7 @@ class InvokeRequest(BaseModel):
     stream: bool = False
     top_k: int = 5
     conversation_id: str | None = None
+    json_schema: dict | None = None
 
 
 class InvokeResponse(BaseModel):
@@ -45,7 +66,31 @@ class InvokeResponse(BaseModel):
     cost: float
     warnings: list[dict] = []
     events: list[dict] = []
+    tool_calls: list[dict] = []
     tokens_used: int = 0
+    guardrail_violations: list[str] = []
+
+
+async def _execute_tool(tool: Any, arguments: dict) -> dict:
+    impl = (tool.implementation or "").strip()
+    if not impl:
+        return {"name": tool.name, "status": "skipped", "reason": "no_implementation"}
+    if impl.startswith("http://") or impl.startswith("https://"):
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(impl, json=arguments)
+                return {"name": tool.name, "status": "success", "result": resp.json() if resp.headers.get("content-type") == "application/json" else resp.text, "status_code": resp.status_code}
+        except Exception as exc:
+            return {"name": tool.name, "status": "error", "error": str(exc)}
+    if impl.startswith("webhook://"):
+        url = impl[len("webhook://"):]
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(url, json=arguments)
+                return {"name": tool.name, "status": "success", "result": resp.json() if resp.headers.get("content-type") == "application/json" else resp.text, "status_code": resp.status_code}
+        except Exception as exc:
+            return {"name": tool.name, "status": "error", "error": str(exc)}
+    return {"name": tool.name, "status": "skipped", "reason": "unsupported_implementation"}
 
 
 @router.post("/invoke", response_model=InvokeResponse)
@@ -58,6 +103,7 @@ async def invoke(
     start_time = time.perf_counter()
     events: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
+    tool_calls: list[dict[str, Any]] = []
 
     events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Request Received", "request_id": request_id})
 
@@ -77,27 +123,30 @@ async def invoke(
         runtime = await uow.runtimes.get_by_project(project.id)
 
     if runtime:
-        cached = await runtime_cache.get(str(runtime.id))
-        if cached:
-            runtime_data = cached
-        else:
-            runtime_data = {
-                "id": str(runtime.id),
-                "provider": runtime.provider,
-                "model": runtime.model,
-                "embedding_model": runtime.embedding_model,
-                "vector_store": runtime.vector_store,
-                "config": runtime.config,
-                "status": runtime.status,
-            }
-            await runtime_cache.set(str(runtime.id), runtime_data, ttl=300)
-        events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Runtime Loaded", "runtime_id": str(runtime.id), "cached": bool(cached)})
+        runtime_data = {
+            "id": str(runtime.id),
+            "provider": runtime.provider,
+            "model": runtime.model,
+            "embedding_model": runtime.embedding_model,
+            "vector_store": runtime.vector_store,
+            "config": runtime.config,
+            "status": runtime.status,
+        }
+        events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Runtime Loaded", "runtime_id": str(runtime.id), "cached": False})
     else:
         runtime_data = {"provider": "openai", "model": "gpt-4o", "config": {}}
         events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Runtime Loaded", "runtime_id": None, "cached": False})
 
-    if runtime_data.get("status") not in ("active", None):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Runtime not ready")
+    status_val = runtime_data.get("status")
+    if status_val is not None:
+        norm_status = _normalize_runtime_status(status_val)
+        if not _is_runtime_ready(status_val):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Runtime not ready")
+        if norm_status and norm_status != "active":
+            warnings.append({
+                "code": "RUNTIME_STATUS",
+                "message": f"Runtime status is {norm_status}; continuing with available configuration",
+            })
 
     wallet = await billing_service.get_wallet(current_user.id)
     if wallet.status != "active":
@@ -108,6 +157,10 @@ async def invoke(
 
     provider_name = body.provider or runtime_data.get("provider", "openai")
     model_name = body.model or runtime_data.get("model", "gpt-4o")
+
+    input_violations = guardrail_service.validate_input(body.input, body.json_schema)
+    if input_violations:
+        raise HTTPException(status_code=400, detail={"guardrail_violations": input_violations})
 
     goal = RoutingGoal(body.goal) if body.goal in [g.value for g in RoutingGoal] else RoutingGoal.BALANCED
     preference = RoutingPreference(goal=goal)
@@ -127,21 +180,25 @@ async def invoke(
             provider_keys[p_name] = key
 
     router_service = ModelRouter(uow)
-    selected = await router_service.route(preference, provider_keys)
-
-    if selected:
-        provider_name = selected.provider_name
-        model_name = selected.model_info.id
-        events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Model Selected", "model": model_name, "provider": provider_name, "score": selected.score})
-    else:
-        warnings.append({"code": "MODEL_NOT_FOUND", "message": "No matching model found for preference, using default"})
-        events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Model Selected", "model": model_name, "provider": provider_name, "score": 0})
+    messages = [{"role": "user", "content": body.input}]
+    result_text, invoked_model, invoked_provider, last_error = await router_service._invoke_with_fallback(
+        preference, provider_keys, messages
+    )
+    if not result_text:
+        raise HTTPException(status_code=502, detail=f"All providers failed: {last_error}")
+    provider_name = invoked_provider or provider_name
+    model_name = invoked_model or model_name
+    events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Model Selected", "model": model_name, "provider": provider_name})
+    if last_error:
+        warnings.append({"code": "PROVIDER_FAILOVER", "message": last_error})
 
     tools = await uow.tools.get_by_project(str(project.id))
-    tool_calls = []
     if tools:
-        events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Tools Executed", "count": len(tools)})
-        tool_calls = [{"name": t.name, "status": "skipped"} for t in tools]
+        for tool in tools:
+            args = {"input": body.input, "project_id": str(project.id), "user_id": str(current_user.id)}
+            result = await _execute_tool(tool, args)
+            tool_calls.append(result)
+            events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Tool Executed", "tool": tool.name, "status": result.get("status")})
 
     estimated_cost = await billing_service.calculate_cost(
         provider=provider_name,
@@ -165,7 +222,7 @@ async def invoke(
             detail={"error": "Budget limit reached", "required": float(estimated_cost), "balance": float(wallet.balance)},
         )
 
-    response_text = f"Invoked {model_name} on {provider_name} for project {project.name}. Input: {body.input[:100]}..."
+    response_text, output_violations = guardrail_service.enforce(result_text, body.json_schema)
     latency_ms = (time.perf_counter() - start_time) * 1000
 
     actual_cost = await billing_service.calculate_cost(
@@ -204,6 +261,27 @@ async def invoke(
     except Exception:
         raise
 
+    try:
+        await uow.request_logs.create(
+            project_id=project.id,
+            request_id=request_id,
+            method="POST",
+            endpoint="/invoke",
+            status=200,
+            latency_ms=int(latency_ms),
+            tokens=len(body.input.split()) + len(response_text.split()),
+            provider=provider_name,
+            model=model_name,
+            cost=int(actual_cost),
+            started_at=datetime.fromtimestamp(start_time, tz=timezone.utc).isoformat(),
+            completed_at=datetime.now(timezone.utc).isoformat(),
+            user_id=current_user.id,
+            ip="",
+        )
+        await uow.commit()
+    except Exception:
+        pass
+
     events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Response Generated", "model": model_name})
     events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Wallet Deducted", "amount": float(actual_cost)})
     events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Completed", "request_id": request_id})
@@ -217,5 +295,7 @@ async def invoke(
         cost=float(actual_cost),
         warnings=warnings,
         events=events,
+        tool_calls=tool_calls,
         tokens_used=len(body.input.split()) + len(response_text.split()),
+        guardrail_violations=output_violations,
     )

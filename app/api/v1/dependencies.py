@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Annotated
 
 from fastapi import Cookie, Depends, HTTPException
@@ -7,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_session
+from app.core.redis import redis_client
 from app.core.security import hash_token, now
 from app.models.sessions import Session
 from app.models.users import User
@@ -18,6 +20,12 @@ async def _get_session_user(
 ) -> User | None:
     if session_token is None:
         return None
+
+    cache_key = f"session:{session_token}"
+    cached = await redis_client.get(cache_key)
+    if cached:
+        data = json.loads(cached)
+        return User(**data)
 
     token_hash = hash_token(session_token)
     result = await db.execute(
@@ -34,6 +42,12 @@ async def _get_session_user(
     user = await db.get(User, session_obj.user_id)
     if user is None or not user.is_active:
         return None
+
+    await redis_client.set(
+        cache_key,
+        json.dumps({"id": str(user.id), "organization_id": str(user.organization_id), "email": user.email}),
+        ex=45,
+    )
 
     return user
 
