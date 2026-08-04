@@ -26,4 +26,4 @@ beautifulsoup4>=4.12.3
 openpyxl>=3.1.5
 markdown>=3.6
 python-multipart>=0.0.18
-fastapi-cache2[redis]>=0.3.0
+fastapi-cache2[redis]>=0.1.0
