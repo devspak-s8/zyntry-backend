@@ -1,0 +1,135 @@
+services:
+  redis:
+    ports:
+      - "127.0.0.1:6379:6379"
+    environment:
+      - REDIS_PASSWORD=
+
+  postgres:
+    ports:
+      - "127.0.0.1:5432:5432"
+    environment:
+      POSTGRES_USER: zyntra
+      POSTGRES_PASSWORD: zyntra
+      POSTGRES_DB: zyntra
+
+  api:
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      - APP_ENV=development
+      - APP_DEBUG=true
+      - DATABASE_URL=postgresql+asyncpg://zyntra:zyntra@postgres:5432/zyntra
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=zyntra
+      - POSTGRES_PASSWORD=zyntra
+      - POSTGRES_DB=zyntra
+      - SECRET_KEY=dev-secret-key-change-in-production
+      - JWT_SECRET=dev-jwt-secret-change-in-production
+      - ENCRYPTION_KEY=dev-encryption-key-change-in-production
+      - CORS_ORIGINS=http://localhost:3000,http://localhost:5173,http://localhost:8000
+      - FRONTEND_URL=http://localhost:3000
+      - LOG_LEVEL=DEBUG
+    volumes:
+      - .:/app
+      - uploads:/app/uploads
+      - logs:/app/logs
+      - runtime-artifacts:/app/runtime-artifacts
+    command: ["--reload"]
+
+  worker:
+    environment:
+      - APP_ENV=development
+      - APP_DEBUG=true
+      - DATABASE_URL=postgresql+asyncpg://zyntra:zyntra@postgres:5432/zyntra
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=zyntra
+      - POSTGRES_PASSWORD=zyntra
+      - POSTGRES_DB=zyntra
+      - LOG_LEVEL=DEBUG
+    volumes:
+      - .:/app
+      - logs:/app/logs
+      - runtime-artifacts:/app/runtime-artifacts
+      - embeddings:/app/embeddings
+
+  beat:
+    environment:
+      - APP_ENV=development
+      - APP_DEBUG=true
+      - DATABASE_URL=postgresql+asyncpg://zyntra:zyntra@postgres:5432/zyntra
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=zyntra
+      - POSTGRES_PASSWORD=zyntra
+      - POSTGRES_DB=zyntra
+      - LOG_LEVEL=DEBUG
+    volumes:
+      - .:/app
+      - beat-data:/var/run/celery
+      - logs:/app/logs
+    command: celery -A app.workers.celery_app beat --loglevel=debug
+
+  runtime-assistant:
+    environment:
+      - APP_ENV=development
+      - APP_DEBUG=true
+      - DATABASE_URL=postgresql+asyncpg://zyntra:zyntra@postgres:5432/zyntra
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=zyntra
+      - POSTGRES_PASSWORD=zyntra
+      - POSTGRES_DB=zyntra
+      - LOG_LEVEL=DEBUG
+    volumes:
+      - .:/app
+      - runtime-artifacts:/app/runtime-artifacts
+      - logs:/app/logs
+      - embeddings:/app/embeddings
+
+  realtime:
+    environment:
+      - APP_ENV=development
+      - APP_DEBUG=true
+      - DATABASE_URL=postgresql+asyncpg://zyntra:zyntra@postgres:5432/zyntra
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=zyntra
+      - POSTGRES_PASSWORD=zyntra
+      - POSTGRES_DB=zyntra
+      - LOG_LEVEL=DEBUG
+    volumes:
+      - .:/app
+      - logs:/app/logs
+
+  caddy:
+    ports:
+      - "80:80"
+      - "443:443"
