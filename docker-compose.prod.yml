@@ -1,13 +1,5 @@
 services:
   api:
-    deploy:
-      resources:
-        limits:
-          cpus: '4'
-          memory: 4G
-        reservations:
-          cpus: '1'
-          memory: 1G
     environment:
       - APP_ENV=production
       - APP_DEBUG=false
@@ -22,14 +14,6 @@ services:
       - /tmp:noexec,nosuid,size=512m
 
   worker:
-    deploy:
-      resources:
-        limits:
-          cpus: '4'
-          memory: 4G
-        reservations:
-          cpus: '1'
-          memory: 1G
     environment:
       - APP_ENV=production
       - APP_DEBUG=false
@@ -44,14 +28,6 @@ services:
       - /tmp:noexec,nosuid,size=512m
 
   beat:
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 512M
-        reservations:
-          cpus: '0.25'
-          memory: 256M
     environment:
       - APP_ENV=production
       - APP_DEBUG=false
@@ -66,14 +42,6 @@ services:
       - /tmp:noexec,nosuid,size=256m
 
   runtime-assistant:
-    deploy:
-      resources:
-        limits:
-          cpus: '2'
-          memory: 2G
-        reservations:
-          cpus: '0.5'
-          memory: 512M
     environment:
       - APP_ENV=production
       - APP_DEBUG=false
@@ -88,14 +56,6 @@ services:
       - /tmp:noexec,nosuid,size=256m
 
   realtime:
-    deploy:
-      resources:
-        limits:
-          cpus: '2'
-          memory: 2G
-        reservations:
-          cpus: '0.5'
-          memory: 512M
     environment:
       - APP_ENV=production
       - APP_DEBUG=false
@@ -110,14 +70,6 @@ services:
       - /tmp:noexec,nosuid,size=256m
 
   redis:
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 1G
-        reservations:
-          cpus: '0.25'
-          memory: 256M
     logging:
       driver: "json-file"
       options:
@@ -126,14 +78,6 @@ services:
         tag: "zyntry-redis"
 
   postgres:
-    deploy:
-      resources:
-        limits:
-          cpus: '2'
-          memory: 4G
-        reservations:
-          cpus: '0.5'
-          memory: 1G
     logging:
       driver: "json-file"
       options:
@@ -142,14 +86,6 @@ services:
         tag: "zyntry-postgres"
 
   caddy:
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 256M
-        reservations:
-          cpus: '0.1'
-          memory: 128M
     logging:
       driver: "json-file"
       options:
