@@ -78,7 +78,7 @@ async def create_project(
     if org_id is None:
         raise HTTPException(status_code=400, detail="organization_id is required")
     if org_id != current_user.organization_id:
-        org_id = current_user.organization_id
+        raise HTTPException(status_code=403, detail="Cannot create project in another organization")
 
     org = await db.get(Organization, org_id)
     if org is None:
