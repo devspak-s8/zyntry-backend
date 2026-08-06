@@ -34,6 +34,7 @@ def _to_read(p: Project) -> ProjectRead:
         settings=p.settings or {},
         status=p.status or "ready",
         connected_providers=[pr.name for pr in p.providers] if p.providers else [],
+        hasBuiltRuntime=p.has_built_runtime,
     )
 
 
@@ -122,6 +123,7 @@ async def create_project(
         settings=proj.settings or {},
         status=proj.status or "ready",
         connected_providers=[],
+        hasBuiltRuntime=proj.has_built_runtime,
     )
 
 

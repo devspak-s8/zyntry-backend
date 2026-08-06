@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 
 class ORMModel(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
     @model_serializer(mode="wrap")
     def _serialize_model(self, handler):

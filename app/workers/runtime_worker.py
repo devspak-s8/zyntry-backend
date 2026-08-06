@@ -99,6 +99,9 @@ class RuntimeWorker:
                 self._runtime.status = "active"
                 self._runtime.health = 100.0
                 await uow.runtimes.update(self._runtime, status="active", health=100.0)
+                project = await uow.projects.get(self._runtime.project_id)
+                if project:
+                    await uow.projects.update(project, has_built_runtime=True)
                 await uow.session.commit()
                 from app.main import manager
                 await manager.broadcast({"type": "RuntimeReady", "runtime_id": str(self._runtime.id)})

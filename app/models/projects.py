@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import ForeignKey, String, Text, JSON, UniqueConstraint, Index
+from sqlalchemy import JSON, Boolean, ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
+from app.models.model_providers import ModelProvider
 from app.models.organizations import TimestampMixin, UUIDMixin
 
 
@@ -20,8 +21,9 @@ class Project(Base, UUIDMixin, TimestampMixin):
     )
     settings: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(32), default="ready")
+    has_built_runtime: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
-    providers: Mapped[list["ModelProvider"]] = relationship(
+    providers: Mapped[list[ModelProvider]] = relationship(
         back_populates="project", lazy="selectin", cascade="all, delete-orphan"
     )
 
