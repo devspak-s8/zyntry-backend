@@ -544,7 +544,6 @@ class RAGPipeline:
             "deepseek": settings.DEEPSEEK_API_KEY,
             "openrouter": settings.OPENROUTER_API_KEY,
             "groq": settings.GROQ_API_KEY,
-            "mistral": settings.MISTRAL_API_KEY,
             "azure_openai": settings.AZURE_OPENAI_KEY,
         }
         return mapping.get(provider_name.lower())
