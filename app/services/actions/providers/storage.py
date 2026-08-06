@@ -11,8 +11,6 @@ class BoxActionProvider(BaseActionProvider):
 
     def __init__(self, credentials: dict[str, Any] | None = None) -> None:
         self._token = (credentials or {}).get("access_token")
-        if not self._token:
-            raise ValueError("Box access token is required")
 
     def list_actions(self) -> list[ActionDefinition]:
         return [
@@ -28,6 +26,8 @@ class BoxActionProvider(BaseActionProvider):
         return True
 
     async def execute(self, action: str, arguments: dict[str, Any], context: dict[str, Any]) -> ActionResponse:
+        if not self._token:
+            return ActionResponse(success=False, error="No access token provided. Please connect your account via OAuth.")
         return ActionResponse(success=False, error="Box actions not yet implemented")
 
 
@@ -37,8 +37,6 @@ class OneDriveActionProvider(BaseActionProvider):
     def __init__(self, credentials: dict[str, Any] | None = None) -> None:
         self._token = (credentials or {}).get("access_token")
         self._base_url = "https://graph.microsoft.com/v1.0"
-        if not self._token:
-            raise ValueError("OneDrive access token is required")
 
     def list_actions(self) -> list[ActionDefinition]:
         return [
@@ -54,4 +52,6 @@ class OneDriveActionProvider(BaseActionProvider):
         return True
 
     async def execute(self, action: str, arguments: dict[str, Any], context: dict[str, Any]) -> ActionResponse:
+        if not self._token:
+            return ActionResponse(success=False, error="No access token provided. Please connect your account via OAuth.")
         return ActionResponse(success=False, error="OneDrive actions not yet implemented")

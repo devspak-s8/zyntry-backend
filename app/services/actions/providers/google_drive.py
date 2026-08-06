@@ -12,8 +12,6 @@ class GoogleDriveActionProvider(BaseActionProvider):
     def __init__(self, credentials: dict[str, Any] | None = None) -> None:
         self._token = (credentials or {}).get("access_token")
         self._base_url = "https://www.googleapis.com/drive/v3"
-        if not self._token:
-            raise ValueError("Google Drive access token is required")
 
     def list_actions(self) -> list[ActionDefinition]:
         return [
@@ -34,4 +32,6 @@ class GoogleDriveActionProvider(BaseActionProvider):
         return all(p in arguments for p in params)
 
     async def execute(self, action: str, arguments: dict[str, Any], context: dict[str, Any]) -> ActionResponse:
+        if not self._token:
+            return ActionResponse(success=False, error="No access token provided. Please connect your account via OAuth.")
         return ActionResponse(success=False, error="Google Drive actions not yet implemented")

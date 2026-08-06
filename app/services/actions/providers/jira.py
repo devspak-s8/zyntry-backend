@@ -12,8 +12,6 @@ class JiraActionProvider(BaseActionProvider):
     def __init__(self, credentials: dict[str, Any] | None = None) -> None:
         self._token = (credentials or {}).get("token")
         self._base_url = (credentials or {}).get("base_url", "https://api.atlassian.com")
-        if not self._token:
-            raise ValueError("Jira token is required")
 
     def list_actions(self) -> list[ActionDefinition]:
         return [
@@ -33,4 +31,6 @@ class JiraActionProvider(BaseActionProvider):
         return all(p in arguments for p in params)
 
     async def execute(self, action: str, arguments: dict[str, Any], context: dict[str, Any]) -> ActionResponse:
+        if not self._token:
+            return ActionResponse(success=False, error="No access token provided. Please connect your account via OAuth.")
         return ActionResponse(success=False, error="Jira actions not yet implemented")

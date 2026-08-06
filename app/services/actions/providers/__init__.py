@@ -25,4 +25,4 @@ providers = [
 ]
 
 for provider_cls in providers:
-    ActionRegistry.register(provider_cls())
+    ActionRegistry.register(provider_cls)

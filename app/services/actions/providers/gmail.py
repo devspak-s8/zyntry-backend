@@ -14,8 +14,6 @@ class GmailActionProvider(BaseActionProvider):
     def __init__(self, credentials: dict[str, Any] | None = None) -> None:
         self._token = (credentials or {}).get("access_token")
         self._base_url = "https://gmail.googleapis.com"
-        if not self._token:
-            raise ValueError("Gmail access token is required")
 
     def list_actions(self) -> list[ActionDefinition]:
         return [
@@ -38,6 +36,8 @@ class GmailActionProvider(BaseActionProvider):
         return all(p in arguments for p in params)
 
     async def execute(self, action: str, arguments: dict[str, Any], context: dict[str, Any]) -> ActionResponse:
+        if not self._token:
+            return ActionResponse(success=False, error="No access token provided. Please connect your account via OAuth.")
         try:
             headers = {"Authorization": f"Bearer {self._token}"}
             async with httpx.AsyncClient(timeout=30) as client:

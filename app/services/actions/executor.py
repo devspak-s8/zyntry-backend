@@ -47,6 +47,7 @@ class ActionExecutor:
                 body.action,
                 body.arguments,
                 {"user_id": str(user_id), "project_id": str(project_id)},
+                uow=self.uow,
             )
             execution.status = ActionStatus.SUCCEEDED
             execution.result = result
@@ -127,6 +128,7 @@ class ActionExecutor:
                     step.action,
                     step.arguments,
                     context,
+                    uow=self.uow,
                 )
                 context[step.action] = result
                 now_ts = datetime.now(UTC).isoformat()

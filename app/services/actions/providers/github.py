@@ -14,8 +14,6 @@ class GitHubActionProvider(BaseActionProvider):
     def __init__(self, credentials: dict[str, Any] | None = None) -> None:
         self._token = (credentials or {}).get("token")
         self._base_url = "https://api.github.com"
-        if not self._token:
-            raise ValueError("GitHub token is required")
 
     def list_actions(self) -> list[ActionDefinition]:
         return [
@@ -45,6 +43,8 @@ class GitHubActionProvider(BaseActionProvider):
         return all(p in arguments for p in params)
 
     async def execute(self, action: str, arguments: dict[str, Any], context: dict[str, Any]) -> ActionResponse:
+        if not self._token:
+            return ActionResponse(success=False, error="No access token provided. Please connect your account via OAuth.")
         try:
             headers = {"Authorization": f"Bearer {self._token}", "Accept": "application/vnd.github+json"}
             async with httpx.AsyncClient(timeout=30) as client:

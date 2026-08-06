@@ -12,8 +12,6 @@ class ConfluenceActionProvider(BaseActionProvider):
     def __init__(self, credentials: dict[str, Any] | None = None) -> None:
         self._token = (credentials or {}).get("token")
         self._base_url = (credentials or {}).get("base_url", "https://your-domain.atlassian.net")
-        if not self._token:
-            raise ValueError("Confluence token is required")
 
     def list_actions(self) -> list[ActionDefinition]:
         return [
@@ -28,4 +26,6 @@ class ConfluenceActionProvider(BaseActionProvider):
         return True
 
     async def execute(self, action: str, arguments: dict[str, Any], context: dict[str, Any]) -> ActionResponse:
+        if not self._token:
+            return ActionResponse(success=False, error="No access token provided. Please connect your account via OAuth.")
         return ActionResponse(success=False, error="Confluence actions not yet implemented")
