@@ -77,9 +77,9 @@ class AppSettings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     SENTRY_DSN: str = ""
 
-    # Email (SendLib)
-    SENDLIB_API_KEY: str = ""
-    SENDLIB_API_URL: str = "https://sendlib.samueltuoyo.com"
+    # Email (SendByte)
+    SENDBYTE_KEY: str = ""
+    SENDBYTE_API_URL: str = "https://api.sendbyte.africa"
 
     # OAuth
     GITHUB_CLIENT_ID: str = ""

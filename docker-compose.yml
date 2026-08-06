@@ -83,6 +83,8 @@ services:
       - SMTP_USERNAME=${SMTP_USERNAME}
       - SMTP_PASSWORD=${SMTP_PASSWORD}
       - SMTP_FROM=${SMTP_FROM}
+      - SENDBYTE_KEY=${SENDBYTE_KEY}
+      - SENDBYTE_API_URL=${SENDBYTE_API_URL}
       - CORS_ORIGINS=${CORS_ORIGINS}
       - FRONTEND_URL=${FRONTEND_URL}
       - LOG_LEVEL=${LOG_LEVEL}
@@ -145,6 +147,8 @@ services:
       - S3_REGION=${S3_REGION}
       - LOG_LEVEL=${LOG_LEVEL}
       - SENTRY_DSN=${SENTRY_DSN}
+      - SENDBYTE_KEY=${SENDBYTE_KEY}
+      - SENDBYTE_API_URL=${SENDBYTE_API_URL}
     volumes:
       - logs:/app/logs
       - runtime-artifacts:/app/runtime-artifacts
@@ -187,6 +191,8 @@ services:
       - APP_ENV=${APP_ENV:-production}
       - APP_DEBUG=${APP_DEBUG:-false}
       - LOG_LEVEL=${LOG_LEVEL}
+      - SENDBYTE_KEY=${SENDBYTE_KEY}
+      - SENDBYTE_API_URL=${SENDBYTE_API_URL}
     volumes:
       - beat-data:/var/run/celery
       - logs:/app/logs
@@ -237,6 +243,8 @@ services:
       - S3_REGION=${S3_REGION}
       - LOG_LEVEL=${LOG_LEVEL}
       - SENTRY_DSN=${SENTRY_DSN}
+      - SENDBYTE_KEY=${SENDBYTE_KEY}
+      - SENDBYTE_API_URL=${SENDBYTE_API_URL}
     volumes:
       - runtime-artifacts:/app/runtime-artifacts
       - logs:/app/logs
@@ -280,6 +288,8 @@ services:
       - APP_DEBUG=${APP_DEBUG:-false}
       - LOG_LEVEL=${LOG_LEVEL}
       - SENTRY_DSN=${SENTRY_DSN}
+      - SENDBYTE_KEY=${SENDBYTE_KEY}
+      - SENDBYTE_API_URL=${SENDBYTE_API_URL}
     volumes:
       - logs:/app/logs
     networks:

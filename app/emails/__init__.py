@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.config import settings
-from app.services.sendlib import SendLibError, get_sendlib_client
+from app.services.sendbyte import SendByteError, get_sendbyte_client
 import logging
 
 logger = logging.getLogger(__name__)
@@ -667,7 +667,10 @@ async def send_email(template_name: str, to: str | list[str], **kwargs: Any) -> 
         raise ValueError(f"Unknown email template: {template_name}")
     html, text = EMAIL_TEMPLATES[template_name](**kwargs)
     subject = template_name.replace("_", " ").title().replace("Email", "email").replace("Mfa", "MFA")
-    client = get_sendlib_client()
+    if not settings.SENDBYTE_KEY:
+        logger.warning("SENDBYTE_KEY is not configured; skipping email for template %s to %s", template_name, to)
+        return {"success": False, "template": template_name, "to": to, "error": "email_not_configured"}
+    client = get_sendbyte_client()
     try:
         result = await client.send(
             to=to,
@@ -677,8 +680,8 @@ async def send_email(template_name: str, to: str | list[str], **kwargs: Any) -> 
             from_email="hello@zyntry.ai",
         )
         return {"success": True, "template": template_name, "to": to, "data": result}
-    except SendLibError as e:
-        logger.error("SendLib email failed for template %s", template_name, extra={"to": to, "error": str(e)})
+    except SendByteError as e:
+        logger.error("SendByte email failed for template %s", template_name, extra={"to": to, "error": str(e)})
         return {"success": False, "template": template_name, "to": to, "error": str(e)}
 
 

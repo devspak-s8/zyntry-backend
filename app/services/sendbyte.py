@@ -10,14 +10,14 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 
-class SendLibError(Exception):
+class SendByteError(Exception):
     pass
 
 
-class SendLibClient:
-    def __init__(self, api_key: str, base_url: str = "https://sendlib.samueltuoyo.com") -> None:
+class SendByteClient:
+    def __init__(self, api_key: str, base_url: str = "https://api.sendbyte.africa") -> None:
         if not api_key:
-            raise SendLibError("SendLib API key is required")
+            raise SendByteError("SendByte API key is required")
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
 
@@ -55,7 +55,7 @@ class SendLibClient:
 
         async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.post(
-                f"{self._base_url}/api/send",
+                f"{self._base_url}/v1/emails",
                 json=payload,
                 headers={
                     "Authorization": f"Bearer {self._api_key}",
@@ -69,17 +69,17 @@ class SendLibClient:
             data = {"raw": response.text}
 
         if response.status_code >= 400:
-            logger.error("SendLib error %s: %s", response.status_code, data)
-            raise SendLibError(f"SendLib failed with {response.status_code}: {data}")
+            logger.error("SendByte error %s: %s", response.status_code, data)
+            raise SendByteError(f"SendByte failed with {response.status_code}: {data}")
 
         return data
 
 
-_sendlib_client: SendLibClient | None = None
+_sendbyte_client: SendByteClient | None = None
 
 
-def get_sendlib_client() -> SendLibClient:
-    global _sendlib_client
-    if _sendlib_client is None:
-        _sendlib_client = SendLibClient(api_key=settings.SENDLIB_API_KEY)
-    return _sendlib_client
+def get_sendbyte_client() -> SendByteClient:
+    global _sendbyte_client
+    if _sendbyte_client is None:
+        _sendbyte_client = SendByteClient(api_key=settings.SENDBYTE_KEY)
+    return _sendbyte_client

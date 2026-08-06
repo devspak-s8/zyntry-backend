@@ -4,7 +4,7 @@ import logging
 from typing import Any
 
 from app.core.config import settings
-from app.services.sendlib import SendLibError, get_sendlib_client
+from app.services.sendbyte import SendByteError, get_sendbyte_client
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +88,10 @@ def build_verification_email_text(  # noqa: E501
 
 
 async def send_verification_email(email: str, user_name: str | None, token: str) -> dict[str, Any]:
-    client = get_sendlib_client()
+    if not settings.SENDBYTE_KEY:
+        logger.warning("SENDBYTE_KEY is not configured; skipping verification email to %s", email)
+        return {"success": False, "error": "email_not_configured"}
+    client = get_sendbyte_client()
     app_url = settings.APP_URL
     html = build_verification_email_html(token, user_name, app_url)
     text = build_verification_email_text(token, app_url)
@@ -101,6 +104,6 @@ async def send_verification_email(email: str, user_name: str | None, token: str)
             from_email="noreply@zyntra.ai",
         )
         return {"success": True, "data": result}
-    except SendLibError as e:
+    except SendByteError as e:
         logger.error("Failed to send verification email to %s: %s", email, e)
         return {"success": False, "error": str(e)}

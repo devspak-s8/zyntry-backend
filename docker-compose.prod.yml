@@ -3,6 +3,8 @@ services:
     environment:
       - APP_ENV=production
       - APP_DEBUG=false
+      - SENDBYTE_KEY=${SENDBYTE_KEY}
+      - SENDBYTE_API_URL=${SENDBYTE_API_URL}
     logging:
       driver: "json-file"
       options:
@@ -17,6 +19,8 @@ services:
     environment:
       - APP_ENV=production
       - APP_DEBUG=false
+      - SENDBYTE_KEY=${SENDBYTE_KEY}
+      - SENDBYTE_API_URL=${SENDBYTE_API_URL}
     logging:
       driver: "json-file"
       options:
@@ -31,6 +35,8 @@ services:
     environment:
       - APP_ENV=production
       - APP_DEBUG=false
+      - SENDBYTE_KEY=${SENDBYTE_KEY}
+      - SENDBYTE_API_URL=${SENDBYTE_API_URL}
     logging:
       driver: "json-file"
       options:
@@ -45,6 +51,8 @@ services:
     environment:
       - APP_ENV=production
       - APP_DEBUG=false
+      - SENDBYTE_KEY=${SENDBYTE_KEY}
+      - SENDBYTE_API_URL=${SENDBYTE_API_URL}
     logging:
       driver: "json-file"
       options:
@@ -59,6 +67,8 @@ services:
     environment:
       - APP_ENV=production
       - APP_DEBUG=false
+      - SENDBYTE_KEY=${SENDBYTE_KEY}
+      - SENDBYTE_API_URL=${SENDBYTE_API_URL}
     logging:
       driver: "json-file"
       options:
