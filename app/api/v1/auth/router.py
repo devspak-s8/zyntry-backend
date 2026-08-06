@@ -150,6 +150,7 @@ async def register(
         name=user.name,
         organization_id=user.organization_id,
         is_active=user.is_active,
+        email_verified=user.email_verified,
     )
 
 
@@ -178,6 +179,7 @@ async def login(
         name=user.name,
         organization_id=user.organization_id,
         is_active=user.is_active,
+        email_verified=user.email_verified,
     )
 
 
@@ -267,6 +269,7 @@ async def refresh(
         name=user.name,
         organization_id=user.organization_id,
         is_active=user.is_active,
+        email_verified=user.email_verified,
     )
 
 
@@ -300,6 +303,7 @@ async def me(
         name=user.name,
         organization_id=user.organization_id,
         is_active=user.is_active,
+        email_verified=user.email_verified,
     )
 
 

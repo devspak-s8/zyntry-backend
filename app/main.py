@@ -96,7 +96,15 @@ def create_app() -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origin_regex=r"https?://(localhost|zyntry\.space|.*\.zyntry\.space|.*\.railway\.app|.*\.railway\.internal)(:\d+)?",
+        allow_origins=[
+            "http://localhost:3000",
+            "http://localhost:3001",
+            "http://localhost:5173",
+            "http://localhost:8000",
+            "https://zyntry.space",
+            "https://www.zyntry.space",
+            "https://app.zyntry.ai",
+        ],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
