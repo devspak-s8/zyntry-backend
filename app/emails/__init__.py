@@ -19,7 +19,7 @@ body { margin: 0; padding: 0; background-color: #f8fafc; font-family: -apple-sys
 
 _BASE_BG = "#f8fafc"
 _CARD_BG = "#ffffff"
-_GRADIENT = "linear-gradient(135deg,#7c3aed,#6366f1)"
+_ACCENT_BG = "#7c3aed"
 _TEXT_PRIMARY = "#334155"
 _TEXT_SECONDARY = "#64748b"
 _BORDER = "#e2e8f0"
@@ -55,7 +55,7 @@ def build_email(name: str, title: str, subtitle: str, body_html: str, cta_text: 
       <td align="center" style="padding:40px 20px;">
         <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background-color:{_CARD_BG};border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08);">
           <tr>
-            <td style="background:{_GRADIENT};padding:32px 32px 28px;text-align:center;">
+            <td style="background:{_ACCENT_BG};padding:32px 32px 28px;text-align:center;">
               {icon}
               <h1 style="color:#ffffff;margin:0 0 8px;font-size:22px;font-weight:700;letter-spacing:-0.3px;">{title}</h1>
               <p style="color:rgba(255,255,255,0.85);margin:0;font-size:14px;line-height:1.5;">{subtitle}</p>

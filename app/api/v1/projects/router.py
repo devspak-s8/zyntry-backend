@@ -84,6 +84,15 @@ async def create_project(
     if org is None:
         raise HTTPException(status_code=404, detail="Organization not found")
 
+    existing = await db.execute(
+        select(Project).where(
+            Project.organization_id == org_id,
+            Project.name == body.name,
+        )
+    )
+    if existing.scalar_one_or_none() is not None:
+        raise HTTPException(status_code=409, detail="Project with this name already exists")
+
     uow = UnitOfWork(db)
     try:
         proj = await uow.projects.create(

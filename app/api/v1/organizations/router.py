@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -47,6 +48,11 @@ async def create_organization(
 ) -> OrganizationRead:
     if current_user.organization_id is not None:
         raise HTTPException(status_code=409, detail="User already belongs to an organization")
+
+    existing = await db.execute(select(Organization).where(Organization.name == body.name))
+    if existing.scalar_one_or_none() is not None:
+        raise HTTPException(status_code=409, detail="Organization with this name already exists")
+
     uow = UnitOfWork(db)
     try:
         org = await uow.organizations.create(

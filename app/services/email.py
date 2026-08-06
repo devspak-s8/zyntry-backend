@@ -26,7 +26,7 @@ def build_verification_email_html(
       <td align="center" style="padding:40px 20px;">
         <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background-color:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08);">
           <tr>
-            <td style="background:linear-gradient(135deg,#7c3aed,#6366f1);padding:32px 32px 28px;text-align:center;">
+            <td style="background:#7c3aed;padding:32px 32px 28px;text-align:center;">
               <div style="width:48px;height:48px;background:#ffffff;border-radius:12px;display:inline-flex;align-items:center;justify-content:center;margin-bottom:16px;">
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
               </div>
