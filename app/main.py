@@ -21,6 +21,7 @@ from app.middleware.csrf import CSRFMiddleware
 from app.models.sessions import Session
 from app.models.users import User
 from app.models.actions import ActionExecution, ActionConfirmation, ActionAuditLog
+from app.models.oauth import OAuthProvider, OAuthConnection, OAuthState
 
 
 def _parse_cors_origins(value: str) -> list[str]:

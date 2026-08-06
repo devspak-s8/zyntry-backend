@@ -12,7 +12,15 @@ class ConfirmationService:
     def __init__(self, uow: UnitOfWork) -> None:
         self.uow = uow
 
-    async def request(self, user_id: uuid.UUID, project_id: uuid.UUID, provider: str, action: str, arguments: dict[str, Any], risk: str) -> ActionConfirmation:
+    async def request(
+        self,
+        user_id: uuid.UUID,
+        project_id: uuid.UUID,
+        provider: str,
+        action: str,
+        arguments: dict[str, Any],
+        risk: str,
+    ) -> ActionConfirmation:
         confirmation = ActionConfirmation(
             user_id=user_id,
             project_id=project_id,
@@ -24,7 +32,7 @@ class ConfirmationService:
             expires_at=datetime.now(UTC),
             created_at=datetime.now(UTC),
         )
-        self.uow.action_confirmations.create(
+        await self.uow.action_confirmations.create(
             user_id=user_id,
             project_id=project_id,
             provider=provider,

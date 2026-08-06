@@ -18,6 +18,7 @@ from app.api.v1.memory.router import router as memory_router
 from app.api.v1.models.router import router as models_router
 from app.api.v1.notifications.router import router as notifications_router
 from app.api.v1.actions.router import router as actions_router
+from app.api.v1.oauth.router import router as oauth_router
 from app.api.v1.onboarding.router import router as onboarding_router
 from app.api.v1.runtime_assistant.router import router as runtime_assistant_router
 from app.api.v1.organizations.router import router as organizations_router
@@ -52,7 +53,8 @@ api_router.include_router(apikeys_router)
 api_router.include_router(admin_router)
 api_router.include_router(webhooks_router)
 api_router.include_router(events_router)
-    api_router.include_router(logs_router)
-    api_router.include_router(notifications_router)
-    api_router.include_router(runtime_assistant_router)
-    api_router.include_router(actions_router)
+api_router.include_router(logs_router)
+api_router.include_router(notifications_router)
+api_router.include_router(runtime_assistant_router)
+api_router.include_router(actions_router)
+api_router.include_router(oauth_router)

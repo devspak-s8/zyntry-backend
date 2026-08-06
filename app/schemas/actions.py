@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel
 
 
@@ -17,6 +19,20 @@ class ActionRequest(BaseModel):
     action: str
     arguments: dict[str, Any] = {}
     confirm: bool = False
+
+
+class WorkflowStep(BaseModel):
+    provider: str
+    action: str
+    arguments: dict[str, Any] = {}
+    depends_on: str | None = None
+    condition: str | None = None
+
+
+class WorkflowRequest(BaseModel):
+    project_id: str
+    steps: list[WorkflowStep]
+    context: dict[str, Any] = {}
 
 
 class ActionResponse(BaseModel):

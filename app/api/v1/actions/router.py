@@ -6,6 +6,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.responses import StreamingResponse
 
 from app.api.v1.dependencies import get_current_user
 from app.core.database import get_session
@@ -16,9 +17,11 @@ from app.schemas.actions import (
     ActionExecutionRead,
     ActionRequest,
     ActionResponse,
+    WorkflowRequest,
 )
 from app.services.actions.confirmations import ConfirmationService
 from app.services.actions.executor import ActionExecutor
+from app.services.actions.guardrails import GuardrailService
 
 router = APIRouter(prefix="/actions", tags=["actions"])
 
@@ -41,19 +44,26 @@ async def execute_action(
     uow = UnitOfWork(db)
     executor = ActionExecutor(uow)
 
+    valid, error = GuardrailService.validate_action_arguments(
+        body.provider, body.action, body.arguments
+    )
+    if not valid:
+        raise HTTPException(status_code=400, detail=error)
+
     risk_actions = {"delete", "remove", "archive", "merge", "close", "cancel", "expire", "revoke"}
     requires_confirmation = any(risk in body.action.lower() for risk in risk_actions)
 
     if requires_confirmation and not body.confirm:
         confirmation_service = ConfirmationService(uow)
         project_id = current_user.organization_id or uuid.uuid4()
+        high_risk = any(d in body.action.lower() for d in ["delete", "remove", "archive"])
         confirmation = await confirmation_service.request(
             user_id=current_user.id,
             project_id=project_id,
             provider=body.provider,
             action=body.action,
             arguments=body.arguments,
-            risk="high" if any(d in body.action.lower() for d in ["delete", "remove", "archive"]) else "medium",
+            risk="high" if high_risk else "medium",
         )
         return ActionResponse(
             success=False,
@@ -63,23 +73,30 @@ async def execute_action(
 
     project_id = current_user.organization_id or uuid.uuid4()
     response = await executor.execute(body, current_user.id, project_id)
-
-    if response.success:
-        from app.services.actions.audit import AuditService
-        audit = AuditService(uow)
-        await audit.log(
-            user_id=current_user.id,
-            project_id=project_id,
-            provider=body.provider,
-            action=body.action,
-            arguments=body.arguments,
-            result=response.result,
-            status="success",
-            duration_ms=0,
-            tokens_used=0,
-            cost=0.0,
-        )
     return response
+
+
+@router.post("/workflows/execute")
+async def execute_workflow(
+    body: WorkflowRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_session),
+) -> StreamingResponse:
+    uow = UnitOfWork(db)
+    executor = ActionExecutor(uow)
+
+    for step in body.steps:
+        valid, error = GuardrailService.validate_action_arguments(
+            step.provider, step.action, step.arguments
+        )
+        if not valid:
+            raise HTTPException(status_code=400, detail=error)
+
+    async def event_stream():
+        async for event in executor.execute_workflow(body, current_user.id):
+            yield f"data: {event}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @router.get("/executions", response_model=list[ActionExecutionRead])
@@ -88,7 +105,6 @@ async def list_executions(
     project_id: Annotated[str | None, None] = None,
     db: AsyncSession = Depends(get_session),
 ) -> list[ActionExecutionRead]:
-    uow = UnitOfWork(db)
     stmt = select(ActionExecution).where(ActionExecution.user_id == current_user.id)
     if project_id:
         stmt = stmt.where(ActionExecution.project_id == uuid.UUID(project_id))

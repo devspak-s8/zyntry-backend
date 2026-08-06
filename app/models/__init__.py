@@ -20,7 +20,8 @@ from app.models.request_logs import RequestLog
 from app.models.runtimes import Runtime, RuntimeBuildChunk, RuntimeBuildLog
 from app.models.sessions import Session
 from app.models.tools import Tool
-from app.models.users import User
+from app.models.actions import ActionExecution, ActionConfirmation, ActionAuditLog
+from app.models.oauth import OAuthProvider, OAuthConnection, OAuthState
 from app.models.webhook_subscriptions import WebhookSubscription
 from app.models.webhooks import WebhookEvent
 from app.models.workflows import Workflow
@@ -63,4 +64,10 @@ __all__ = [
     "RuntimeHealthCheck",
     "ProviderConnection",
     "OnboardingState",
+    "ActionExecution",
+    "ActionConfirmation",
+    "ActionAuditLog",
+    "OAuthProvider",
+    "OAuthConnection",
+    "OAuthState",
 ]
