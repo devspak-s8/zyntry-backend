@@ -52,9 +52,12 @@ class KnowledgeService:
         }
 
     async def upload_document(self, data: DocumentCreate) -> dict:
+        content = data.content
+        if isinstance(content, str):
+            content = content.replace("\x00", "")
         doc = await self.uow.documents.create(
             title=data.title,
-            content=data.content,
+            content=content,
             source=data.source,
             knowledge_base_id=data.knowledge_base_id,
         )
