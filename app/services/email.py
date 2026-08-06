@@ -101,7 +101,7 @@ async def send_verification_email(email: str, user_name: str | None, token: str)
             subject="Verify your Zyntra email address",
             html=html,
             text=text,
-            from_email="noreply@zyntra.ai",
+            from_email="noreply@zyntry.space",
         )
         return {"success": True, "data": result}
     except SendByteError as e:
