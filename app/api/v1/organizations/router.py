@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, status
-from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,8 +22,11 @@ async def list_organizations(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> list[OrganizationRead]:
-    result = await db.execute(select(Organization))
-    orgs = result.scalars().all()
+    if current_user.organization_id is None:
+        return []
+    org = await db.get(Organization, current_user.organization_id)
+    if org is None:
+        return []
     return [
         OrganizationRead(
             id=org.id,
@@ -33,7 +35,6 @@ async def list_organizations(
             region="us-central1",
             created_at=org.created_at,
         )
-        for org in orgs
     ]
 
 
@@ -44,6 +45,8 @@ async def create_organization(
     session_token: Annotated[str | None, Cookie(alias="zyntra_session")] = None,
     db: AsyncSession = Depends(get_session),
 ) -> OrganizationRead:
+    if current_user.organization_id is not None:
+        raise HTTPException(status_code=409, detail="User already belongs to an organization")
     uow = UnitOfWork(db)
     try:
         org = await uow.organizations.create(
