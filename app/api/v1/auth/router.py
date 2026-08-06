@@ -21,8 +21,10 @@ from app.core.security import (
     now,
     verify_password,
 )
+from app.emails import send_email
 from app.models.email_verification_tokens import EmailVerificationToken
 from app.models.organizations import Organization
+from app.models.password_reset_tokens import PasswordResetToken
 from app.models.refresh_tokens import RefreshToken
 from app.models.sessions import Session
 from app.models.users import User
@@ -316,7 +318,31 @@ async def me(
 
 
 @router.post("/forgot-password")
-async def forgot_password(email: Annotated[str, Body(embed=True)]) -> dict[str, str]:
+async def forgot_password(
+    email: Annotated[str, Body(embed=True)],
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, str]:
+    user = await _get_user_by_email(db, email)
+    if user is not None and user.email_verified:
+        token = generate_verification_token()
+        token_hash = hash_token(token)
+        expires_at = now() + timedelta(minutes=15)
+        reset_obj = PasswordResetToken(
+            user_id=user.id,
+            token_hash=token_hash,
+            expires_at=expires_at,
+        )
+        db.add(reset_obj)
+        await db.commit()
+        try:
+            await send_email(
+                "password_reset",
+                user.email,
+                user_name=user.name,
+                token=token,
+            )
+        except Exception:
+            logger.exception("Failed to send password reset email to %s", user.email)
     return {"message": "If an account exists with that email, a reset link has been sent."}
 
 
@@ -324,12 +350,29 @@ async def forgot_password(email: Annotated[str, Body(embed=True)]) -> dict[str, 
 async def reset_password(
     token: Annotated[str, Body(embed=True)],
     password: Annotated[str, Body(embed=True)],
+    db: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
     if len(password) < settings.PASSWORD_MIN_LENGTH:
         raise HTTPException(
             status_code=422,
             detail=f"Password must be at least {settings.PASSWORD_MIN_LENGTH} characters",
         )
+    token_hash = hash_token(token)
+    result = await db.execute(
+        select(PasswordResetToken).where(PasswordResetToken.token_hash == token_hash)
+    )
+    reset_obj = result.scalar_one_or_none()
+
+    if reset_obj is None or reset_obj.used or reset_obj.expires_at <= now():
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+
+    user = await db.get(User, reset_obj.user_id)
+    if user is None:
+        raise HTTPException(status_code=400, detail="Invalid reset token")
+
+    user.hashed_password = hash_password(password)
+    reset_obj.used = True
+    await db.commit()
     return {"message": "Password has been reset."}
 
 

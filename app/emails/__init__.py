@@ -677,7 +677,7 @@ async def send_email(template_name: str, to: str | list[str], **kwargs: Any) -> 
             subject=subject,
             html=html,
             text=text,
-            from_email="hello@zyntry.ai",
+            from_email="noreply@zyntry.space",
         )
         return {"success": True, "template": template_name, "to": to, "data": result}
     except SendByteError as e:
