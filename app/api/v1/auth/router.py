@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 from typing import Annotated
 
@@ -8,6 +9,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 from app.core.database import get_session
 from app.core.redis import redis_client
 from app.core.security import (
@@ -137,7 +140,12 @@ async def register(
     db.add(verification_obj)
     await db.commit()
 
-    await send_verification_email(email, name, token)
+    try:
+        result = await send_verification_email(email, name, token)
+        if not result.get("success"):
+            logger.warning("Verification email failed for %s: %s", email, result.get("error"))
+    except Exception:
+        logger.exception("Failed to send verification email to %s", email)
 
     await _create_session(db, response, user)
     refresh_token = await _create_refresh_token(db, user)
@@ -386,6 +394,11 @@ async def resend_verification(
         db.add(verification_obj)
 
     await db.commit()
-    await send_verification_email(email, user.name, token)
+    try:
+        result = await send_verification_email(email, user.name, token)
+        if not result.get("success"):
+            logger.warning("Verification email failed for %s: %s", email, result.get("error"))
+    except Exception:
+        logger.exception("Failed to send verification email to %s", email)
 
     return {"message": "If an account exists with that email, a verification link has been sent."}
