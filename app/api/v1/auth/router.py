@@ -378,6 +378,10 @@ async def reset_password(
     user.hashed_password = hash_password(password)
     reset_obj.used = True
     await db.commit()
+    try:
+        await send_email("password_changed", user.email, user_name=user.name)
+    except Exception:
+        logger.exception("Failed to send password changed email to %s", user.email)
     return {"message": "Password has been reset."}
 
 
@@ -402,6 +406,10 @@ async def verify_email(
     user.email_verified = True
     verification_obj.used = True
     await db.commit()
+    try:
+        await send_email("email_verified", user.email, user_name=user.name)
+    except Exception:
+        logger.exception("Failed to send email verified confirmation to %s", user.email)
     return {"message": "Email verified successfully"}
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Annotated
 
@@ -9,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.dependencies import get_current_user
 from app.core.database import get_session
 from app.core.ws_events import emit_provider_updated
+from app.emails import send_email
 from app.models.users import User
 from app.repositories import UnitOfWork
 from app.schemas.providers import (
@@ -18,6 +20,8 @@ from app.schemas.providers import (
 )
 from app.services.model_discovery import get_model_discovery
 from app.services.providers import ProviderService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/providers", tags=["providers"])
 
@@ -186,6 +190,11 @@ async def connect_provider(
         created_at=result.get("created_at") or "",
         updated_at=result.get("updated_at") or "",
     )
+    if not result.get("requires_oauth"):
+        try:
+            await send_email(f"{body.provider_name}_connected", current_user.email, name=body.display_name or body.provider_name)
+        except Exception:
+            logger.exception("Failed to send provider connected email")
     await emit_provider_updated(
         str(current_user.id),
         body.project_id or "",
@@ -243,5 +252,10 @@ async def disconnect_provider(
     if connection:
         project_id = str(connection.project_id) if connection.project_id else ""
         provider_name = connection.provider_name
+        display_name = connection.display_name or provider_name
         await ProviderService(uow).disconnect(connection_id)
         await emit_provider_updated(str(current_user.id), project_id, provider_name, False)
+        try:
+            await send_email(f"{provider_name}_disconnected", current_user.email, name=display_name)
+        except Exception:
+            logger.exception("Failed to send provider disconnected email")

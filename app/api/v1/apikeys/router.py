@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -8,10 +9,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.dependencies import get_current_user
 from app.core.database import get_session
 from app.core.security import generate_api_key, hash_token
+from app.emails import send_email
 from app.models.apikeys import ApiKey
 from app.models.projects import Project
 from app.models.users import User
 from app.repositories import UnitOfWork
+
+logger = logging.getLogger(__name__)
 from app.schemas.apikeys import (
     ApiKeyCreate,
     ApiKeyCreateResponse,
@@ -114,6 +118,11 @@ async def create_api_key(
         await uow.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to create API key: {exc}")
 
+    try:
+        await send_email("api_key_created", current_user.email, key_name=body.name)
+    except Exception:
+        logger.exception("Failed to send API key created email")
+
     return ApiKeyCreateResponse(
         id=key.id,
         name=key.name,
@@ -141,6 +150,11 @@ async def rotate_api_key(
         result = await service.rotate_key(key_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+    try:
+        await send_email("api_key_rotated", current_user.email, key_name=result.get("name", "API Key"))
+    except Exception:
+        logger.exception("Failed to send API key rotated email")
 
     return ApiKeyRotateResponse(
         api_key=result["api_key"],
@@ -197,9 +211,14 @@ async def revoke_api_key(
 ) -> None:
     service = ApiKeyService(db)
     try:
-        await service.revoke_key(key_id)
+        key = await service.revoke_key(key_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+    try:
+        await send_email("api_key_revoked", current_user.email, key_name=key.get("name", "API Key"))
+    except Exception:
+        logger.exception("Failed to send API key revoked email")
 
 
 @router.delete("/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
