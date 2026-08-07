@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.services.actions.providers.box import BoxActionProvider, OneDriveActionProvider
+from app.services.actions.providers.storage import BoxActionProvider, OneDriveActionProvider
 from app.services.actions.providers.confluence import ConfluenceActionProvider
 from app.services.actions.providers.github import GitHubActionProvider
 from app.services.actions.providers.gitlab import GitLabActionProvider

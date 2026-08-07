@@ -5,7 +5,7 @@ from typing import Any
 import httpx
 
 from app.schemas.actions import ActionDefinition, ActionResponse
-from app.services.actions.base import BaseActionProvider
+from app.services.actions.base import BaseActionProvider, get_http_client
 
 
 class NotionActionProvider(BaseActionProvider):
@@ -39,44 +39,44 @@ class NotionActionProvider(BaseActionProvider):
             return ActionResponse(success=False, error="No access token provided. Please connect your account via OAuth.")
         try:
             headers = {"Authorization": f"Bearer {self._token}", "Notion-Version": "2022-06-28", "Content-Type": "application/json"}
-            async with httpx.AsyncClient(timeout=30) as client:
-                if action == "search":
-                    resp = await client.post(f"{self._base_url}/search", headers=headers, json={"query": arguments.get("query", ""), "filter": arguments.get("filter")})
-                    return ActionResponse(success=True, result=resp.json())
-                elif action == "get_page":
-                    resp = await client.get(f"{self._base_url}/pages/{arguments['page_id']}", headers=headers)
-                    return ActionResponse(success=True, result=resp.json())
-                elif action == "create_page":
-                    payload = {"parent": arguments["parent"], "properties": {"title": {"title": [{"text": {"content": arguments["title"]}}]}}, "children": arguments.get("children", [])}
-                    resp = await client.post(f"{self._base_url}/pages", headers=headers, json=payload)
-                    return ActionResponse(success=True, result=resp.json())
-                elif action == "update_page":
-                    payload = {"properties": arguments.get("properties", {}), "archived": arguments.get("archived", False)}
-                    resp = await client.patch(f"{self._base_url}/pages/{arguments['page_id']}", headers=headers, json=payload)
-                    return ActionResponse(success=True, result=resp.json())
-                elif action == "archive_page":
-                    resp = await client.patch(f"{self._base_url}/pages/{arguments['page_id']}", headers=headers, json={"archived": True})
-                    return ActionResponse(success=True, result=resp.json())
-                elif action == "create_database":
-                    payload = {"parent": arguments["parent"], "title": {"title": [{"text": {"content": arguments["title"]}}]}, "properties": arguments.get("properties", {})}
-                    resp = await client.post(f"{self._base_url}/databases", headers=headers, json=payload)
-                    return ActionResponse(success=True, result=resp.json())
-                elif action == "query_database":
-                    resp = await client.post(f"{self._base_url}/databases/{arguments['database_id']}/query", headers=headers, json={"filter": arguments.get("filter"), "sorts": arguments.get("sorts", [])})
-                    return ActionResponse(success=True, result=resp.json())
-                elif action == "create_database_row":
-                    payload = {"parent": {"database_id": arguments["database_id"]}, "properties": arguments.get("properties", {})}
-                    resp = await client.post(f"{self._base_url}/pages", headers=headers, json=payload)
-                    return ActionResponse(success=True, result=resp.json())
-                elif action == "update_database_row":
-                    payload = {"properties": arguments.get("properties", {})}
-                    resp = await client.patch(f"{self._base_url}/pages/{arguments['page_id']}", headers=headers, json=payload)
-                    return ActionResponse(success=True, result=resp.json())
-                elif action == "append_block_children":
-                    resp = await client.patch(f"{self._base_url}/blocks/{arguments['page_id']}/children", headers=headers, json={"children": arguments.get("children", [])})
-                    return ActionResponse(success=True, result=resp.json())
-                else:
-                    return ActionResponse(success=False, error=f"Unknown action: {action}")
+            client = await get_http_client()
+            if action == "search":
+                resp = await client.post(f"{self._base_url}/search", headers=headers, json={"query": arguments.get("query", ""), "filter": arguments.get("filter")})
+                return ActionResponse(success=True, result=resp.json())
+            elif action == "get_page":
+                resp = await client.get(f"{self._base_url}/pages/{arguments['page_id']}", headers=headers)
+                return ActionResponse(success=True, result=resp.json())
+            elif action == "create_page":
+                payload = {"parent": arguments["parent"], "properties": {"title": {"title": [{"text": {"content": arguments["title"]}}]}}, "children": arguments.get("children", [])}
+                resp = await client.post(f"{self._base_url}/pages", headers=headers, json=payload)
+                return ActionResponse(success=True, result=resp.json())
+            elif action == "update_page":
+                payload = {"properties": arguments.get("properties", {}), "archived": arguments.get("archived", False)}
+                resp = await client.patch(f"{self._base_url}/pages/{arguments['page_id']}", headers=headers, json=payload)
+                return ActionResponse(success=True, result=resp.json())
+            elif action == "archive_page":
+                resp = await client.patch(f"{self._base_url}/pages/{arguments['page_id']}", headers=headers, json={"archived": True})
+                return ActionResponse(success=True, result=resp.json())
+            elif action == "create_database":
+                payload = {"parent": arguments["parent"], "title": {"title": [{"text": {"content": arguments["title"]}}]}, "properties": arguments.get("properties", {})}
+                resp = await client.post(f"{self._base_url}/databases", headers=headers, json=payload)
+                return ActionResponse(success=True, result=resp.json())
+            elif action == "query_database":
+                resp = await client.post(f"{self._base_url}/databases/{arguments['database_id']}/query", headers=headers, json={"filter": arguments.get("filter"), "sorts": arguments.get("sorts", [])})
+                return ActionResponse(success=True, result=resp.json())
+            elif action == "create_database_row":
+                payload = {"parent": {"database_id": arguments["database_id"]}, "properties": arguments.get("properties", {})}
+                resp = await client.post(f"{self._base_url}/pages", headers=headers, json=payload)
+                return ActionResponse(success=True, result=resp.json())
+            elif action == "update_database_row":
+                payload = {"properties": arguments.get("properties", {})}
+                resp = await client.patch(f"{self._base_url}/pages/{arguments['page_id']}", headers=headers, json=payload)
+                return ActionResponse(success=True, result=resp.json())
+            elif action == "append_block_children":
+                resp = await client.patch(f"{self._base_url}/blocks/{arguments['page_id']}/children", headers=headers, json={"children": arguments.get("children", [])})
+                return ActionResponse(success=True, result=resp.json())
+            else:
+                return ActionResponse(success=False, error=f"Unknown action: {action}")
         except httpx.HTTPStatusError as exc:
             return ActionResponse(success=False, error=f"Notion API error: {exc.response.status_code} - {exc.response.text}")
         except Exception as exc:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import httpx
 from typing import Any, Protocol
 
 from app.schemas.actions import ActionDefinition, ActionResponse
@@ -28,3 +29,10 @@ class BaseActionProvider(Protocol):
 
     def list_actions(self) -> list[ActionDefinition]:
         ...
+
+
+_shared_client = httpx.AsyncClient(timeout=30, follow_redirects=True)
+
+
+async def get_http_client() -> httpx.AsyncClient:
+    return _shared_client

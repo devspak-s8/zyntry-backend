@@ -19,6 +19,7 @@ class OAuthError(Exception):
 
 class OAuthService:
     _provider_cache: dict[str, OAuthProvider] = {}
+    _connection_cache: dict[str, tuple[OAuthConnection, str]] = {}
 
     def __init__(self, uow: UnitOfWork) -> None:
         self.uow = uow
@@ -30,6 +31,21 @@ class OAuthService:
         if provider is not None:
             self._provider_cache[name] = provider
         return provider
+
+    async def _get_connection_cached(
+        self,
+        key: str,
+        lookup,
+    ) -> OAuthConnection | None:
+        if key in self._connection_cache:
+            return self._connection_cache[key][0]
+        connection = await lookup()
+        if connection is not None:
+            self._connection_cache[key] = (connection, self._decrypt(connection.access_token_encrypted) if connection.access_token_encrypted else "")
+        return connection
+
+    def _invalidate_connection_cache(self, key: str) -> None:
+        self._connection_cache.pop(key, None)
 
     async def list_providers(self) -> list[dict[str, Any]]:
         providers = await self.uow.session.execute(
@@ -177,14 +193,19 @@ class OAuthService:
         provider = await self._get_provider_cached(provider_name)
         if provider is None:
             return None
-        result = await self.uow.session.execute(
-            select(OAuthConnection).where(
-                OAuthConnection.user_id == user_id,
-                OAuthConnection.provider_id == provider.id,
-                OAuthConnection.status == "active",
+        cache_key = f"user:{user_id}:{provider_name}"
+
+        async def lookup():
+            result = await self.uow.session.execute(
+                select(OAuthConnection).where(
+                    OAuthConnection.user_id == user_id,
+                    OAuthConnection.provider_id == provider.id,
+                    OAuthConnection.status == "active",
+                )
             )
-        )
-        return result.scalars().first()
+            return result.scalars().first()
+
+        return await self._get_connection_cached(cache_key, lookup)
 
     async def get_connection_by_project(
         self,
@@ -194,14 +215,19 @@ class OAuthService:
         provider = await self._get_provider_cached(provider_name)
         if provider is None:
             return None
-        result = await self.uow.session.execute(
-            select(OAuthConnection).where(
-                OAuthConnection.project_id == project_id,
-                OAuthConnection.provider_id == provider.id,
-                OAuthConnection.status == "active",
+        cache_key = f"project:{project_id}:{provider_name}"
+
+        async def lookup():
+            result = await self.uow.session.execute(
+                select(OAuthConnection).where(
+                    OAuthConnection.project_id == project_id,
+                    OAuthConnection.provider_id == provider.id,
+                    OAuthConnection.status == "active",
+                )
             )
-        )
-        return result.scalars().first()
+            return result.scalars().first()
+
+        return await self._get_connection_cached(cache_key, lookup)
 
     async def pre_resolve_project_tokens(
         self,
@@ -246,6 +272,9 @@ class OAuthService:
 
         if not connection.refresh_token_encrypted:
             raise OAuthError("No refresh token available")
+
+        self._invalidate_connection_cache(f"user:{connection.user_id}:{provider_row.name}")
+        self._invalidate_connection_cache(f"project:{connection.project_id}:{provider_row.name}")
 
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
