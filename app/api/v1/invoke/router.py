@@ -9,20 +9,22 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies_api_key import get_api_key_user
 from app.core.config import settings
 from app.core.database import get_session
-from app.models.request_logs import RequestLog
 from app.models.users import User
 from app.repositories import UnitOfWork
+from app.schemas.actions import ActionRequest, ActionResponse
 from app.schemas.billing import InsufficientCreditsError
+from app.services.actions.confirmations import ConfirmationService
+from app.services.actions.executor import ActionExecutor
+from app.services.actions.guardrails import GuardrailService as ActionGuardrailService
 from app.services.billing import BillingService, InsufficientCredits
 from app.services.guardrails import GuardrailService
 from app.services.model_router import ModelRouter, RoutingGoal, RoutingPreference
-from app.services.runtime_cache import runtime_cache
+from app.services.oauth.service import OAuthService
 
 router = APIRouter()
 guardrail_service = GuardrailService()
@@ -55,6 +57,7 @@ class InvokeRequest(BaseModel):
     top_k: int = 5
     conversation_id: str | None = None
     json_schema: dict | None = None
+    actions: list[ActionRequest] = []
 
 
 class InvokeResponse(BaseModel):
@@ -67,6 +70,7 @@ class InvokeResponse(BaseModel):
     warnings: list[dict] = []
     events: list[dict] = []
     tool_calls: list[dict] = []
+    action_results: list[ActionResponse] = []
     tokens_used: int = 0
     guardrail_violations: list[str] = []
 
@@ -199,6 +203,49 @@ async def invoke(
             tool_calls.append(result)
             events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Tool Executed", "tool": tool.name, "status": result.get("status")})
 
+    action_results: list[ActionResponse] = []
+    if body.actions:
+        action_executor = ActionExecutor(uow)
+        confirmation_service = ConfirmationService(uow)
+        try:
+            await OAuthService(uow).pre_resolve_project_tokens(project.id)
+        except Exception:
+            pass
+
+        for action_req in body.actions:
+            action_req.project_id = str(project.id)
+            valid, error = ActionGuardrailService.validate_action_arguments(
+                action_req.provider, action_req.action, action_req.arguments,
+            )
+            if not valid:
+                action_results.append(ActionResponse(success=False, error=error))
+                continue
+
+            risk_actions = {"delete", "remove", "archive", "merge", "close", "cancel", "expire", "revoke"}
+            requires_confirmation = any(risk in action_req.action.lower() for risk in risk_actions)
+
+            if requires_confirmation and not action_req.confirm:
+                confirmation = await confirmation_service.request(
+                    user_id=current_user.id,
+                    project_id=project.id,
+                    provider=action_req.provider,
+                    action=action_req.action,
+                    arguments=action_req.arguments,
+                    risk="high" if any(d in action_req.action.lower() for d in ["delete", "remove", "archive"]) else "medium",
+                )
+                action_results.append(ActionResponse(
+                    success=False,
+                    error="Confirmation required",
+                    requires_confirmation=True,
+                    confirmation_id=str(confirmation.id),
+                    confirmation_reason=f"Action '{action_req.action}' requires explicit confirmation",
+                ))
+                continue
+
+            result = await action_executor.execute(action_req, current_user.id, project.id)
+            action_results.append(result)
+            events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Action Executed", "provider": action_req.provider, "action": action_req.action, "success": result.success})
+
     estimated_cost = await billing_service.calculate_cost(
         provider=provider_name,
         model=model_name,
@@ -295,6 +342,7 @@ async def invoke(
         warnings=warnings,
         events=events,
         tool_calls=tool_calls,
+        action_results=action_results,
         tokens_used=len(body.input.split()) + len(response_text.split()),
         guardrail_violations=output_violations,
     )

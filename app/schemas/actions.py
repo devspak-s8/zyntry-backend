@@ -41,6 +41,9 @@ class ActionResponse(BaseModel):
     result: Any = None
     error: str | None = None
     execution_id: str | None = None
+    requires_confirmation: bool = False
+    confirmation_id: str | None = None
+    confirmation_reason: str | None = None
 
 
 class ActionExecutionRead(BaseModel):
