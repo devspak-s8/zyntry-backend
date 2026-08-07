@@ -1,24 +1,27 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.api.v1.dependencies import get_current_user
 from app.core.database import get_session
 from app.core.redis import redis_client
-from app.models.model_providers import ModelProvider
+from app.emails import send_email
 from app.models.organizations import Organization
 from app.models.projects import Project
+from app.models.users import User
 from app.repositories import UnitOfWork
 from app.schemas.projects import ProjectCreate, ProjectRead
-from app.models.users import User
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -113,6 +116,17 @@ async def create_project(
         raise HTTPException(status_code=500, detail=f"Failed to create project: {exc}")
 
     await _invalidate_projects_cache(org_id)
+
+    try:
+        await send_email(
+            "project_created",
+            current_user.email,
+            user_name=current_user.name,
+            project_name=body.name,
+        )
+    except Exception:
+        logger.exception("Failed to send project created email to %s", current_user.email)
+
     return ProjectRead(
         id=proj.id,
         name=proj.name,

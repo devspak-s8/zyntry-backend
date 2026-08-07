@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from app.core.config import settings
 from app.services.sendbyte import SendByteError, get_sendbyte_client
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ _WELCOME_SVG = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stro
 
 def build_email(name: str, title: str, subtitle: str, body_html: str, cta_text: str | None = None, cta_url: str | None = None, footer_text: str | None = None) -> str:
     accent = _ACCENT
-    footer = footer_text or f"If you didn't expect this email, you can safely ignore it."
+    footer = footer_text or "If you didn't expect this email, you can safely ignore it."
     svg = _WELCOME_SVG.format(accent=accent)
     icon = _gradient_icon(svg) if name == "welcome" else _gradient_icon(svg)
     cta = ""
@@ -133,7 +133,7 @@ def build_password_reset(user_name: str | None, token: str) -> tuple[str, str]:
     html = build_email(
         title="Reset your password",
         subtitle=f"Hi {display},",
-        body_html=f"We received a request to reset your password. Click the button below to set a new password. This link expires in 1 hour and can only be used once.",
+        body_html="We received a request to reset your password. Click the button below to set a new password. This link expires in 1 hour and can only be used once.",
         cta_text="Reset Password",
         cta_url=f"{_APP_URL}/reset-password?token={token}",
     )
@@ -146,16 +146,34 @@ def build_password_reset(user_name: str | None, token: str) -> tuple[str, str]:
     return html, text
 
 
+def build_project_created(user_name: str | None, project_name: str) -> tuple[str, str]:
+    display = user_name or "there"
+    html = build_email(
+        title="Project created successfully",
+        subtitle=f"Hi {display},",
+        body_html=f"Your project <strong>{project_name}</strong> has been created. You can now connect tools, configure runtimes, and start building.",
+        cta_text="View Project",
+        cta_url=f"{_APP_URL}/projects",
+    )
+    text = build_email_text(
+        title="Project created successfully",
+        body=f"Your project '{project_name}' has been created. Go to {_APP_URL}/projects to get started.",
+        cta_text="View Project",
+        cta_url=f"{_APP_URL}/projects",
+    )
+    return html, text
+
+
 def build_runtime_ready(runtime_name: str) -> tuple[str, str]:
     html = build_email(
-        title=f"Your runtime is ready",
+        title="Your runtime is ready",
         subtitle=f"Runtime '{runtime_name}'",
-        body_html=f"Your runtime has been successfully built and is now active. You can start sending requests to the runtime API endpoint using your API key.",
+        body_html="Your runtime has been successfully built and is now active. You can start sending requests to the runtime API endpoint using your API key.",
         cta_text="View Runtime",
         cta_url=f"{_APP_URL}/runtimes",
     )
     text = build_email_text(
-        title=f"Your runtime is ready",
+        title="Your runtime is ready",
         body=f"Runtime '{runtime_name}' has been successfully built and is now active.",
         cta_text="View Runtime",
         cta_url=f"{_APP_URL}/runtimes",
@@ -185,7 +203,7 @@ def build_runtime_sync_finished(runtime_name: str) -> tuple[str, str]:
     html = build_email(
         title="Runtime synchronization completed",
         subtitle=f"Runtime '{runtime_name}'",
-        body_html=f"Your runtime has been successfully re-synchronized. All connected sources, tools, and knowledge bases have been updated.",
+        body_html="Your runtime has been successfully re-synchronized. All connected sources, tools, and knowledge bases have been updated.",
         cta_text="View Runtime",
         cta_url=f"{_APP_URL}/runtimes",
     )
@@ -619,6 +637,7 @@ def build_runtime_build_started(runtime_name: str) -> tuple[str, str]:
 EMAIL_TEMPLATES: dict[str, Any] = {
     "welcome": build_welcome_email,
     "verify_email": build_verify_email,
+    "project_created": build_project_created,
     "email_verified": build_email_verified,
     "password_reset": build_password_reset,
     "password_changed": build_password_changed,

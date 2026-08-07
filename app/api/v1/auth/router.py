@@ -149,6 +149,11 @@ async def register(
     except Exception:
         logger.exception("Failed to send verification email to %s", email)
 
+    try:
+        await send_email("welcome", email, user_name=name)
+    except Exception:
+        logger.exception("Failed to send welcome email to %s", email)
+
     await _create_session(db, response, user)
     refresh_token = await _create_refresh_token(db, user)
     _set_refresh_cookie(response, refresh_token)
