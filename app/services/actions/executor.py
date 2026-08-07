@@ -9,6 +9,7 @@ from app.models.actions import ActionExecution, ActionStatus
 from app.repositories import UnitOfWork
 from app.schemas.actions import ActionRequest, ActionResponse, WorkflowRequest
 from app.services.actions.registry import ActionRegistry
+from app.services.oauth.service import OAuthService
 
 
 class ActionExecutor:
@@ -91,6 +92,17 @@ class ActionExecutor:
         context = dict(body.context)
         context["user_id"] = str(user_id)
         context["project_id"] = body.project_id
+
+        providers_needed = {step.provider for step in body.steps}
+        if providers_needed and self.uow:
+            try:
+                oauth_service = OAuthService(self.uow)
+                project_uuid = uuid.UUID(body.project_id) if body.project_id else None
+                if project_uuid:
+                    resolved = await oauth_service.pre_resolve_project_tokens(project_uuid)
+                    context["_resolved_oauth_tokens"] = resolved
+            except Exception:
+                pass
 
         for step in body.steps:
             now_ts = datetime.now(UTC).isoformat()

@@ -18,8 +18,18 @@ class OAuthError(Exception):
 
 
 class OAuthService:
+    _provider_cache: dict[str, OAuthProvider] = {}
+
     def __init__(self, uow: UnitOfWork) -> None:
         self.uow = uow
+
+    async def _get_provider_cached(self, name: str) -> OAuthProvider | None:
+        if name in self._provider_cache:
+            return self._provider_cache[name]
+        provider = await self.get_provider(name)
+        if provider is not None:
+            self._provider_cache[name] = provider
+        return provider
 
     async def list_providers(self) -> list[dict[str, Any]]:
         providers = await self.uow.session.execute(
@@ -38,10 +48,7 @@ class OAuthService:
         ]
 
     async def get_provider(self, name: str) -> OAuthProvider | None:
-        result = await self.uow.session.execute(
-            select(OAuthProvider).where(OAuthProvider.name == name)
-        )
-        return result.scalars().first()
+        return await self._get_provider_cached(name)
 
     async def authorize(
         self,
@@ -50,7 +57,7 @@ class OAuthService:
         project_id: uuid.UUID | None = None,
         redirect_uri: str | None = None,
     ) -> dict[str, Any]:
-        provider = await self.get_provider(provider_name)
+        provider = await self._get_provider_cached(provider_name)
         if provider is None:
             raise OAuthError(f"Provider '{provider_name}' not found")
 
@@ -167,7 +174,7 @@ class OAuthService:
         user_id: uuid.UUID,
         provider_name: str,
     ) -> OAuthConnection | None:
-        provider = await self.get_provider(provider_name)
+        provider = await self._get_provider_cached(provider_name)
         if provider is None:
             return None
         result = await self.uow.session.execute(
@@ -184,7 +191,7 @@ class OAuthService:
         project_id: uuid.UUID,
         provider_name: str,
     ) -> OAuthConnection | None:
-        provider = await self.get_provider(provider_name)
+        provider = await self._get_provider_cached(provider_name)
         if provider is None:
             return None
         result = await self.uow.session.execute(
@@ -195,6 +202,35 @@ class OAuthService:
             )
         )
         return result.scalars().first()
+
+    async def pre_resolve_project_tokens(
+        self,
+        project_id: uuid.UUID,
+    ) -> dict[str, dict[str, Any]]:
+        result = await self.uow.session.execute(
+            select(OAuthConnection)
+            .where(OAuthConnection.project_id == project_id, OAuthConnection.status == "active")
+        )
+        connections = result.scalars().all()
+        tokens: dict[str, dict[str, Any]] = {}
+        for conn in connections:
+            provider = await self.uow.session.execute(
+                select(OAuthProvider).where(OAuthProvider.id == conn.provider_id)
+            )
+            provider_row = provider.scalars().first()
+            if provider_row is None:
+                continue
+            self._provider_cache[provider_row.name] = provider_row
+            if conn.access_token_encrypted:
+                access_token = self._decrypt(conn.access_token_encrypted)
+                if conn.expires_at and conn.expires_at <= datetime.now(UTC):
+                    try:
+                        await self.refresh_token(conn.id)
+                        access_token = self._decrypt(conn.access_token_encrypted)
+                    except Exception:
+                        pass
+                tokens[provider_row.name] = {"access_token": access_token}
+        return tokens
 
     async def refresh_token(self, connection_id: uuid.UUID) -> dict[str, Any]:
         connection = await self.get_connection(connection_id)
