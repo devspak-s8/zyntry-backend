@@ -15,6 +15,7 @@ class ActionDefinition(BaseModel):
 
 
 class ActionRequest(BaseModel):
+    project_id: str
     provider: str
     action: str
     arguments: dict[str, Any] = {}

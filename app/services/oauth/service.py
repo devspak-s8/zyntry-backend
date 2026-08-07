@@ -179,6 +179,23 @@ class OAuthService:
         )
         return result.scalars().first()
 
+    async def get_connection_by_project(
+        self,
+        project_id: uuid.UUID,
+        provider_name: str,
+    ) -> OAuthConnection | None:
+        provider = await self.get_provider(provider_name)
+        if provider is None:
+            return None
+        result = await self.uow.session.execute(
+            select(OAuthConnection).where(
+                OAuthConnection.project_id == project_id,
+                OAuthConnection.provider_id == provider.id,
+                OAuthConnection.status == "active",
+            )
+        )
+        return result.scalars().first()
+
     async def refresh_token(self, connection_id: uuid.UUID) -> dict[str, Any]:
         connection = await self.get_connection(connection_id)
         if connection is None:

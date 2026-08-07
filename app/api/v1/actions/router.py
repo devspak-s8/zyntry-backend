@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import StreamingResponse
 
 from app.api.v1.dependencies import get_current_user
+from app.api.v1.dependencies_api_key import ActionAuthContext, get_action_auth
 from app.core.database import get_session
 from app.models.actions import ActionExecution
 from app.models.users import User
@@ -38,7 +39,7 @@ async def list_available_actions(
 @router.post("/execute", response_model=ActionResponse)
 async def execute_action(
     body: ActionRequest,
-    current_user: Annotated[User, Depends(get_current_user)],
+    auth: Annotated[ActionAuthContext, Depends(get_action_auth)],
     db: AsyncSession = Depends(get_session),
 ) -> ActionResponse:
     uow = UnitOfWork(db)
@@ -50,15 +51,17 @@ async def execute_action(
     if not valid:
         raise HTTPException(status_code=400, detail=error)
 
+    project_id = auth.project_id or uuid.UUID(body.project_id)
+    user_id = auth.user.id
+
     risk_actions = {"delete", "remove", "archive", "merge", "close", "cancel", "expire", "revoke"}
     requires_confirmation = any(risk in body.action.lower() for risk in risk_actions)
 
     if requires_confirmation and not body.confirm:
         confirmation_service = ConfirmationService(uow)
-        project_id = current_user.organization_id or uuid.uuid4()
         high_risk = any(d in body.action.lower() for d in ["delete", "remove", "archive"])
         confirmation = await confirmation_service.request(
-            user_id=current_user.id,
+            user_id=user_id,
             project_id=project_id,
             provider=body.provider,
             action=body.action,
@@ -71,15 +74,14 @@ async def execute_action(
             execution_id=str(confirmation.id),
         )
 
-    project_id = current_user.organization_id or uuid.uuid4()
-    response = await executor.execute(body, current_user.id, project_id)
+    response = await executor.execute(body, user_id, project_id)
     return response
 
 
 @router.post("/workflows/execute")
 async def execute_workflow(
     body: WorkflowRequest,
-    current_user: Annotated[User, Depends(get_current_user)],
+    auth: Annotated[ActionAuthContext, Depends(get_action_auth)],
     db: AsyncSession = Depends(get_session),
 ) -> StreamingResponse:
     uow = UnitOfWork(db)
@@ -93,7 +95,7 @@ async def execute_workflow(
             raise HTTPException(status_code=400, detail=error)
 
     async def event_stream():
-        async for event in executor.execute_workflow(body, current_user.id):
+        async for event in executor.execute_workflow(body, auth.user.id):
             yield f"data: {event}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
@@ -101,13 +103,15 @@ async def execute_workflow(
 
 @router.get("/executions", response_model=list[ActionExecutionRead])
 async def list_executions(
-    current_user: Annotated[User, Depends(get_current_user)],
+    auth: Annotated[ActionAuthContext, Depends(get_action_auth)],
     project_id: Annotated[str | None, None] = None,
     db: AsyncSession = Depends(get_session),
 ) -> list[ActionExecutionRead]:
-    stmt = select(ActionExecution).where(ActionExecution.user_id == current_user.id)
+    stmt = select(ActionExecution).where(ActionExecution.user_id == auth.user.id)
     if project_id:
         stmt = stmt.where(ActionExecution.project_id == uuid.UUID(project_id))
+    elif auth.project_id:
+        stmt = stmt.where(ActionExecution.project_id == auth.project_id)
     stmt = stmt.order_by(ActionExecution.created_at.desc()).limit(100)
     result = await db.execute(stmt)
     executions = result.scalars().all()
@@ -134,7 +138,7 @@ async def list_executions(
 @router.post("/confirmations/{confirmation_id}/approve", response_model=ActionResponse)
 async def approve_confirmation(
     confirmation_id: str,
-    current_user: Annotated[User, Depends(get_current_user)],
+    auth: Annotated[ActionAuthContext, Depends(get_action_auth)],
     db: AsyncSession = Depends(get_session),
 ) -> ActionResponse:
     uow = UnitOfWork(db)
@@ -145,20 +149,20 @@ async def approve_confirmation(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     body = ActionRequest(
+        project_id=str(confirmation.project_id),
         provider=confirmation.provider,
         action=confirmation.action,
         arguments=confirmation.arguments,
         confirm=True,
     )
     executor = ActionExecutor(uow)
-    project_id = confirmation.project_id
-    return await executor.execute(body, current_user.id, project_id)
+    return await executor.execute(body, auth.user.id, confirmation.project_id)
 
 
 @router.post("/confirmations/{confirmation_id}/reject", status_code=status.HTTP_204_NO_CONTENT)
 async def reject_confirmation(
     confirmation_id: str,
-    current_user: Annotated[User, Depends(get_current_user)],
+    auth: Annotated[ActionAuthContext, Depends(get_action_auth)],
     db: AsyncSession = Depends(get_session),
 ) -> None:
     uow = UnitOfWork(db)
