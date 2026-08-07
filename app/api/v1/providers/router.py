@@ -145,12 +145,12 @@ async def list_providers_with_models(
     return result
 
 
-@router.post("", response_model=ProviderConnectionRead, status_code=status.HTTP_201_CREATED)
+@router.post("", status_code=status.HTTP_201_CREATED)
 async def connect_provider(
     body: ProviderConnectionCreate,
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
-) -> ProviderConnectionRead:
+) -> dict:
     uow = UnitOfWork(db)
     service = ProviderService(uow)
     api_key = body.api_key
@@ -166,12 +166,20 @@ async def connect_provider(
         project_id=body.project_id,
         config=body.config,
     ))
+    if result.get("requires_oauth"):
+        await emit_provider_updated(
+            str(current_user.id),
+            body.project_id or "",
+            result["provider_name"],
+            False,
+        )
+        return result
     response = ProviderConnectionRead(
         id=result["id"],
         organization_id=org_id,
         project_id=body.project_id,
         provider_name=result["provider_name"],
-        display_name=body.display_name,
+        display_name=result.get("display_name") or body.display_name,
         status=result["status"],
         last_tested_at=None,
         is_active=True,
@@ -184,7 +192,7 @@ async def connect_provider(
         result["provider_name"],
         True,
     )
-    return response
+    return response.model_dump()
 
 
 @router.patch("/{connection_id}", response_model=ProviderConnectionRead)

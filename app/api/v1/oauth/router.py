@@ -71,6 +71,29 @@ async def callback(
     uow = UnitOfWork(db)
     service = OAuthService(uow)
     result = await service.callback(state_obj.provider, code, state, state_obj.project_id)
+
+    project_id = state_obj.project_id
+    org_id = current_user.organization_id
+    if project_id is None and org_id is not None:
+        project = await uow.projects.get_by_organization(org_id)
+        if project:
+            project_id = project.id
+
+    connection = await uow.providers.get_by_provider(
+        str(project_id) if project_id else "",
+        result["provider"],
+    )
+    if not connection and project_id is not None:
+        await uow.providers.create(
+            organization_id=org_id,
+            project_id=project_id,
+            provider_name=result["provider"],
+            display_name=result.get("display_name") or result["provider"],
+            status="active",
+            config={"oauth_connection_id": result["connection_id"]},
+        )
+        await uow.commit()
+
     return OAuthCallbackResponse(
         connection_id=result["connection_id"],
         provider=result["provider"],
@@ -89,4 +112,20 @@ async def exchange_token(
     service = OAuthService(uow)
     project_id = uuid.UUID(body.project_id) if body.project_id else None
     result = await service.callback(body.provider, body.code, body.state, project_id)
+
+    connection = await uow.providers.get_by_provider(
+        str(project_id) if project_id else "",
+        result["provider"],
+    )
+    if not connection and project_id is not None:
+        await uow.providers.create(
+            organization_id=current_user.organization_id,
+            project_id=project_id,
+            provider_name=result["provider"],
+            display_name=result.get("display_name") or result["provider"],
+            status="active",
+            config={"oauth_connection_id": result["connection_id"]},
+        )
+        await uow.commit()
+
     return result
