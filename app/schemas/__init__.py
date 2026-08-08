@@ -72,7 +72,22 @@ from app.schemas.workflows import (
     WorkflowValidateRequest,
     WorkflowValidationResult,
 )
-from app.schemas.admin import AdminStats, AdminProjectRead, AdminRuntimeRead, AdminSystemInfo, AdminUserRead
+from app.schemas.runtime_assistant import (
+    ActionType,
+    AssistantChatRequest,
+    AssistantChatResponse,
+    AssistantMessage,
+    AssistantResponse,
+    DiagnosticResult,
+    OptimizationResult,
+    PermissionCheck,
+    RuntimeAction,
+    RuntimeContext,
+    RuntimeSummary,
+    ToolCall,
+    ToolDefinition,
+    UserRole,
+)
 
 __all__ = [
     "OrganizationCreate",
@@ -157,4 +172,18 @@ __all__ = [
     "BudgetUpdate",
     "CheckoutSessionRequest",
     "CheckoutSessionResponse",
+    "UserRole",
+    "ActionType",
+    "ToolDefinition",
+    "ToolCall",
+    "AssistantMessage",
+    "RuntimeContext",
+    "RuntimeSummary",
+    "DiagnosticResult",
+    "OptimizationResult",
+    "PermissionCheck",
+    "RuntimeAction",
+    "AssistantResponse",
+    "AssistantChatRequest",
+    "AssistantChatResponse",
 ]

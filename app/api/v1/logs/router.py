@@ -4,7 +4,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 
 from app.api.v1.dependencies import get_current_user
 from app.core.database import get_session
@@ -17,20 +17,32 @@ router = APIRouter(prefix="/logs", tags=["logs"])
 
 @router.get("", response_model=list[RequestLogRead])
 async def list_logs(
-    project_id: str | None = None,
-    limit: int = 50,
-    offset: int = 0,
+    project_id: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> list[RequestLogRead]:
-    stmt = select(RequestLog).order_by(RequestLog.created_at.desc()).limit(limit).offset(offset)
-    if project_id:
-        try:
-            pid = uuid.UUID(project_id)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid project id")
-        stmt = stmt.where(RequestLog.project_id == pid)
+    if project_id is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="project_id is required")
 
+    try:
+        pid = uuid.UUID(project_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid project id")
+
+    from app.models.projects import Project
+    project = await db.get(Project, pid)
+    if project is None or project.organization_id != current_user.organization_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+
+    stmt = (
+        select(RequestLog)
+        .where(RequestLog.project_id == pid)
+        .order_by(RequestLog.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
     result = await db.execute(stmt)
     logs = result.scalars().all()
     return [

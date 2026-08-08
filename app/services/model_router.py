@@ -31,6 +31,7 @@ class RoutingPreference:
     requires_vision: bool = False
     requires_tools: bool = False
     requires_streaming: bool = False
+    failover_enabled: bool = True
 
 
 @dataclass
@@ -56,6 +57,7 @@ class ModelRouter:
 
     def __init__(self, uow: Any) -> None:
         self.uow = uow
+        self._latency_tracker: dict[str, list[float]] = {}
 
     async def route(self, preference: RoutingPreference, available_providers: dict[str, str]) -> ModelCandidate | None:
         candidates = await self._build_candidates(preference, available_providers)
@@ -66,6 +68,48 @@ class ModelRouter:
             return None
         candidates.sort(key=lambda c: c.score, reverse=True)
         return candidates[0]
+
+    async def route_with_fallback(self, preference: RoutingPreference, available_providers: dict[str, str]) -> list[ModelCandidate]:
+        candidates = await self._build_candidates(preference, available_providers)
+        if not candidates:
+            return []
+        candidates = [c for c in candidates if c.available]
+        candidates.sort(key=lambda c: c.score, reverse=True)
+        if preference.failover_enabled:
+            return candidates
+        return candidates[:1]
+
+    async def _invoke_with_fallback(
+        self,
+        preference: RoutingPreference,
+        available_providers: dict[str, str],
+        messages: list[dict[str, str]],
+        max_tokens: int = 2048,
+        temperature: float = 0.7,
+    ) -> tuple[str, int, str, str] | None:
+        candidates = await self.route_with_fallback(preference, available_providers)
+        last_error = ""
+        for candidate in candidates:
+            try:
+                provider_cls = PROVIDER_REGISTRY.get(candidate.provider_name.lower())
+                if not provider_cls:
+                    continue
+                provider = provider_cls()
+                start = time.perf_counter()
+                result = await provider.chat_completion(
+                    api_key=available_providers[candidate.provider_name],
+                    model=candidate.model_info.id,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
+                latency = (time.perf_counter() - start) * 1000
+                self.record_latency(candidate.provider_name, candidate.model_info.id, latency)
+                return result, candidate.model_info.id, candidate.provider_name, ""
+            except Exception as exc:
+                last_error = str(exc)
+                continue
+        return None, "", "", last_error
 
     async def _build_candidates(self, preference: RoutingPreference, available_providers: dict[str, str]) -> list[ModelCandidate]:
         candidates: list[ModelCandidate] = []
@@ -143,3 +187,16 @@ class ModelRouter:
         if provider_name in preference.preferred_providers:
             score += 15
         return score
+
+    def record_latency(self, provider: str, model: str, latency_ms: float) -> None:
+        key = f"{provider}:{model}"
+        self._latency_tracker.setdefault(key, []).append(latency_ms)
+        if len(self._latency_tracker[key]) > 100:
+            self._latency_tracker[key] = self._latency_tracker[key][-100:]
+
+    def get_avg_latency(self, provider: str, model: str) -> float | None:
+        key = f"{provider}:{model}"
+        vals = self._latency_tracker.get(key, [])
+        if not vals:
+            return None
+        return sum(vals) / len(vals)

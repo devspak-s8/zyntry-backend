@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from decimal import Decimal
 from typing import Annotated, AsyncGenerator
 
@@ -16,9 +17,11 @@ from app.models.users import User
 from app.repositories import UnitOfWork
 from app.schemas.rag import RAGQuery, RAGResponse
 from app.services.billing import BillingService
+from app.services.guardrails import GuardrailService
 from app.services.rag import RAGPipeline
 
 router = APIRouter()
+guardrail_service = GuardrailService()
 
 
 class ChatCompletionRequest(BaseModel):
@@ -31,6 +34,7 @@ class ChatCompletionRequest(BaseModel):
     filters: dict | None = None
     conversation_id: str | None = None
     provider: str = "openai"
+    json_schema: dict | None = None
 
 
 class ChatCompletionChoice(BaseModel):
@@ -46,6 +50,7 @@ class ChatCompletionResponse(BaseModel):
     model: str
     choices: list[ChatCompletionChoice]
     usage: dict | None = None
+    guardrail_violations: list[str] = []
 
 
 @router.post("/completions", response_model=None)
@@ -58,6 +63,10 @@ async def chat_completions(
     project_id = body.project_id or ""
     if not project_id:
         raise HTTPException(status_code=400, detail="project_id is required for RAG")
+
+    input_violations = guardrail_service.validate_input(question, body.json_schema)
+    if input_violations:
+        raise HTTPException(status_code=400, detail={"guardrail_violations": input_violations})
 
     rag_query = RAGQuery(
         question=question,
@@ -161,13 +170,18 @@ async def chat_completions(
     if not isinstance(result, RAGResponse):
         raise HTTPException(status_code=500, detail="Invalid response type")
 
+    answer_text = result.answer or ""
+    output_violations = guardrail_service.validate_output(answer_text, body.json_schema)
+    if output_violations:
+        answer_text, _ = guardrail_service.enforce(answer_text, body.json_schema)
+
     latency_ms = int((time.perf_counter() - start_time) * 1000)
     actual_cost = await billing_service.calculate_cost(
         provider=body.provider,
         model=body.model,
         operation="chat",
         input_tokens=len(question.split()),
-        output_tokens=len(result.answer.split()),
+        output_tokens=len(answer_text.split()),
         requests=1,
     )
 
@@ -188,9 +202,30 @@ async def chat_completions(
             project_id=rag_query.project_id if rag_query.project_id else None,
             runtime_id=rag_query.runtime_id if rag_query.runtime_id else None,
             input_tokens=len(question.split()),
-            output_tokens=len(result.answer.split()),
+            output_tokens=len(answer_text.split()),
             latency_ms=latency_ms,
         )
+    except Exception:
+        pass
+
+    try:
+        await uow.request_logs.create(
+            project_id=uuid.UUID(rag_query.project_id) if rag_query.project_id else None,
+            request_id=f"chat-{int(start_time)}",
+            method="POST",
+            endpoint="/chat/completions",
+            status=200,
+            latency_ms=latency_ms,
+            tokens=len(question.split()) + len(answer_text.split()),
+            provider=body.provider,
+            model=body.model,
+            cost=int(actual_cost),
+            started_at=datetime.fromtimestamp(start_time, tz=timezone.utc).isoformat(),
+            completed_at=datetime.now(timezone.utc).isoformat(),
+            user_id=current_user.id,
+            ip="",
+        )
+        await uow.commit()
     except Exception:
         pass
 
@@ -201,14 +236,15 @@ async def chat_completions(
         choices=[
             ChatCompletionChoice(
                 index=0,
-                message={"role": "assistant", "content": result.answer},
+                message={"role": "assistant", "content": answer_text},
                 finish_reason="stop",
             )
         ],
         usage={
             "prompt_tokens": len(question.split()),
-            "completion_tokens": len(result.answer.split()),
-            "total_tokens": len(question.split()) + len(result.answer.split()),
+            "completion_tokens": len(answer_text.split()),
+            "total_tokens": len(question.split()) + len(answer_text.split()),
             "cost": float(actual_cost),
         },
+        guardrail_violations=output_violations,
     )

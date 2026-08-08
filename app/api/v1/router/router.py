@@ -31,7 +31,6 @@ async def list_available_models(
         ("deepseek", "DEEPSEEK_API_KEY"),
         ("openrouter", "OPENROUTER_API_KEY"),
         ("groq", "GROQ_API_KEY"),
-        ("mistral", "MISTRAL_API_KEY"),
     ]:
         key = getattr(settings, setting_name, None)
         if key:
@@ -104,7 +103,6 @@ async def recommend_model(
         ("deepseek", "DEEPSEEK_API_KEY"),
         ("openrouter", "OPENROUTER_API_KEY"),
         ("groq", "GROQ_API_KEY"),
-        ("mistral", "MISTRAL_API_KEY"),
     ]:
         key = getattr(settings, setting_name, None)
         if key:
