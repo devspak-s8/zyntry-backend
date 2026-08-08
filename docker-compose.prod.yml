@@ -1,0 +1,104 @@
+services:
+  api:
+    environment:
+      - APP_ENV=production
+      - APP_DEBUG=false
+      - SENDBYTE_KEY=${SENDBYTE_KEY}
+      - SENDBYTE_API_URL=${SENDBYTE_API_URL}
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        tag: "zyntry-api"
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=512m
+
+  worker:
+    environment:
+      - APP_ENV=production
+      - APP_DEBUG=false
+      - SENDBYTE_KEY=${SENDBYTE_KEY}
+      - SENDBYTE_API_URL=${SENDBYTE_API_URL}
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        tag: "zyntry-worker"
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=512m
+
+  beat:
+    environment:
+      - APP_ENV=production
+      - APP_DEBUG=false
+      - SENDBYTE_KEY=${SENDBYTE_KEY}
+      - SENDBYTE_API_URL=${SENDBYTE_API_URL}
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        tag: "zyntry-beat"
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=256m
+
+  runtime-assistant:
+    environment:
+      - APP_ENV=production
+      - APP_DEBUG=false
+      - SENDBYTE_KEY=${SENDBYTE_KEY}
+      - SENDBYTE_API_URL=${SENDBYTE_API_URL}
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        tag: "zyntry-runtime-assistant"
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=256m
+
+  realtime:
+    environment:
+      - APP_ENV=production
+      - APP_DEBUG=false
+      - SENDBYTE_KEY=${SENDBYTE_KEY}
+      - SENDBYTE_API_URL=${SENDBYTE_API_URL}
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        tag: "zyntry-realtime"
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=256m
+
+  redis:
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        tag: "zyntry-redis"
+
+  postgres:
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        tag: "zyntry-postgres"
+
+  caddy:
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+        tag: "zyntry-caddy"
