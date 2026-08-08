@@ -9,10 +9,10 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-def _emit_change(project_id: str, organization_id: str | None, source_id: str, event_type: str, data: dict) -> None:
+async def _emit_change(project_id: str, organization_id: str | None, source_id: str, event_type: str, data: dict) -> None:
     try:
         from app.utils.events import emit_project_event
-        emit_project_event(project_id, organization_id, event_type, {"source_id": source_id, **data})
+        await emit_project_event(project_id, organization_id, event_type, {"source_id": source_id, **data})
     except Exception as exc:  # pragma: no cover - defensive
         logger.error("Failed to emit watcher event %s: %s", event_type, exc)
 
@@ -74,7 +74,7 @@ class BaseWatcher(ABC):
         project_id = getattr(self.connector, "project_id", "")
         organization_id = getattr(self.connector, "organization_id", None)
         source_id = getattr(self.connector, "source_id", "")
-        _emit_change(project_id, organization_id, source_id, event_type, {"error": message})
+        await _emit_change(project_id, organization_id, source_id, event_type, {"error": message})
 
     async def watch(self, callback: Any) -> None:
         self.callback = callback
@@ -136,7 +136,7 @@ class GitHubWatcher(BaseWatcher):
                 await self.callback(event_data)
 
         if commits:
-            _emit_change(
+            await _emit_change(
                 self.connector.project_id,
                 getattr(self.connector, "organization_id", None),
                 self.connector.source_id,
@@ -150,7 +150,7 @@ class GitHubWatcher(BaseWatcher):
             for branch in branches:
                 name = branch.get("name", "")
                 sha = branch.get("commit", {}).get("sha", "")
-                _emit_change(
+                await _emit_change(
                     self.connector.project_id,
                     getattr(self.connector, "organization_id", None),
                     self.connector.source_id,
@@ -164,7 +164,7 @@ class GitHubWatcher(BaseWatcher):
             for event in events:
                 event_type = event.get("type", "")
                 if event_type == "PushEvent":
-                    _emit_change(
+                    await _emit_change(
                         self.connector.project_id,
                         getattr(self.connector, "organization_id", None),
                         self.connector.source_id,
@@ -172,7 +172,7 @@ class GitHubWatcher(BaseWatcher):
                         {"event": event_type, "ref": event.get("ref", "")},
                     )
                 elif event_type == "DeleteEvent":
-                    _emit_change(
+                    await _emit_change(
                         self.connector.project_id,
                         getattr(self.connector, "organization_id", None),
                         self.connector.source_id,
@@ -180,7 +180,7 @@ class GitHubWatcher(BaseWatcher):
                         {"ref": event.get("ref", ""), "ref_type": event.get("payload", {}).get("ref_type", "")},
                     )
                 elif event_type == "RenameFileEvent":
-                    _emit_change(
+                    await _emit_change(
                         self.connector.project_id,
                         getattr(self.connector, "organization_id", None),
                         self.connector.source_id,
@@ -193,7 +193,7 @@ class GitHubWatcher(BaseWatcher):
                 elif event_type == "PullRequestEvent":
                     action = event.get("payload", {}).get("action", "")
                     if action == "closed" and event.get("payload", {}).get("pull_request", {}).get("merged"):
-                        _emit_change(
+                        await _emit_change(
                             self.connector.project_id,
                             getattr(self.connector, "organization_id", None),
                             self.connector.source_id,
@@ -238,7 +238,7 @@ class GoogleDriveWatcher(BaseWatcher):
                 self.last_sync_timestamp = modified
             trashed = file.get("trashed", False)
             if trashed:
-                _emit_change(
+                await _emit_change(
                     self.connector.project_id,
                     getattr(self.connector, "organization_id", None),
                     self.connector.source_id,
@@ -246,7 +246,7 @@ class GoogleDriveWatcher(BaseWatcher):
                     {"file_id": file.get("id"), "name": file.get("name")},
                 )
             else:
-                _emit_change(
+                await _emit_change(
                     self.connector.project_id,
                     getattr(self.connector, "organization_id", None),
                     self.connector.source_id,
@@ -264,7 +264,7 @@ class GoogleDriveWatcher(BaseWatcher):
             removed = change.get("removed", False)
             file_info = change.get("file", {})
             if removed:
-                _emit_change(
+                await _emit_change(
                     self.connector.project_id,
                     getattr(self.connector, "organization_id", None),
                     self.connector.source_id,
@@ -272,7 +272,7 @@ class GoogleDriveWatcher(BaseWatcher):
                     {"file_id": file_id, "name": file_info.get("name")},
                 )
             else:
-                _emit_change(
+                await _emit_change(
                     self.connector.project_id,
                     getattr(self.connector, "organization_id", None),
                     self.connector.source_id,
@@ -320,7 +320,7 @@ class NotionWatcher(BaseWatcher):
                 last_edited = page.get("last_edited_time", "")
                 if last_edited:
                     self.last_sync_timestamp = last_edited
-                _emit_change(
+                await _emit_change(
                     self.connector.project_id,
                     getattr(self.connector, "organization_id", None),
                     self.connector.source_id,
@@ -336,7 +336,7 @@ class NotionWatcher(BaseWatcher):
             edited_time = child.get("last_edited_time", "")
             if edited_time:
                 self.last_sync_timestamp = edited_time
-            _emit_change(
+            await _emit_change(
                 self.connector.project_id,
                 getattr(self.connector, "organization_id", None),
                 self.connector.source_id,
@@ -377,7 +377,7 @@ class SlackWatcher(BaseWatcher):
                     ts = message.get("ts", "")
                     if ts:
                         self.last_sync_timestamp = ts
-                    _emit_change(
+                    await _emit_change(
                         self.connector.project_id,
                         getattr(self.connector, "organization_id", None),
                         self.connector.source_id,
@@ -398,7 +398,7 @@ class SlackWatcher(BaseWatcher):
                 reaction = item.get("reaction", "")
                 channel = item.get("channel", "")
                 ts = item.get("message", {}).get("ts", "")
-                _emit_change(
+                await _emit_change(
                     self.connector.project_id,
                     getattr(self.connector, "organization_id", None),
                     self.connector.source_id,
@@ -447,7 +447,7 @@ class PostgresWatcher(BaseWatcher):
                     updated_at = str(row_dict.get("updated_at", ""))
                     if updated_at:
                         self.last_sync_timestamp = updated_at
-                    _emit_change(
+                    await _emit_change(
                         self.connector.project_id,
                         getattr(self.connector, "organization_id", None),
                         self.connector.source_id,
