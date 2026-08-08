@@ -53,6 +53,32 @@ class AnthropicProvider(BaseModelProvider):
             )
             return resp.status_code == 200
 
+    async def chat_completion(self, api_key: str, model: str, messages: list[dict[str, str]], max_tokens: int = 2048, temperature: float = 0.7) -> str:
+        system_prompt = ""
+        filtered_messages: list[dict[str, str]] = []
+        for msg in messages:
+            if msg.get("role") == "system":
+                system_prompt = msg["content"]
+            else:
+                filtered_messages.append(msg)
+        payload: dict[str, Any] = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": filtered_messages,
+        }
+        if system_prompt:
+            payload["system"] = system_prompt
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(
+                f"{self.BASE_URL}/messages",
+                headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"},
+                json=payload,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data["content"][0]["text"]
+
     def _get_context(self, model_id: str) -> int:
         if "opus" in model_id.lower():
             return 200000
