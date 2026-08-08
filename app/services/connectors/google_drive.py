@@ -52,3 +52,4 @@ class GoogleDriveConnector(BaseConnector):
 
 
 registry.register("google_drive", GoogleDriveConnector)
+registry.register("gdrive", GoogleDriveConnector)

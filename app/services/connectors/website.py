@@ -75,3 +75,4 @@ class WebsiteConnector(BaseConnector):
 
 
 registry.register("website", WebsiteConnector)
+registry.register("crawler", WebsiteConnector)

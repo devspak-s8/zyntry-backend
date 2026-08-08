@@ -14,6 +14,9 @@ logger = get_logger("app.middleware")
 
 class RequestIdMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
+        if request.headers.get("content-type", "").startswith("multipart/form-data"):
+            return await call_next(request)
+
         request_id = request.headers.get("X-Request-ID", str(uuid_lib.uuid4()))
         request.state.request_id = request_id
         response = await call_next(request)
@@ -23,6 +26,9 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
+        if request.headers.get("content-type", "").startswith("multipart/form-data"):
+            return await call_next(request)
+
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
@@ -53,6 +59,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 class RequestContextMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
+        if request.headers.get("content-type", "").startswith("multipart/form-data"):
+            return await call_next(request)
+
         start = time.perf_counter()
         response = await call_next(request)
         duration = time.perf_counter() - start
