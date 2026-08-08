@@ -10,6 +10,8 @@ from sqlalchemy import select
 
 from app.api import router as api_router
 from app.api.v1.logs.router import router as logs_router
+from app.admin.middleware import AdminSecurityMiddleware
+from app.admin.websocket_manager import admin_ws_manager
 from app.core.config import settings
 from app.core.database import async_session_factory, init_models
 from app.core.logging import configure_logging
@@ -18,6 +20,8 @@ from app.middleware import RateLimitMiddleware, RequestContextMiddleware, Securi
 from app.middleware.csrf import CSRFMiddleware
 from app.models.sessions import Session
 from app.models.users import User
+from app.models.actions import ActionExecution, ActionConfirmation, ActionAuditLog
+from app.models.oauth import OAuthProvider, OAuthConnection, OAuthState
 
 
 def _parse_cors_origins(value: str) -> list[str]:
@@ -94,7 +98,15 @@ def create_app() -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origin_regex=r"https?://(localhost|zyntry\.space|.*\.zyntry\.space|.*\.railway\.app|.*\.railway\.internal)(:\d+)?",
+        allow_origins=[
+            "http://localhost:3000",
+            "http://localhost:3001",
+            "http://localhost:5173",
+            "http://localhost:8000",
+            "https://zyntry.space",
+            "https://www.zyntry.space",
+            "https://app.zyntry.ai",
+        ],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -103,6 +115,15 @@ def create_app() -> FastAPI:
     app.add_middleware(CSRFMiddleware)
     app.add_middleware(RequestContextMiddleware)
     app.add_middleware(RateLimitMiddleware, limit=settings.RATE_LIMIT_PER_MINUTE, window=60)
+    app.add_middleware(AdminSecurityMiddleware)
+
+    from app.core.redis import redis_client
+
+    @app.on_event("startup")
+    async def startup():
+        from fastapi_cache import FastAPICache
+        from fastapi_cache.backends.redis import RedisBackend
+        FastAPICache.init(RedisBackend(redis_client), prefix="cache")
 
     app.include_router(api_router, prefix=f"{settings.API_PREFIX}/{settings.API_VERSION}")
     app.include_router(logs_router)
@@ -132,6 +153,21 @@ def create_app() -> FastAPI:
                 await websocket.receive_text()
         except WebSocketDisconnect:
             manager.disconnect(websocket)
+
+    @app.websocket("/ws/admin")
+    async def websocket_admin(websocket: WebSocket):
+        await admin_ws_manager.connect(websocket, token="")
+        try:
+            while True:
+                data = await websocket.receive_text()
+                try:
+                    msg = json.loads(data)
+                    if msg.get("type") == "ping":
+                        await admin_ws_manager.send_pong(websocket)
+                except (json.JSONDecodeError, Exception):
+                    pass
+        except WebSocketDisconnect:
+            await admin_ws_manager.disconnect(websocket)
 
     @app.websocket("/api/v1/ws")
     async def websocket_api(websocket: WebSocket):
