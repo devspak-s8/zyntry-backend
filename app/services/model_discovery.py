@@ -45,9 +45,8 @@ class ModelDiscoveryService:
             "anthropic": settings.ANTHROPIC_API_KEY,
             "google": settings.GOOGLE_API_KEY,
             "deepseek": settings.DEEPSEEK_API_KEY,
-            "groq": settings.GROQ_API_KEY,
             "openrouter": settings.OPENROUTER_API_KEY,
-            "mistral": settings.MISTRAL_API_KEY,
+            "groq": settings.GROQ_API_KEY,
             "meta": "",
             "bedrock": settings.AWS_ACCESS_KEY_ID,
         }

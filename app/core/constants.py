@@ -15,9 +15,6 @@ PROVIDER_GOOGLE: str = "google"
 PROVIDER_DEEPSEEK: str = "deepseek"
 PROVIDER_OPENROUTER: str = "openrouter"
 PROVIDER_GROQ: str = "groq"
-PROVIDER_MISTRAL: str = "mistral"
-PROVIDER_COHERE: str = "cohere"
-PROVIDER_VOYAGE: str = "voyage"
 PROVIDER_FIREWORKS: str = "fireworks"
 PROVIDER_AZURE: str = "azure"
 PROVIDER_BEDROCK: str = "bedrock"
@@ -29,9 +26,6 @@ SUPPORTED_PROVIDERS: tuple[str, ...] = (
     PROVIDER_DEEPSEEK,
     PROVIDER_OPENROUTER,
     PROVIDER_GROQ,
-    PROVIDER_MISTRAL,
-    PROVIDER_COHERE,
-    PROVIDER_VOYAGE,
     PROVIDER_FIREWORKS,
     PROVIDER_AZURE,
     PROVIDER_BEDROCK,
