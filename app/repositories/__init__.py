@@ -33,6 +33,8 @@ from app.repositories.webhooks import WebhookSubscriptionRepository
 from app.repositories.tools import ToolRepository
 from app.repositories.users import UserRepository
 from app.repositories.workflows import WorkflowRepository, WorkflowExecutionRepository
+from app.repositories.actions import ActionAuditLogRepository, ActionConfirmationRepository, ActionExecutionRepository
+from app.repositories.oauth import OAuthConnectionRepository, OAuthProviderRepository, OAuthStateRepository
 
 
 class UnitOfWork:
@@ -65,6 +67,12 @@ class UnitOfWork:
         self.runtime_health_checks = RuntimeHealthCheckRepository(session)
         self.workflows = WorkflowRepository(session)
         self.workflow_executions = WorkflowExecutionRepository(session)
+        self.actions = ActionExecutionRepository(session)
+        self.action_confirmations = ActionConfirmationRepository(session)
+        self.action_audit_logs = ActionAuditLogRepository(session)
+        self.oauth_providers = OAuthProviderRepository(session)
+        self.oauth_connections = OAuthConnectionRepository(session)
+        self.oauth_states = OAuthStateRepository(session)
         self.wallets = WalletRepository(session)
         self.wallet_transactions = WalletTransactionRepository(session)
         self.pricing_rules = PricingRuleRepository(session)

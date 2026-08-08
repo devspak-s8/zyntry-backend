@@ -36,5 +36,9 @@ class BaseModelProvider(ABC):
     async def test_connection(self, api_key: str) -> bool:
         ...
 
+    @abstractmethod
+    async def chat_completion(self, api_key: str, model: str, messages: list[dict[str, str]], max_tokens: int = 2048, temperature: float = 0.7) -> str:
+        ...
+
     def get_provider_key(self) -> str:
         return self.name()

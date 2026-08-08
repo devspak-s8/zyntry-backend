@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 
 from app.schemas.organizations import ORMModel
 
@@ -25,3 +25,5 @@ class ProjectRead(ORMModel):
     created_at: str
     settings: dict
     status: str
+    connected_providers: list[str] = []
+    hasBuiltRuntime: bool = Field(default=False, alias="has_built_runtime")
