@@ -18,6 +18,10 @@ class PostgresConnector(BaseConnector):
         self._connection_string = (credentials or {}).get("connection_string") or config.get("connection_string")
         if not self._connection_string:
             raise ConnectorAuthError("PostgreSQL connection string is required")
+        if isinstance(self._connection_string, str) and self._connection_string.startswith("https://") and ".supabase.co" in self._connection_string:
+            raise ConnectorAuthError(
+                "Supabase REST URL detected. Please provide the direct PostgreSQL connection string from your Supabase project settings instead."
+            )
 
     async def connect(self) -> dict:
         result = await self.test()
@@ -91,3 +95,6 @@ class PostgresConnector(BaseConnector):
 
 
 registry.register("postgres", PostgresConnector)
+registry.register("postgresql", PostgresConnector)
+registry.register("supabase", PostgresConnector)
+registry.register("cockroach", PostgresConnector)

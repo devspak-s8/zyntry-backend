@@ -12,6 +12,9 @@ from app.admin.metrics import record_admin_request
 
 class AdminSecurityMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        if request.headers.get("content-type", "").startswith("multipart/form-data"):
+            return await call_next(request)
+
         start_time = time.time()
         client_ip = get_client_ip(request)
 

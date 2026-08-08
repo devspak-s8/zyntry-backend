@@ -21,6 +21,9 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         if request.method in ("GET", "HEAD", "OPTIONS"):
             return await call_next(request)
 
+        if request.headers.get("content-type", "").startswith("multipart/form-data"):
+            return await call_next(request)
+
         path = request.url.path
 
         if path.startswith("/api/v1/auth"):

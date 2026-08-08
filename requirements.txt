@@ -27,3 +27,6 @@ openpyxl>=3.1.5
 markdown>=3.6
 python-multipart>=0.0.18
 fastapi-cache2[redis]>=0.1.0
+aiomysql>=0.0.23
+motor>=3.3.0
+libsql-experimental>=0.0.33
