@@ -9,8 +9,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-
-logger = logging.getLogger(__name__)
 from app.core.database import get_session
 from app.core.redis import redis_client
 from app.core.security import (
@@ -21,7 +19,6 @@ from app.core.security import (
     now,
     verify_password,
 )
-from app.emails import send_auth_welcome
 from app.models.email_verification_tokens import EmailVerificationToken
 from app.models.organizations import Organization
 from app.models.password_reset_tokens import PasswordResetToken
@@ -30,6 +27,13 @@ from app.models.sessions import Session
 from app.models.users import User
 from app.schemas.auth import AuthMeResponse
 from app.services.email import send_verification_email
+from app.services.notifications.publishers import (
+    send_email_verified,
+    send_password_changed,
+    send_password_reset,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -146,16 +150,24 @@ async def register(
         from app.services.notifications.publishers import (
             send_verification_email as _send_verification_email,
         )
-        await _send_verification_email(email, name, token)
+        result = await _send_verification_email(email, name, token)
         if not result.get("success"):
             logger.warning("Verification email failed for %s: %s", email, result.get("error"))
     except Exception:
         logger.exception("Failed to send verification email to %s", email)
 
     try:
-        await send_auth_welcome(email, name)
+        from app.events import NotificationEvent
+        from app.services.notifications import enqueue_notification
+        event = NotificationEvent(
+            event_type="auth.welcome",
+            recipient=email,
+            data={"user_name": name},
+            category="general",
+        )
+        enqueue_notification(event)
     except Exception:
-        logger.exception("Failed to send welcome email to %s", email)
+        logger.exception("Failed to fire welcome email for %s", email)
 
     await _create_session(db, response, user)
     refresh_token = await _create_refresh_token(db, user)
@@ -343,12 +355,7 @@ async def forgot_password(
         db.add(reset_obj)
         await db.commit()
         try:
-            await send_email(
-                "password_reset",
-                user.email,
-                user_name=user.name,
-                token=token,
-            )
+            await send_password_reset(user.email, user_name=user.name, token=token)
         except Exception:
             logger.exception("Failed to send password reset email to %s", user.email)
     return {"message": "If an account exists with that email, a reset link has been sent."}
@@ -382,10 +389,19 @@ async def reset_password(
     reset_obj.used = True
     await db.commit()
     try:
-        from app.services.notifications.publishers import send_password_changed
-        await send_password_changed(user.email, user_name=user.name)
+        from app.events import NotificationEvent
+        from app.services.notifications import enqueue_notification
+        event = NotificationEvent(
+            event_type="auth.password_changed",
+            recipient=user.email,
+            data={"user_name": user.name},
+            category="security",
+            sender_name="Zyntry Security",
+            sender_email="security@zyntry.space",
+        )
+        enqueue_notification(event)
     except Exception:
-        logger.exception("Failed to send password changed email to %s", user.email)
+        logger.exception("Failed to enqueue password changed email to %s", user.email)
     return {"message": "Password has been reset."}
 
 
@@ -411,10 +427,19 @@ async def verify_email(
     verification_obj.used = True
     await db.commit()
     try:
-        from app.services.notifications.publishers import send_email_verified
-        await send_email_verified(user.email, user_name=user.name)
+        from app.events import NotificationEvent
+        from app.services.notifications import enqueue_notification
+        event = NotificationEvent(
+            event_type="auth.email_verified",
+            recipient=user.email,
+            data={"user_name": user.name},
+            category="security",
+            sender_name="Zyntry Security",
+            sender_email="security@zyntry.space",
+        )
+        enqueue_notification(event)
     except Exception:
-        logger.exception("Failed to send email verified confirmation to %s", user.email)
+        logger.exception("Failed to enqueue email verified confirmation to %s", user.email)
     return {"message": "Email verified successfully"}
 
 

@@ -16,12 +16,13 @@ from sqlalchemy.orm import selectinload
 from app.api.v1.dependencies import get_current_user
 from app.core.database import get_session
 from app.core.redis import redis_client
-from app.emails import send_project_created
+from app.events import NotificationEvent
 from app.models.organizations import Organization
 from app.models.projects import Project
 from app.models.users import User
 from app.repositories import UnitOfWork
 from app.schemas.projects import ProjectCreate, ProjectRead
+from app.services.notifications import enqueue_notification
 
 logger = logging.getLogger(__name__)
 
@@ -183,11 +184,15 @@ async def create_project(
     await _invalidate_projects_cache(org_id)
 
     try:
-        await send_project_created(
-            current_user.email, user_name=current_user.name, project_name=body.name
+        event = NotificationEvent(
+            event_type="project.created",
+            recipient=current_user.email,
+            data={"user_name": current_user.name, "project_name": body.name},
+            category="general",
         )
+        enqueue_notification(event)
     except Exception:
-        logger.exception("Failed to send project created email to %s", current_user.email)
+        logger.exception("Failed to enqueue project created email to %s", current_user.email)
 
     response = ProjectRead(
         id=proj.id,

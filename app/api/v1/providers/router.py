@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.dependencies import get_current_user
 from app.core.database import get_session
 from app.core.ws_events import emit_provider_updated
-from app.emails import (
+from app.services.notifications.publishers import (
     send_provider_connected,
     send_provider_disconnected,
 )
