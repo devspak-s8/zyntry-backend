@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,17 +11,27 @@ from app.api.v1.dependencies import get_current_user
 from app.core.database import get_session
 from app.models.users import User
 from app.repositories import UnitOfWork
-from app.schemas.users import UserCreate, UserRead, UserUpdate
+from app.schemas.users import UserRead, UserUpdate
 
 router = APIRouter(prefix="/users", tags=["users"])
+
+
+def _require_superuser(current_user: User) -> None:
+    if not current_user.is_superuser:
+        raise HTTPException(status_code=403, detail="Superadmin access required")
 
 
 @router.get("", response_model=list[UserRead])
 async def list_users(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[UserRead]:
-    result = await db.execute(select(User))
+    _require_superuser(current_user)
+    result = await db.execute(
+        select(User).order_by(User.created_at.desc()).limit(limit).offset(offset)
+    )
     users = result.scalars().all()
     return [
         UserRead(
@@ -42,6 +52,8 @@ async def get_user(
     db: AsyncSession = Depends(get_session),
 ) -> UserRead:
     import uuid
+
+    _require_superuser(current_user)
     try:
         uid = uuid.UUID(user_id)
     except ValueError:
@@ -68,6 +80,8 @@ async def update_user(
     db: AsyncSession = Depends(get_session),
 ) -> UserRead:
     import uuid
+
+    _require_superuser(current_user)
     try:
         uid = uuid.UUID(user_id)
     except ValueError:
@@ -110,6 +124,8 @@ async def delete_user(
     db: AsyncSession = Depends(get_session),
 ) -> None:
     import uuid
+
+    _require_superuser(current_user)
     try:
         uid = uuid.UUID(user_id)
     except ValueError:
@@ -158,6 +174,7 @@ async def enable_two_factor(
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
     import secrets
+
     secret = secrets.token_base32()
     uow = UnitOfWork(db)
     try:
@@ -191,7 +208,9 @@ async def revoke_all_tokens(
 ) -> dict[str, str]:
     uow = UnitOfWork(db)
     try:
-        await uow.users.update(current_user, settings={**(current_user.settings or {}), "tokens_revoked": True})
+        await uow.users.update(
+            current_user, settings={**(current_user.settings or {}), "tokens_revoked": True}
+        )
         await uow.commit()
     except Exception as exc:
         await uow.rollback()

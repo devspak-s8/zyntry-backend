@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import re
 import time
 import uuid
 from collections import defaultdict
@@ -31,6 +32,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
+from dotenv import load_dotenv
+
+load_dotenv()
 
 print("[DEBUG] load_test.py module loaded from:", __file__, flush=True)
 
@@ -43,8 +47,12 @@ DEFAULT_RAMP_INTERVAL = float(os.getenv("ZYTRY_LOAD_RAMP_INTERVAL", "2"))
 DEFAULT_TOTAL_USERS = int(os.getenv("ZYTRY_LOAD_TOTAL_USERS", "10000"))
 DEFAULT_NUM_ORGS = int(os.getenv("ZYTRY_LOAD_NUM_ORGS", "200"))
 DEFAULT_MAX_CONCURRENT = int(os.getenv("ZYTRY_LOAD_MAX_CONCURRENT", "10"))
-DEFAULT_SUPERADMIN_EMAIL = os.getenv("ZYTRY_LOAD_SUPERADMIN_EMAIL", "")
-DEFAULT_SUPERADMIN_PASSWORD = os.getenv("ZYTRY_LOAD_SUPERADMIN_PASSWORD", "")
+DEFAULT_SUPERADMIN_EMAIL = os.getenv(
+    "ZYTRY_LOAD_SUPERADMIN_EMAIL", os.getenv("SUPERADMIN_EMAIL", "")
+)
+DEFAULT_SUPERADMIN_PASSWORD = os.getenv(
+    "ZYTRY_LOAD_SUPERADMIN_PASSWORD", os.getenv("SUPERADMIN_PASSWORD", "")
+)
 
 
 def _normalize_base_url(url: str) -> str:
@@ -121,6 +129,15 @@ class MetricsCollector:
 
 metrics = MetricsCollector()
 
+UUID_IN_PATH = re.compile(
+    r"/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}"
+    r"-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?=/|$)"
+)
+
+
+def _metric_endpoint(url: str) -> str:
+    return UUID_IN_PATH.sub("/{id}", url)
+
 
 # ---------------------------------------------------------------------------
 # HTTP helper
@@ -171,7 +188,7 @@ async def timed_request(
                 )
             await metrics.add(
                 RequestRecord(
-                    endpoint=url,
+                    endpoint=_metric_endpoint(url),
                     method=method.upper(),
                     status=resp.status_code,
                     latency_ms=latency,
@@ -193,7 +210,7 @@ async def timed_request(
             print(f"    [ERR] {label or method.upper()} {url} -> EXCEPTION ({latency:.1f}ms) {exc}")
             await metrics.add(
                 RequestRecord(
-                    endpoint=url,
+                    endpoint=_metric_endpoint(url),
                     method=method.upper(),
                     status=0,
                     latency_ms=latency,
@@ -839,7 +856,10 @@ async def async_main() -> None:
         )
 
     if superadmin_count == 0 and not superadmin_email:
-        print("[WARN] No --superadmin-email provided; superadmin restriction test will be skipped.")
+        print(
+            "[WARN] No --superadmin-email provided; positive superadmin access "
+            "will be skipped, but regular-user denial is still tested."
+        )
 
     print(f"Zyntry Load Test — {total_users} users, {num_orgs} orgs")
     print(f"  Batch size   : {batch_size}")
