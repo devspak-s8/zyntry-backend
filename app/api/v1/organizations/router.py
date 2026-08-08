@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
 from app.core.database import get_session
+from app.core.redis import redis_client
 from app.models.organizations import Organization
 from app.repositories import UnitOfWork
 from app.schemas.organizations import OrganizationCreate, OrganizationRead
@@ -22,8 +23,11 @@ async def list_organizations(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> list[OrganizationRead]:
-    result = await db.execute(select(Organization))
-    orgs = result.scalars().all()
+    if current_user.organization_id is None:
+        return []
+    org = await db.get(Organization, current_user.organization_id)
+    if org is None:
+        return []
     return [
         OrganizationRead(
             id=org.id,
@@ -32,7 +36,6 @@ async def list_organizations(
             region="us-central1",
             created_at=org.created_at,
         )
-        for org in orgs
     ]
 
 
@@ -40,8 +43,16 @@ async def list_organizations(
 async def create_organization(
     body: OrganizationCreate,
     current_user: Annotated[User, Depends(get_current_user)],
+    session_token: Annotated[str | None, Cookie(alias="zyntra_session")] = None,
     db: AsyncSession = Depends(get_session),
 ) -> OrganizationRead:
+    if current_user.organization_id is not None:
+        raise HTTPException(status_code=409, detail="User already belongs to an organization")
+
+    existing = await db.execute(select(Organization).where(Organization.name == body.name))
+    if existing.scalar_one_or_none() is not None:
+        raise HTTPException(status_code=409, detail="Organization with this name already exists")
+
     uow = UnitOfWork(db)
     try:
         org = await uow.organizations.create(
@@ -50,6 +61,8 @@ async def create_organization(
         )
         current_user.organization_id = org.id
         await uow.commit()
+        if session_token:
+            await redis_client.delete(f"session:{session_token}")
     except IntegrityError:
         await uow.rollback()
         raise HTTPException(status_code=409, detail="Organization with this slug already exists")
