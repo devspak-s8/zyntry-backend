@@ -45,6 +45,21 @@ class GoogleProvider(BaseModelProvider):
             )
             return resp.status_code == 200
 
+    async def chat_completion(self, api_key: str, model: str, messages: list[dict[str, str]], max_tokens: int = 2048, temperature: float = 0.7) -> str:
+        contents = []
+        for msg in messages:
+            role = "user" if msg["role"] == "user" else "model"
+            contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(
+                f"{self.BASE_URL}/models/{model}:generateContent?key={api_key}",
+                headers={"Content-Type": "application/json"},
+                json={"contents": contents, "generationConfig": {"maxOutputTokens": max_tokens, "temperature": temperature}},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data["candidates"][0]["content"]["parts"][0]["text"]
+
     def _get_context(self, model_id: str) -> int:
         if "2.5-pro" in model_id.lower():
             return 1000000
