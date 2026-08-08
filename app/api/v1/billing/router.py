@@ -132,7 +132,7 @@ async def bachs_webhook(
     timestamp_header = request.headers.get("X-Bachs-Timestamp", "")
     signature_header = request.headers.get("X-Bachs-Signature", "")
 
-    from app.services.baching import verify_bachs_signature
+    from app.services.bachs import verify_bachs_signature
     if not verify_bachs_signature(payload, settings.BACHS_WEBHOOK_SECRET, timestamp_header, signature_header):
         raise HTTPException(status_code=400, detail="Invalid webhook signature")
 
