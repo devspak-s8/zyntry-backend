@@ -45,6 +45,17 @@ class BedrockProvider(BaseModelProvider):
             )
             return resp.status_code == 200
 
+    async def chat_completion(self, api_key: str, model: str, messages: list[dict[str, str]], max_tokens: int = 2048, temperature: float = 0.7) -> str:
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(
+                f"{self.BASE_URL}/v1/chat/completions",
+                headers={"x-amzn-bedrock-api-key": api_key, "Content-Type": "application/json"},
+                json={"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": temperature},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data["choices"][0]["message"]["content"]
+
     def _get_context(self, model_id: str) -> int:
         if "claude" in model_id.lower():
             return 200000

@@ -28,6 +28,10 @@ class ApiKeyRead(ORMModel):
     updated_at: datetime
 
 
+class ApiKeyCreateResponse(ApiKeyRead):
+    key: str
+
+
 class ApiKeyRotateResponse(BaseModel):
     api_key: ApiKeyRead
     raw_key: str
