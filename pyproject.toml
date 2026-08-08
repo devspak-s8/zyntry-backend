@@ -1,6 +1,6 @@
 [project]
 name = "zyntra-backend"
-version = "0.1.0"
+version = "0.1.1"
 description = "Zyntra AI Backend Platform"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -32,6 +32,7 @@ dependencies = [
     "openpyxl>=3.1.5",
     "markdown>=3.6",
     "python-multipart>=0.0.18",
+    "fastapi-cache2[redis]>=0.1.0",
 ]
 
 [project.optional-dependencies]
