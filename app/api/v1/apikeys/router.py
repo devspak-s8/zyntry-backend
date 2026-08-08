@@ -9,7 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.dependencies import get_current_user
 from app.core.database import get_session
 from app.core.security import generate_api_key, hash_token
-from app.emails import send_email
+from app.emails import (
+    send_api_key_created,
+    send_api_key_revoked,
+    send_api_key_rotated,
+)
 from app.models.apikeys import ApiKey
 from app.models.projects import Project
 from app.models.users import User
@@ -119,7 +123,7 @@ async def create_api_key(
         raise HTTPException(status_code=500, detail=f"Failed to create API key: {exc}")
 
     try:
-        await send_email("api_key_created", current_user.email, key_name=body.name)
+        await send_api_key_created(current_user.email, key_name=body.name)
     except Exception:
         logger.exception("Failed to send API key created email")
 
@@ -152,7 +156,7 @@ async def rotate_api_key(
         raise HTTPException(status_code=400, detail=str(exc))
 
     try:
-        await send_email("api_key_rotated", current_user.email, key_name=result.get("name", "API Key"))
+        await send_api_key_rotated(current_user.email, key_name=result.get("name", "API Key"))
     except Exception:
         logger.exception("Failed to send API key rotated email")
 
@@ -216,7 +220,7 @@ async def revoke_api_key(
         raise HTTPException(status_code=400, detail=str(exc))
 
     try:
-        await send_email("api_key_revoked", current_user.email, key_name=key.get("name", "API Key"))
+        await send_api_key_revoked(current_user.email, key_name=key.get("name", "API Key"))
     except Exception:
         logger.exception("Failed to send API key revoked email")
 

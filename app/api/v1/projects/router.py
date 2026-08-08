@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import logging
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,7 +16,7 @@ from sqlalchemy.orm import selectinload
 from app.api.v1.dependencies import get_current_user
 from app.core.database import get_session
 from app.core.redis import redis_client
-from app.emails import send_email
+from app.emails import send_project_created
 from app.models.organizations import Organization
 from app.models.projects import Project
 from app.models.users import User
@@ -45,6 +47,17 @@ async def _invalidate_projects_cache(org_id: uuid.UUID) -> None:
     await redis_client.delete(f"projects:{org_id}")
 
 
+async def _release_idempotency_lock(lock_key: str | None, token: str | None) -> None:
+    if lock_key and token:
+        await redis_client.eval(
+            "if redis.call('get', KEYS[1]) == ARGV[1] then "
+            "return redis.call('del', KEYS[1]) else return 0 end",
+            1,
+            lock_key,
+            token,
+        )
+
+
 @router.get("", response_model=list[ProjectRead])
 async def list_projects(
     current_user: Annotated[User, Depends(get_current_user)],
@@ -68,7 +81,9 @@ async def list_projects(
     result = await db.execute(stmt)
     projects = [_to_read(p) for p in result.scalars().all()]
 
-    await redis_client.set(cache_key, json.dumps([p.model_dump(mode="json") for p in projects]), ex=30)
+    await redis_client.set(
+        cache_key, json.dumps([p.model_dump(mode="json") for p in projects]), ex=30
+    )
     return projects
 
 
@@ -77,15 +92,62 @@ async def create_project(
     body: ProjectCreate,
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> ProjectRead:
+    if idempotency_key is not None and not (1 <= len(idempotency_key) <= 255):
+        raise HTTPException(status_code=400, detail="Invalid Idempotency-Key")
+
+    idempotency_cache_key: str | None = None
+    idempotency_lock_key: str | None = None
+    lock_token: str | None = None
+    request_hash = hashlib.sha256(
+        body.model_dump_json(exclude_none=False).encode("utf-8")
+    ).hexdigest()
+
+    if idempotency_key:
+        key_hash = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()
+        idempotency_cache_key = f"idempotency:projects:{current_user.id}:{key_hash}"
+        idempotency_lock_key = f"{idempotency_cache_key}:lock"
+
+        cached = await redis_client.get(idempotency_cache_key)
+        if cached:
+            record = json.loads(cached)
+            if record["request_hash"] != request_hash:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Idempotency-Key was already used with a different payload",
+                )
+            return ProjectRead(**record["response"])
+
+        lock_token = uuid.uuid4().hex
+        acquired = await redis_client.set(idempotency_lock_key, lock_token, nx=True, ex=30)
+        if not acquired:
+            for _ in range(100):
+                await asyncio.sleep(0.05)
+                cached = await redis_client.get(idempotency_cache_key)
+                if cached:
+                    record = json.loads(cached)
+                    if record["request_hash"] != request_hash:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="Idempotency-Key was already used with a different payload",
+                        )
+                    return ProjectRead(**record["response"])
+                if not await redis_client.exists(idempotency_lock_key):
+                    break
+            raise HTTPException(status_code=409, detail="Idempotent request is still processing")
+
     org_id = body.organization_id or current_user.organization_id
     if org_id is None:
+        await _release_idempotency_lock(idempotency_lock_key, lock_token)
         raise HTTPException(status_code=400, detail="organization_id is required")
     if org_id != current_user.organization_id:
+        await _release_idempotency_lock(idempotency_lock_key, lock_token)
         raise HTTPException(status_code=403, detail="Cannot create project in another organization")
 
     org = await db.get(Organization, org_id)
     if org is None:
+        await _release_idempotency_lock(idempotency_lock_key, lock_token)
         raise HTTPException(status_code=404, detail="Organization not found")
 
     existing = await db.execute(
@@ -95,6 +157,7 @@ async def create_project(
         )
     )
     if existing.scalar_one_or_none() is not None:
+        await _release_idempotency_lock(idempotency_lock_key, lock_token)
         raise HTTPException(status_code=409, detail="Project with this name already exists")
 
     uow = UnitOfWork(db)
@@ -110,24 +173,23 @@ async def create_project(
         await uow.commit()
     except IntegrityError:
         await uow.rollback()
+        await _release_idempotency_lock(idempotency_lock_key, lock_token)
         raise HTTPException(status_code=409, detail="Project with this slug already exists")
     except Exception as exc:
         await uow.rollback()
+        await _release_idempotency_lock(idempotency_lock_key, lock_token)
         raise HTTPException(status_code=500, detail=f"Failed to create project: {exc}")
 
     await _invalidate_projects_cache(org_id)
 
     try:
-        await send_email(
-            "project_created",
-            current_user.email,
-            user_name=current_user.name,
-            project_name=body.name,
+        await send_project_created(
+            current_user.email, user_name=current_user.name, project_name=body.name
         )
     except Exception:
         logger.exception("Failed to send project created email to %s", current_user.email)
 
-    return ProjectRead(
+    response = ProjectRead(
         id=proj.id,
         name=proj.name,
         slug=proj.slug,
@@ -139,6 +201,21 @@ async def create_project(
         connected_providers=[],
         hasBuiltRuntime=proj.has_built_runtime,
     )
+    try:
+        if idempotency_cache_key:
+            await redis_client.set(
+                idempotency_cache_key,
+                json.dumps(
+                    {
+                        "request_hash": request_hash,
+                        "response": response.model_dump(mode="json", by_alias=True),
+                    }
+                ),
+                ex=86400,
+            )
+    finally:
+        await _release_idempotency_lock(idempotency_lock_key, lock_token)
+    return response
 
 
 @router.get("/{project_id}", response_model=ProjectRead)

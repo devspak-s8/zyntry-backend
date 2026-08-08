@@ -270,26 +270,6 @@ def build_runtime_deleted(runtime_name: str) -> tuple[str, str]:
     return html, text
 
 
-def build_source_connected(provider: str, source_name: str | None = None) -> tuple[str, str]:
-    display = source_name or provider
-    html = build_email(
-        title=f"{provider} connected successfully",
-        subtitle=f"Source '{display}'",
-        body_html=f"The {provider} source has been successfully connected and will begin syncing your data.",
-        cta_text="View Source",
-        cta_url=f"{_APP_URL}/sources",
-    )
-    text = build_email_text(f"{provider} connected successfully", f"Source '{display}' connected. Syncing will begin automatically.", "View Source", f"{_APP_URL}/sources")
-    html, text = (build_email(
-        title=f"{provider} connected successfully",
-        subtitle=f"Source '{display}'",
-        body_html=f"The {provider} source has been successfully connected and will begin syncing your data.",
-        cta_text="View Source",
-        cta_url=f"{_APP_URL}/sources",
-    ), build_email_text(f"{provider} connected successfully", f"Source '{display}' connected. Syncing will begin automatically.", "View Source", f"{_APP_URL}/sources"))
-    return html, text
-
-
 def build_source_sync_finished(source_name: str, documents: int) -> tuple[str, str]:
     html = build_email(
         title="Source synchronization completed",
@@ -1364,7 +1344,6 @@ EMAIL_TEMPLATES: dict[str, Any] = {
     "new_login_detected": build_new_login_detected,
     "login_from_new_device": build_login_from_new_device,
     "login_from_new_country": build_login_from_new_country,
-    "password_changed": build_password_changed,
     "mfa_enabled": build_mfa_enabled,
     "mfa_disabled": build_mfa_disabled,
     "recovery_codes_regenerated": build_recovery_codes_regenerated,
@@ -1377,7 +1356,6 @@ EMAIL_TEMPLATES: dict[str, Any] = {
     "incident_notification": build_incident_notification,
     "service_restored": build_service_restored,
     "status_update": build_status_update,
-    "weekly_usage_summary": build_weekly_usage_summary,
     "new_user_registered": build_new_user_registered,
     "new_organization_created": build_new_organization_created,
     "large_payment_received": build_large_payment_received,
@@ -1390,23 +1368,45 @@ EMAIL_TEMPLATES: dict[str, Any] = {
 }
 
 
-async def send_email(template_name: str, to: str | list[str], **kwargs: Any) -> dict[str, Any]:
+async def send_email(
+    template_name: str,
+    to: str | list[str],
+    *,
+    reply_to: str | None = None,
+    from_email: str | None = None,
+    from_name: str | None = None,
+    priority: str | None = None,
+    category: str | None = None,
+    headers: dict[str, str] | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
     if template_name not in EMAIL_TEMPLATES:
         raise ValueError(f"Unknown email template: {template_name}")
     html, text = EMAIL_TEMPLATES[template_name](**kwargs)
     subject = template_name.replace("_", " ").title().replace("Email", "email").replace("Mfa", "MFA")
+
+    resolved_from = from_email or "noreply@zyntry.space"
+    if from_name and "<" not in resolved_from:
+        resolved_from = f"{from_name} <{resolved_from}>"
+
     if not settings.SENDBYTE_KEY:
         logger.warning("SENDBYTE_KEY is not configured; skipping email for template %s to %s", template_name, to)
         return {"success": False, "template": template_name, "to": to, "error": "email_not_configured"}
     client = get_sendbyte_client()
     try:
-        result = await client.send(
-            to=to,
-            subject=subject,
-            html=html,
-            text=text,
-            from_email="noreply@zyntry.space",
-        )
+        payload: dict[str, Any] = {
+            "to": to,
+            "subject": subject,
+            "html": html,
+            "from": resolved_from,
+        }
+        if text:
+            payload["text"] = text
+        if reply_to:
+            payload["replyTo"] = reply_to
+        if headers:
+            payload["headers"] = headers
+        result = await client.send(**payload)
         return {"success": True, "template": template_name, "to": to, "data": result}
     except SendByteError as e:
         logger.error("SendByte email failed for template %s", template_name, extra={"to": to, "error": str(e)})

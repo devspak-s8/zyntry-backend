@@ -21,7 +21,7 @@ from app.core.security import (
     now,
     verify_password,
 )
-from app.emails import send_email
+from app.emails import send_auth_welcome
 from app.models.email_verification_tokens import EmailVerificationToken
 from app.models.organizations import Organization
 from app.models.password_reset_tokens import PasswordResetToken
@@ -143,14 +143,17 @@ async def register(
     await db.commit()
 
     try:
-        result = await send_verification_email(email, name, token)
+        from app.services.notifications.publishers import (
+            send_verification_email as _send_verification_email,
+        )
+        await _send_verification_email(email, name, token)
         if not result.get("success"):
             logger.warning("Verification email failed for %s: %s", email, result.get("error"))
     except Exception:
         logger.exception("Failed to send verification email to %s", email)
 
     try:
-        await send_email("welcome", email, user_name=name)
+        await send_auth_welcome(email, name)
     except Exception:
         logger.exception("Failed to send welcome email to %s", email)
 
@@ -379,7 +382,8 @@ async def reset_password(
     reset_obj.used = True
     await db.commit()
     try:
-        await send_email("password_changed", user.email, user_name=user.name)
+        from app.services.notifications.publishers import send_password_changed
+        await send_password_changed(user.email, user_name=user.name)
     except Exception:
         logger.exception("Failed to send password changed email to %s", user.email)
     return {"message": "Password has been reset."}
@@ -407,7 +411,8 @@ async def verify_email(
     verification_obj.used = True
     await db.commit()
     try:
-        await send_email("email_verified", user.email, user_name=user.name)
+        from app.services.notifications.publishers import send_email_verified
+        await send_email_verified(user.email, user_name=user.name)
     except Exception:
         logger.exception("Failed to send email verified confirmation to %s", user.email)
     return {"message": "Email verified successfully"}

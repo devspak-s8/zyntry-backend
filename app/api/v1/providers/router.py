@@ -10,7 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.dependencies import get_current_user
 from app.core.database import get_session
 from app.core.ws_events import emit_provider_updated
-from app.emails import send_email
+from app.emails import (
+    send_provider_connected,
+    send_provider_disconnected,
+)
 from app.models.users import User
 from app.repositories import UnitOfWork
 from app.schemas.providers import (
@@ -192,7 +195,7 @@ async def connect_provider(
     )
     if not result.get("requires_oauth"):
         try:
-            await send_email(f"{body.provider_name}_connected", current_user.email, name=body.display_name or body.provider_name)
+            await send_provider_connected(current_user.email, provider=body.provider_name, display_name=body.display_name or body.provider_name)
         except Exception:
             logger.exception("Failed to send provider connected email")
     await emit_provider_updated(
@@ -256,6 +259,6 @@ async def disconnect_provider(
         await ProviderService(uow).disconnect(connection_id)
         await emit_provider_updated(str(current_user.id), project_id, provider_name, False)
         try:
-            await send_email(f"{provider_name}_disconnected", current_user.email, name=display_name)
+            await send_provider_disconnected(current_user.email, provider=provider_name, display_name=display_name)
         except Exception:
             logger.exception("Failed to send provider disconnected email")

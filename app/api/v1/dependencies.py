@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from typing import Annotated
 
 from fastapi import Cookie, Depends, HTTPException
@@ -25,12 +26,20 @@ async def _get_session_user(
     cached = await redis_client.get(cache_key)
     if cached:
         data = json.loads(cached)
-        return User(**data)
+        return User(
+            id=uuid.UUID(data["id"]),
+            organization_id=(
+                uuid.UUID(data["organization_id"]) if data.get("organization_id") else None
+            ),
+            email=data["email"],
+            name=data.get("name"),
+            is_active=data.get("is_active", True),
+            is_superuser=data.get("is_superuser", False),
+            email_verified=data.get("email_verified", False),
+        )
 
     token_hash = hash_token(session_token)
-    result = await db.execute(
-        select(Session).where(Session.token_hash == token_hash)
-    )
+    result = await db.execute(select(Session).where(Session.token_hash == token_hash))
     session_obj = result.scalar_one_or_none()
 
     if session_obj is None or session_obj.revoked:
@@ -45,7 +54,17 @@ async def _get_session_user(
 
     await redis_client.set(
         cache_key,
-        json.dumps({"id": str(user.id), "organization_id": str(user.organization_id), "email": user.email}),
+        json.dumps(
+            {
+                "id": str(user.id),
+                "organization_id": (str(user.organization_id) if user.organization_id else None),
+                "email": user.email,
+                "name": user.name,
+                "is_active": user.is_active,
+                "is_superuser": user.is_superuser,
+                "email_verified": user.email_verified,
+            }
+        ),
         ex=45,
     )
 
