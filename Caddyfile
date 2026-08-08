@@ -1,0 +1,73 @@
+{
+    email {$CADDY_ADMIN_EMAIL:-admin@zyntry.space}
+
+    log {
+        output file /var/log/caddy/access.log {
+            roll_size 100mb
+            roll_keep 5
+        }
+        format json
+    }
+}
+
+# HTTP to HTTPS redirect
+:80 {
+    redir https://{host}{uri} permanent
+}
+
+# Main domain
+zyntry.space, www.zyntry.space, *.zyntry.space {
+    # Security headers
+    header {
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        X-XSS-Protection "1; mode=block"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        Permissions-Policy "geolocation=(), microphone=(), camera=()"
+        -Server
+    }
+
+    # Compression
+    encode gzip
+
+    # API proxy with WebSocket support
+    reverse_proxy http://zyntry-api:8000 {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+        
+        # WebSocket support
+        transport http {
+            keepalive 60s
+        }
+    }
+}
+
+# Development access
+localhost, 127.0.0.1, ::1 {
+    # Security headers
+    header {
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        X-XSS-Protection "1; mode=block"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        -Server
+    }
+
+    # Compression
+    encode gzip
+
+    # API proxy with WebSocket support
+    reverse_proxy http://zyntry-api:8000 {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+        
+        transport http {
+            keepalive 60s
+        }
+    }
+}
