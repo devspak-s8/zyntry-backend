@@ -34,5 +34,37 @@ celery_app.conf.update(
             "task": "app.tasks.billing.clean_expired_sessions",
             "schedule": 3600.0,
         },
+        "run-security-scan": {
+            "task": "app.tasks.security.run_security_scan",
+            "schedule": 3600.0,
+        },
+        "expire-temporary-bans": {
+            "task": "app.tasks.security.expire_bans",
+            "schedule": 3600.0,
+        },
+        "cleanup-expired-sessions": {
+            "task": "app.tasks.cleanup.expired_sessions",
+            "schedule": 86400.0,
+        },
+        "cleanup-expired-refresh-tokens": {
+            "task": "app.tasks.cleanup.expired_refresh_tokens",
+            "schedule": 86400.0,
+        },
+        "cleanup-revoked-tokens": {
+            "task": "app.tasks.cleanup.revoked_tokens",
+            "schedule": 86400.0,
+        },
+        "cleanup-old-request-logs": {
+            "task": "app.tasks.cleanup.old_request_logs",
+            "schedule": 604800.0,
+        },
+        "cleanup-old-audit-logs": {
+            "task": "app.tasks.cleanup.old_audit_logs",
+            "schedule": 604800.0,
+        },
+        "cleanup-old-webhook-deliveries": {
+            "task": "app.tasks.cleanup.old_webhook_deliveries",
+            "schedule": 604800.0,
+        },
     },
 )

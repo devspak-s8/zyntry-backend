@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
+
+from sqlalchemy import select
 
 from app.models.health_metrics import HealthMetric, RuntimeHealthCheck
 from app.models.runtimes import Runtime
@@ -16,7 +18,7 @@ class HealthMetricRepository(BaseRepository[HealthMetric]):
     async def get_by_runtime_and_type(
         self, runtime_id: uuid.UUID, metric_type: str, hours: int = 24
     ) -> list[HealthMetric]:
-        since = datetime.now(timezone.utc) - timedelta(hours=hours)
+        since = datetime.now(UTC) - timedelta(hours=hours)
         result = await self.session.execute(
             select(HealthMetric)
             .where(HealthMetric.runtime_id == runtime_id)
@@ -85,6 +87,7 @@ class HealthService:
         return {
             "runtime_id": str(runtime.id),
             "status": runtime.status,
+            "health": runtime.health,
             "embedding_latency_ms": round(embedding_latency_ms, 2),
             "retrieval_latency_ms": round(retrieval_latency_ms, 2),
             "llm_latency_ms": round(llm_latency_ms, 2),
@@ -130,8 +133,8 @@ class HealthService:
         summary: dict[str, Any] = {
             "runtime_id": str(rid),
             "window_hours": hours,
-            "period_start": (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat(),
-            "period_end": datetime.now(timezone.utc).isoformat(),
+            "period_start": (datetime.now(UTC) - timedelta(hours=hours)).isoformat(),
+            "period_end": datetime.now(UTC).isoformat(),
             "metrics_by_type": {},
         }
 
@@ -210,7 +213,7 @@ class HealthService:
     async def _get_recent_metrics(
         self, runtime_id: uuid.UUID, hours: int = 24
     ) -> list[HealthMetric]:
-        since = datetime.now(timezone.utc) - timedelta(hours=hours)
+        since = datetime.now(UTC) - timedelta(hours=hours)
         result = await self.uow.session.execute(
             select(HealthMetric)
             .where(HealthMetric.runtime_id == runtime_id)
@@ -222,7 +225,7 @@ class HealthService:
     async def _get_recent_health_checks(
         self, runtime_id: uuid.UUID, hours: int = 24
     ) -> list[RuntimeHealthCheck]:
-        since = datetime.now(timezone.utc) - timedelta(hours=hours)
+        since = datetime.now(UTC) - timedelta(hours=hours)
         result = await self.uow.session.execute(
             select(RuntimeHealthCheck)
             .where(RuntimeHealthCheck.runtime_id == runtime_id)
@@ -292,7 +295,7 @@ class HealthService:
         if last_sync_success is not None:
             try:
                 last_sync = datetime.fromisoformat(last_sync_success)
-                age_hours = (datetime.now(timezone.utc) - last_sync).total_seconds() / 3600.0
+                age_hours = (datetime.now(UTC) - last_sync).total_seconds() / 3600.0
                 if age_hours <= 1:
                     sync_score = 100.0
                 elif age_hours <= 24:

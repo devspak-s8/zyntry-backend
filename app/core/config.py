@@ -62,9 +62,6 @@ class AppSettings(BaseSettings):
     DEEPSEEK_API_KEY: str = ""
     OPENROUTER_API_KEY: str = ""
     GROQ_API_KEY: str = ""
-    MISTRAL_API_KEY: str = ""
-    COHERE_API_KEY: str = ""
-    VOYAGE_API_KEY: str = ""
     FIREWORKS_API_KEY: str = ""
     AZURE_OPENAI_ENDPOINT: str = ""
     AZURE_OPENAI_KEY: str = ""
@@ -77,9 +74,9 @@ class AppSettings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     SENTRY_DSN: str = ""
 
-    # Email (SendLib)
-    SENDLIB_API_KEY: str = ""
-    SENDLIB_API_URL: str = "https://sendlib.samueltuoyo.com"
+    # Email (SendByte)
+    SENDBYTE_KEY: str = ""
+    SENDBYTE_API_URL: str = "https://api.sendbyte.africa"
 
     # OAuth
     GITHUB_CLIENT_ID: str = ""
@@ -122,6 +119,12 @@ class AppSettings(BaseSettings):
     ENABLE_ANALYTICS: bool = True
     ENABLE_TOOLS: bool = True
     ENABLE_ROUTER: bool = True
+
+    # Admin Platform
+    ADMIN_IP_ALLOWLIST: str = ""
+    ADMIN_IP_BAN_CHECK: bool = True
+    ADMIN_MFA_REQUIRED: bool = False
+    ADMIN_SESSION_TTL_MINUTES: int = 60
 
     @property
     def is_production(self) -> bool:

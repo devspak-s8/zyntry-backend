@@ -45,3 +45,4 @@ class AuthMeResponse(BaseModel):
     name: str | None
     organization_id: uuid.UUID | None
     is_active: bool
+    email_verified: bool = False

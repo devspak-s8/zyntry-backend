@@ -17,6 +17,9 @@ class UserCreate(ORMModel):
 class UserUpdate(ORMModel):
     email: EmailStr | None = None
     name: str | None = None
+    settings: dict[str, object] | None = None
+    two_factor_enabled: bool | None = None
+    two_factor_secret: str | None = None
 
 
 class UserRead(ORMModel):
@@ -25,3 +28,5 @@ class UserRead(ORMModel):
     name: str | None
     is_active: bool
     created_at: datetime
+    two_factor_enabled: bool = False
+    settings: dict[str, object] | None = None
