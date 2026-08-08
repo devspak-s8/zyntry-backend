@@ -9,17 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.dependencies import get_current_user
 from app.core.database import get_session
 from app.core.security import generate_api_key, hash_token
-from app.emails import (
-    send_api_key_created,
-    send_api_key_revoked,
-    send_api_key_rotated,
-)
+from app.events import NotificationEvent
 from app.models.apikeys import ApiKey
 from app.models.projects import Project
 from app.models.users import User
 from app.repositories import UnitOfWork
-
-logger = logging.getLogger(__name__)
 from app.schemas.apikeys import (
     ApiKeyCreate,
     ApiKeyCreateResponse,
@@ -30,6 +24,9 @@ from app.schemas.apikeys import (
     ApiKeyUsageResponse,
 )
 from app.services.apikeys import ApiKeyService
+from app.services.notifications import enqueue_notification
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/apikeys", tags=["apikeys"])
 
@@ -123,9 +120,17 @@ async def create_api_key(
         raise HTTPException(status_code=500, detail=f"Failed to create API key: {exc}")
 
     try:
-        await send_api_key_created(current_user.email, key_name=body.name)
+        event = NotificationEvent(
+            event_type="api_key.created",
+            recipient=current_user.email,
+            data={"key_name": body.name},
+            category="security",
+            sender_name="Zyntry Security",
+            sender_email="security@zyntry.space",
+        )
+        enqueue_notification(event)
     except Exception:
-        logger.exception("Failed to send API key created email")
+        logger.exception("Failed to enqueue API key created email")
 
     return ApiKeyCreateResponse(
         id=key.id,
@@ -156,9 +161,17 @@ async def rotate_api_key(
         raise HTTPException(status_code=400, detail=str(exc))
 
     try:
-        await send_api_key_rotated(current_user.email, key_name=result.get("name", "API Key"))
+        event = NotificationEvent(
+            event_type="api_key.rotated",
+            recipient=current_user.email,
+            data={"key_name": result.get("name", "API Key")},
+            category="security",
+            sender_name="Zyntry Security",
+            sender_email="security@zyntry.space",
+        )
+        enqueue_notification(event)
     except Exception:
-        logger.exception("Failed to send API key rotated email")
+        logger.exception("Failed to enqueue API key rotated email")
 
     return ApiKeyRotateResponse(
         api_key=result["api_key"],
@@ -220,9 +233,17 @@ async def revoke_api_key(
         raise HTTPException(status_code=400, detail=str(exc))
 
     try:
-        await send_api_key_revoked(current_user.email, key_name=key.get("name", "API Key"))
+        event = NotificationEvent(
+            event_type="api_key.revoked",
+            recipient=current_user.email,
+            data={"key_name": key.get("name", "API Key")},
+            category="security",
+            sender_name="Zyntry Security",
+            sender_email="security@zyntry.space",
+        )
+        enqueue_notification(event)
     except Exception:
-        logger.exception("Failed to send API key revoked email")
+        logger.exception("Failed to enqueue API key revoked email")
 
 
 @router.delete("/{key_id}", status_code=status.HTTP_204_NO_CONTENT)

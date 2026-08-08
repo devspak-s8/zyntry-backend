@@ -26,6 +26,9 @@ echo "Running database migrations..."
 cd /app
 bash /app/scripts/migrate.sh
 
+echo "Seeding configured superadmin..."
+python -m scripts.seed_superadmin
+
 echo "=========================================="
 echo "Starting uvicorn..."
 echo "=========================================="

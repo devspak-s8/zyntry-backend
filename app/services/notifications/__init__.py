@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import Any
 
 from app.events import NotificationChannel, NotificationEvent
+
+logger = logging.getLogger(__name__)
 
 _SENDER_MAP: dict[str, tuple[str, str]] = {
     "security": ("Zyntry Security", "security@zyntry.space"),
@@ -10,6 +14,14 @@ _SENDER_MAP: dict[str, tuple[str, str]] = {
     "support": ("Zyntry Support", "support@zyntry.space"),
     "status": ("Zyntry Status", "status@zyntry.space"),
     "default": ("Zyntry", "noreply@zyntry.space"),
+}
+
+_EMAIL_TEMPLATE_MAP: dict[str, str] = {
+    "auth.welcome": "welcome",
+    "auth.verify_email": "verify_email",
+    "auth.email_verified": "email_verified",
+    "auth.password_reset": "password_reset",
+    "auth.password_changed": "password_changed",
 }
 
 
@@ -49,8 +61,11 @@ class NotificationWorker:
             "support@zyntry.space" if category == "support" else None
         )
 
+        template_name = _EMAIL_TEMPLATE_MAP.get(
+            event.event_type, event.event_type.replace(".", "_")
+        )
         result = await send_email(
-            template_name=event.event_type,
+            template_name=template_name,
             to=event.recipient,
             reply_to=reply_to,
             from_email=sender_email,
@@ -79,3 +94,14 @@ notification_worker = NotificationWorker()
 
 async def publish_notification(event: NotificationEvent) -> dict[str, Any]:
     return await notification_worker.process(event)
+
+
+async def _safe_fire(coro: Any) -> None:
+    try:
+        await coro
+    except Exception as exc:
+        logger.exception("Notification task failed: %s", exc)
+
+
+def enqueue_notification(event: NotificationEvent) -> None:
+    asyncio.create_task(_safe_fire(notification_worker.process(event)))

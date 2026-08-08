@@ -1,9 +1,24 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import Any
 
 from app.events import NotificationEvent
 from app.services.notifications import publish_notification
+
+logger = logging.getLogger(__name__)
+
+
+async def _safe_fire(coro: Any) -> None:
+    try:
+        await coro
+    except Exception as exc:
+        logger.exception("Notification task failed: %s", exc)
+
+
+def fire_notification(event: NotificationEvent) -> None:
+    asyncio.create_task(_safe_fire(publish_notification(event)))
 
 
 async def send_project_created(to: str, user_name: str | None, project_name: str) -> dict[str, Any]:
@@ -114,7 +129,7 @@ async def send_provider_connected(to: str, provider: str, display_name: str | No
     event = NotificationEvent(
         event_type="provider.connected",
         recipient=to,
-        data={"provider": provider, "name": display_name or provider},
+        data={"provider": provider, "source_name": display_name or provider},
         category="general",
     )
     return await publish_notification(event)
@@ -124,7 +139,7 @@ async def send_provider_disconnected(to: str, provider: str, display_name: str |
     event = NotificationEvent(
         event_type="provider.disconnected",
         recipient=to,
-        data={"provider": provider, "name": display_name or provider},
+        data={"provider": provider, "display_name": display_name or provider},
         category="general",
     )
     return await publish_notification(event)
