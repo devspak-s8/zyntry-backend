@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Annotated
 
@@ -9,6 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.dependencies import get_current_user
 from app.core.database import get_session
 from app.core.ws_events import emit_provider_updated
+from app.emails import (
+    send_provider_connected,
+    send_provider_disconnected,
+)
 from app.models.users import User
 from app.repositories import UnitOfWork
 from app.schemas.providers import (
@@ -18,6 +23,8 @@ from app.schemas.providers import (
 )
 from app.services.model_discovery import get_model_discovery
 from app.services.providers import ProviderService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/providers", tags=["providers"])
 
@@ -145,12 +152,12 @@ async def list_providers_with_models(
     return result
 
 
-@router.post("", response_model=ProviderConnectionRead, status_code=status.HTTP_201_CREATED)
+@router.post("", status_code=status.HTTP_201_CREATED)
 async def connect_provider(
     body: ProviderConnectionCreate,
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
-) -> ProviderConnectionRead:
+) -> dict:
     uow = UnitOfWork(db)
     service = ProviderService(uow)
     api_key = body.api_key
@@ -166,25 +173,38 @@ async def connect_provider(
         project_id=body.project_id,
         config=body.config,
     ))
+    if result.get("requires_oauth"):
+        await emit_provider_updated(
+            str(current_user.id),
+            body.project_id or "",
+            result["provider_name"],
+            False,
+        )
+        return result
     response = ProviderConnectionRead(
         id=result["id"],
         organization_id=org_id,
         project_id=body.project_id,
         provider_name=result["provider_name"],
-        display_name=body.display_name,
+        display_name=result.get("display_name") or body.display_name,
         status=result["status"],
         last_tested_at=None,
         is_active=True,
         created_at=result.get("created_at") or "",
         updated_at=result.get("updated_at") or "",
     )
+    if not result.get("requires_oauth"):
+        try:
+            await send_provider_connected(current_user.email, provider=body.provider_name, display_name=body.display_name or body.provider_name)
+        except Exception:
+            logger.exception("Failed to send provider connected email")
     await emit_provider_updated(
         str(current_user.id),
         body.project_id or "",
         result["provider_name"],
         True,
     )
-    return response
+    return response.model_dump()
 
 
 @router.patch("/{connection_id}", response_model=ProviderConnectionRead)
@@ -235,5 +255,10 @@ async def disconnect_provider(
     if connection:
         project_id = str(connection.project_id) if connection.project_id else ""
         provider_name = connection.provider_name
+        display_name = connection.display_name or provider_name
         await ProviderService(uow).disconnect(connection_id)
         await emit_provider_updated(str(current_user.id), project_id, provider_name, False)
+        try:
+            await send_provider_disconnected(current_user.email, provider=provider_name, display_name=display_name)
+        except Exception:
+            logger.exception("Failed to send provider disconnected email")

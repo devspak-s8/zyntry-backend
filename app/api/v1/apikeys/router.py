@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -8,12 +9,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.dependencies import get_current_user
 from app.core.database import get_session
 from app.core.security import generate_api_key, hash_token
+from app.emails import (
+    send_api_key_created,
+    send_api_key_revoked,
+    send_api_key_rotated,
+)
 from app.models.apikeys import ApiKey
 from app.models.projects import Project
 from app.models.users import User
 from app.repositories import UnitOfWork
+
+logger = logging.getLogger(__name__)
 from app.schemas.apikeys import (
     ApiKeyCreate,
+    ApiKeyCreateResponse,
     ApiKeyExpireRequest,
     ApiKeyRead,
     ApiKeyRotateResponse,
@@ -68,12 +77,12 @@ async def get_api_key(
     )
 
 
-@router.post("", response_model=ApiKeyRead, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=ApiKeyCreateResponse, status_code=status.HTTP_201_CREATED)
 async def create_api_key(
     body: ApiKeyCreate,
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
-) -> ApiKeyRead:
+) -> ApiKeyCreateResponse:
     import uuid
 
     org_id = current_user.organization_id
@@ -104,6 +113,7 @@ async def create_api_key(
             hashed_key=hash_token(raw_key),
             prefix=raw_key[:16],
             organization_id=org_id,
+            user_id=current_user.id,
             project_id=proj_id,
             scopes=body.scopes,
         )
@@ -112,7 +122,12 @@ async def create_api_key(
         await uow.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to create API key: {exc}")
 
-    return ApiKeyRead(
+    try:
+        await send_api_key_created(current_user.email, key_name=body.name)
+    except Exception:
+        logger.exception("Failed to send API key created email")
+
+    return ApiKeyCreateResponse(
         id=key.id,
         name=key.name,
         prefix=key.prefix,
@@ -124,6 +139,7 @@ async def create_api_key(
         usage_stats=key.usage_stats,
         created_at=key.created_at,
         updated_at=key.updated_at,
+        key=raw_key,
     )
 
 
@@ -138,6 +154,11 @@ async def rotate_api_key(
         result = await service.rotate_key(key_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+    try:
+        await send_api_key_rotated(current_user.email, key_name=result.get("name", "API Key"))
+    except Exception:
+        logger.exception("Failed to send API key rotated email")
 
     return ApiKeyRotateResponse(
         api_key=result["api_key"],
@@ -194,9 +215,14 @@ async def revoke_api_key(
 ) -> None:
     service = ApiKeyService(db)
     try:
-        await service.revoke_key(key_id)
+        key = await service.revoke_key(key_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+    try:
+        await send_api_key_revoked(current_user.email, key_name=key.get("name", "API Key"))
+    except Exception:
+        logger.exception("Failed to send API key revoked email")
 
 
 @router.delete("/{key_id}", status_code=status.HTTP_204_NO_CONTENT)

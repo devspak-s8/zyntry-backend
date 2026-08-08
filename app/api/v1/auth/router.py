@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 from typing import Annotated
 
@@ -8,7 +9,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 from app.core.database import get_session
+from app.core.redis import redis_client
 from app.core.security import (
     generate_session_token,
     generate_verification_token,
@@ -17,7 +21,10 @@ from app.core.security import (
     now,
     verify_password,
 )
+from app.emails import send_auth_welcome
 from app.models.email_verification_tokens import EmailVerificationToken
+from app.models.organizations import Organization
+from app.models.password_reset_tokens import PasswordResetToken
 from app.models.refresh_tokens import RefreshToken
 from app.models.sessions import Session
 from app.models.users import User
@@ -114,6 +121,15 @@ async def register(
     db.add(user)
     await db.flush()
 
+    organization = Organization(
+        name=f"{name or email}'s Organization",
+        slug=f"org-{user.id.hex[:8]}",
+    )
+    db.add(organization)
+    await db.flush()
+    user.organization_id = organization.id
+    await db.flush()
+
     token = generate_verification_token()
     token_hash = hash_token(token)
     expires_at = now() + timedelta(hours=24)
@@ -126,11 +142,25 @@ async def register(
     db.add(verification_obj)
     await db.commit()
 
-    await send_verification_email(email, name, token)
+    try:
+        from app.services.notifications.publishers import (
+            send_verification_email as _send_verification_email,
+        )
+        await _send_verification_email(email, name, token)
+        if not result.get("success"):
+            logger.warning("Verification email failed for %s: %s", email, result.get("error"))
+    except Exception:
+        logger.exception("Failed to send verification email to %s", email)
+
+    try:
+        await send_auth_welcome(email, name)
+    except Exception:
+        logger.exception("Failed to send welcome email to %s", email)
 
     await _create_session(db, response, user)
     refresh_token = await _create_refresh_token(db, user)
     _set_refresh_cookie(response, refresh_token)
+    await db.commit()
 
     return AuthMeResponse(
         id=user.id,
@@ -138,6 +168,7 @@ async def register(
         name=user.name,
         organization_id=user.organization_id,
         is_active=user.is_active,
+        email_verified=user.email_verified,
     )
 
 
@@ -166,6 +197,7 @@ async def login(
         name=user.name,
         organization_id=user.organization_id,
         is_active=user.is_active,
+        email_verified=user.email_verified,
     )
 
 
@@ -176,6 +208,7 @@ async def logout(
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
     if session_token is not None:
+        await redis_client.delete(f"session:{session_token}")
         token_hash = hash_token(session_token)
         result = await db.execute(
             select(Session).where(Session.token_hash == token_hash)
@@ -254,6 +287,7 @@ async def refresh(
         name=user.name,
         organization_id=user.organization_id,
         is_active=user.is_active,
+        email_verified=user.email_verified,
     )
 
 
@@ -287,11 +321,36 @@ async def me(
         name=user.name,
         organization_id=user.organization_id,
         is_active=user.is_active,
+        email_verified=user.email_verified,
     )
 
 
 @router.post("/forgot-password")
-async def forgot_password(email: Annotated[str, Body(embed=True)]) -> dict[str, str]:
+async def forgot_password(
+    email: Annotated[str, Body(embed=True)],
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, str]:
+    user = await _get_user_by_email(db, email)
+    if user is not None and user.email_verified:
+        token = generate_verification_token()
+        token_hash = hash_token(token)
+        expires_at = now() + timedelta(minutes=15)
+        reset_obj = PasswordResetToken(
+            user_id=user.id,
+            token_hash=token_hash,
+            expires_at=expires_at,
+        )
+        db.add(reset_obj)
+        await db.commit()
+        try:
+            await send_email(
+                "password_reset",
+                user.email,
+                user_name=user.name,
+                token=token,
+            )
+        except Exception:
+            logger.exception("Failed to send password reset email to %s", user.email)
     return {"message": "If an account exists with that email, a reset link has been sent."}
 
 
@@ -299,12 +358,34 @@ async def forgot_password(email: Annotated[str, Body(embed=True)]) -> dict[str, 
 async def reset_password(
     token: Annotated[str, Body(embed=True)],
     password: Annotated[str, Body(embed=True)],
+    db: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
     if len(password) < settings.PASSWORD_MIN_LENGTH:
         raise HTTPException(
             status_code=422,
             detail=f"Password must be at least {settings.PASSWORD_MIN_LENGTH} characters",
         )
+    token_hash = hash_token(token)
+    result = await db.execute(
+        select(PasswordResetToken).where(PasswordResetToken.token_hash == token_hash)
+    )
+    reset_obj = result.scalar_one_or_none()
+
+    if reset_obj is None or reset_obj.used or reset_obj.expires_at <= now():
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+
+    user = await db.get(User, reset_obj.user_id)
+    if user is None:
+        raise HTTPException(status_code=400, detail="Invalid reset token")
+
+    user.hashed_password = hash_password(password)
+    reset_obj.used = True
+    await db.commit()
+    try:
+        from app.services.notifications.publishers import send_password_changed
+        await send_password_changed(user.email, user_name=user.name)
+    except Exception:
+        logger.exception("Failed to send password changed email to %s", user.email)
     return {"message": "Password has been reset."}
 
 
@@ -329,6 +410,11 @@ async def verify_email(
     user.email_verified = True
     verification_obj.used = True
     await db.commit()
+    try:
+        from app.services.notifications.publishers import send_email_verified
+        await send_email_verified(user.email, user_name=user.name)
+    except Exception:
+        logger.exception("Failed to send email verified confirmation to %s", user.email)
     return {"message": "Email verified successfully"}
 
 
@@ -369,6 +455,11 @@ async def resend_verification(
         db.add(verification_obj)
 
     await db.commit()
-    await send_verification_email(email, user.name, token)
+    try:
+        result = await send_verification_email(email, user.name, token)
+        if not result.get("success"):
+            logger.warning("Verification email failed for %s: %s", email, result.get("error"))
+    except Exception:
+        logger.exception("Failed to send verification email to %s", email)
 
     return {"message": "If an account exists with that email, a verification link has been sent."}

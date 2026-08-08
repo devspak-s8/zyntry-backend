@@ -55,6 +55,22 @@ class OpenRouterProvider(BaseModelProvider):
             )
             return resp.status_code == 200
 
+    async def chat_completion(self, api_key: str, model: str, messages: list[dict[str, str]], max_tokens: int = 2048, temperature: float = 0.7) -> str:
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(
+                f"{self.BASE_URL}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "HTTP-Referer": "https://zyntra.dev",
+                    "X-Title": "Zyntra",
+                    "Content-Type": "application/json",
+                },
+                json={"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": temperature},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data["choices"][0]["message"]["content"]
+
     def _get_latency_tier(self, model_id: str) -> str:
         if "fast" in model_id.lower() or "mini" in model_id.lower():
             return "low"
