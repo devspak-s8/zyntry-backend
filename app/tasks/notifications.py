@@ -2,34 +2,54 @@ from __future__ import annotations
 
 import logging
 
-from celery import shared_task
+from app.core.database import run_async
+from app.core.logging import get_logger
+from app.core.config import settings
+from app.services.sendbyte import SendByteError, get_sendbyte_client
+from app.workers.celery_app import celery_app
 
-from app.services.sendlib import get_sendlib_client
-
-logger = logging.getLogger(__name__)
-
-
-@shared_task(bind=True)
-def send_email_notification_task(self, user_id: str, title: str, message: str) -> dict:
-    try:
-        client = get_sendlib_client()
-        result = client.send(
-            to=[],
-            subject=title,
-            html=f"<p>{message}</p>",
-        )
-        logger.info("SendLib email sent", extra={"user_id": user_id, "title": title, "result": result})
-        return {"status": "sent", "user_id": user_id, "title": title}
-    except Exception as exc:
-        logger.error("SendLib email failed", extra={"user_id": user_id, "error": str(exc)})
-        return {"status": "error", "user_id": user_id, "error": str(exc)}
+logger = get_logger("app.tasks.notifications")
 
 
-@shared_task(bind=True)
-def send_in_app_notification_task(self, user_id: str, notification_type: str, title: str, message: str, data: dict | None = None) -> None:
-    logger.info("In-app notification queued for user %s: %s", user_id, title)
+@celery_app.task(name="app.tasks.notifications.send_email")
+def send_email_notification_task(user_id: str, email: str, subject: str, html: str, text: str | None = None) -> dict:
+    async def _run() -> dict:
+        if not settings.SENDBYTE_KEY:
+            logger.warning("SENDBYTE_KEY is not configured; skipping email to %s", email)
+            return {"status": "skipped", "user_id": user_id, "error": "email_not_configured"}
+        client = get_sendbyte_client()
+        try:
+            result = await client.send(
+                to=email,
+                subject=subject,
+                html=html,
+                text=text,
+            )
+            return {"status": "sent", "user_id": user_id, "result": result}
+        except SendByteError as exc:
+            logger.error("SendByte email failed", extra={"user_id": user_id, "error": str(exc)})
+            return {"status": "error", "user_id": user_id, "error": str(exc)}
+
+    return run_async(_run())
 
 
-@shared_task
-def cleanup_old_logs_task(project_id: str | None = None, older_than_days: int = 30) -> None:
-    logger.info("Cleanup task triggered for project %s older than %s days", project_id, older_than_days)
+@celery_app.task(name="app.tasks.notifications.send_in_app")
+def send_in_app_notification_task(user_id: str, notification_type: str, title: str, message: str, data: dict | None = None) -> dict:
+    async def _run() -> dict:
+        from app.core.database import async_session_factory
+        from app.models.notifications import Notification
+
+        async with async_session_factory() as db:
+            notif = Notification(
+                user_id=user_id,
+                type=notification_type,
+                title=title,
+                message=message,
+                data=data or {},
+                read=False,
+            )
+            db.add(notif)
+            await db.commit()
+            return {"status": "created", "user_id": user_id, "notification_id": str(notif.id)}
+
+    return run_async(_run())

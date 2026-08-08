@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import Boolean, String, ForeignKey
+from sqlalchemy import Boolean, JSON, String, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -20,4 +20,9 @@ class User(Base, UUIDMixin, TimestampMixin):
     email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     organization_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True
+    )
+    two_factor_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    two_factor_secret: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    settings: Mapped[dict[str, object] | None] = mapped_column(
+        "settings", JSON, nullable=True
     )

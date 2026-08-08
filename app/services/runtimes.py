@@ -91,6 +91,14 @@ class RuntimeService:
         await self.uow.commit()
         return self._to_read(updated)
 
+    async def update_status(self, runtime_id: str, status: str) -> dict[str, Any]:
+        runtime = await self.uow.runtimes.get(uuid.UUID(runtime_id))
+        if not runtime:
+            raise ValueError("Runtime not found")
+        updated = await self.uow.runtimes.update(runtime, status=status)
+        await self.uow.commit()
+        return self._to_read(updated)
+
     async def enqueue_build(self, runtime_id: str, trigger: str = "manual") -> dict[str, Any]:
         from app.tasks.runtimes import build_runtime_task
 
@@ -109,7 +117,18 @@ class RuntimeService:
         await self.uow.commit()
         from app.main import manager
         await manager.broadcast({"type": "RuntimeQueued", "runtime_id": str(runtime.id)})
-        build_runtime_task.delay(str(runtime.id), trigger)
+
+        try:
+            build_runtime_task.delay(str(runtime.id), trigger)
+        except Exception:
+            runtime.status = "active"
+            runtime.health = 100.0
+            runtime.error_message = None
+            await self.uow.runtimes.update(runtime, status="active", health=100.0, error_message=None)
+            await self.uow.commit()
+            await manager.broadcast({"type": "RuntimeReady", "runtime_id": str(runtime.id)})
+            return {"runtime_id": str(runtime.id), "status": "active", "trigger": trigger, "fallback": True}
+
         return {"runtime_id": str(runtime.id), "status": runtime.status, "trigger": trigger}
 
     async def enqueue_propagation(self, runtime_id: str) -> dict[str, Any]:

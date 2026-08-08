@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import time
 from abc import ABC, abstractmethod
+from datetime import datetime, timezone
 from typing import Any, AsyncGenerator
+from uuid import UUID
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -270,6 +272,10 @@ class RAGPipeline:
             context = await self._get_conversation_context(rag_query.conversation_id)
         rewritten_query = await self.rewrite_query(rag_query.question, context)
 
+        memory_context = None
+        if rag_query.project_id:
+            memory_context = await self._get_memory_context(rag_query.project_id, rag_query.question, getattr(rag_query, "user_id", None))
+
         candidates: list[HybridSearchResult] = []
         if self.search_service:
             candidates = await self.search_service.search(
@@ -295,6 +301,9 @@ class RAGPipeline:
 
         context_text, valid_candidates = self._build_context(candidates)
         context_text = self._compress_context(context_text, max_tokens=8000)
+
+        if memory_context:
+            context_text = f"Memory Context:\n{memory_context}\n\nRetrieved Context:\n{context_text}"
 
         sources_list = [
             SourceDocument(
@@ -403,7 +412,38 @@ class RAGPipeline:
         yield json.dumps(payload)
 
     async def _get_conversation_context(self, conversation_id: str) -> str | None:
-        return None
+        if not conversation_id:
+            return None
+        try:
+            cid = uuid.UUID(conversation_id)
+        except ValueError:
+            return None
+        records = await self.uow.memory_records.get_by_conversation_id(cid)
+        if not records:
+            return None
+        messages = sorted(
+            [r for r in records if r.content and not r.parent_key],
+            key=lambda r: r.created_at or datetime.min.replace(tzinfo=timezone.utc),
+        )
+        if not messages:
+            return None
+        recent = messages[-10:]
+        return "\n".join(m.content for m in recent if m.content)
+
+    async def _get_memory_context(self, project_id: str, query: str, user_id: str | None = None) -> str | None:
+        try:
+            pid = uuid.UUID(project_id)
+            uid = uuid.UUID(user_id) if user_id else None
+        except (ValueError, TypeError):
+            return None
+        records = await self.uow.memory_records.search(project_id=pid, query=query, user_id=uid, limit=5)
+        if not records:
+            return None
+        parts = []
+        for r in records:
+            if r.content:
+                parts.append(f"[memory:{r.key}] {r.content[:500]}")
+        return "\n".join(parts) if parts else None
 
     async def detect_intent(self, question: str) -> str:
         question_lower = question.lower().strip()
@@ -504,7 +544,6 @@ class RAGPipeline:
             "deepseek": settings.DEEPSEEK_API_KEY,
             "openrouter": settings.OPENROUTER_API_KEY,
             "groq": settings.GROQ_API_KEY,
-            "mistral": settings.MISTRAL_API_KEY,
             "azure_openai": settings.AZURE_OPENAI_KEY,
         }
         return mapping.get(provider_name.lower())

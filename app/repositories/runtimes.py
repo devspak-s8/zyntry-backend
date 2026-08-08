@@ -84,6 +84,12 @@ class RuntimeBuildLogRepository:
         await self.session.delete(instance)
         await self.session.flush()
 
+    async def delete_by_runtime(self, runtime_id: UUID) -> None:
+        await self.session.execute(
+            delete(RuntimeBuildLog).where(RuntimeBuildLog.runtime_id == runtime_id)
+        )
+        await self.session.flush()
+
 
 class RuntimeBuildChunkRepository:
     def __init__(self, session: AsyncSession) -> None:
