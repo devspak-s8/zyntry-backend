@@ -27,7 +27,6 @@ def _normalize_async_url(url: str) -> str:
 engine: AsyncEngine = create_async_engine(
     _normalize_async_url(settings.DATABASE_URL),
     echo=settings.APP_DEBUG,
-    pool_pre_ping=True,
     pool_size=20,
     max_overflow=10,
     pool_recycle=1800,
@@ -50,11 +49,12 @@ async def init_models() -> None:
         await conn.run_sync(Base.metadata.create_all)
 
 
+_worker_loop: asyncio.AbstractEventLoop | None = None
+
+
 def run_async(coroutine):
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_closed():
-            raise RuntimeError("closed")
-        return loop.run_until_complete(coroutine)
-    except RuntimeError:
-        return asyncio.run(coroutine)
+    global _worker_loop
+    if _worker_loop is None or _worker_loop.is_closed():
+        _worker_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_worker_loop)
+    return _worker_loop.run_until_complete(coroutine)
