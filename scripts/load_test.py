@@ -152,8 +152,8 @@ async def timed_request(
     expected_statuses: set[int] | None = None,
     **kwargs: Any,
 ) -> httpx.Response | None:
-    start = time.perf_counter()
     for attempt in range(retries):
+        start = time.perf_counter()
         try:
             resp = await client.request(method, url, **kwargs)
             latency = (time.perf_counter() - start) * 1000.0
@@ -173,10 +173,15 @@ async def timed_request(
                     f"({latency:.1f}ms) body={body_text!r}"
                 )
             elif resp.status_code == 429:
-                wait = (2**attempt) + 0.1
-                print(f"    [RATE] {label or method.upper()} {url} -> 429, backing off {wait:.1f}s")
-                await asyncio.sleep(wait)
-                continue
+                if attempt < retries - 1:
+                    wait = (2**attempt) + 0.1
+                    print(
+                        f"    [RATE] {label or method.upper()} {url} -> 429, "
+                        f"backing off {wait:.1f}s"
+                    )
+                    await asyncio.sleep(wait)
+                    continue
+                print(f"    [RATE] {label or method.upper()} {url} -> 429 after {retries} attempts")
             elif not expected:
                 try:
                     err_body = resp.text[:500]
@@ -265,8 +270,10 @@ class VirtualUser:
             if self._verbose:
                 print(f"    [VERB] u{self.uid} starting flow, email={self.email}", flush=True)
             try:
-                await self.register(client)
-                await self.login(client)
+                if not await self.register(client):
+                    return
+                if not await self.login(client):
+                    return
                 await self.get_me(client)
                 await self.list_projects(client)
                 await self.test_tenant_isolation(client)
@@ -290,7 +297,7 @@ class VirtualUser:
                     error=f"User {self.uid} flow exception: {exc}",
                 )
 
-    async def register(self, client: httpx.AsyncClient) -> None:
+    async def register(self, client: httpx.AsyncClient) -> bool:
         resp = await timed_request(
             client,
             "POST",
@@ -305,11 +312,10 @@ class VirtualUser:
             expected_statuses={201, 409},
         )
         if resp is None:
-            return
-        if resp.status_code == 409:
-            return
+            return False
+        return resp.status_code in {201, 409}
 
-    async def login(self, client: httpx.AsyncClient) -> None:
+    async def login(self, client: httpx.AsyncClient) -> bool:
         resp = await timed_request(
             client,
             "POST",
@@ -319,9 +325,11 @@ class VirtualUser:
             json={"email": self.email, "password": self.password},
         )
         if resp is None:
-            return
+            return False
         if resp.status_code == 200:
             self.project_id = None
+            return True
+        return False
 
     async def get_me(self, client: httpx.AsyncClient) -> None:
         await timed_request(
@@ -832,7 +840,7 @@ async def async_main() -> None:
         org_id = org_ids[i % num_orgs]
         is_superadmin = False
 
-        if superadmin_email and superadmin_count < 5:
+        if superadmin_email and superadmin_count == 0:
             email = superadmin_email
             password = superadmin_password
             is_superadmin = True
