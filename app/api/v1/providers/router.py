@@ -10,10 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.dependencies import get_current_user
 from app.core.database import get_session
 from app.core.ws_events import emit_provider_updated
-from app.services.notifications.publishers import (
-    send_provider_connected,
-    send_provider_disconnected,
-)
+from app.events import NotificationEvent
 from app.models.users import User
 from app.repositories import UnitOfWork
 from app.schemas.providers import (
@@ -22,6 +19,7 @@ from app.schemas.providers import (
     ProviderConnectionUpdate,
 )
 from app.services.model_discovery import get_model_discovery
+from app.services.notifications import enqueue_notification
 from app.services.providers import ProviderService
 
 logger = logging.getLogger(__name__)
@@ -140,15 +138,18 @@ async def list_providers_with_models(
     result = []
     for c in connections:
         p_data = provider_model_map.get(c["provider_name"], {})
-        result.append({
-            "id": c["id"],
-            "provider_name": c["provider_name"],
-            "display_name": c.get("display_name") or p_data.get("display_name", c["provider_name"]),
-            "status": c["status"],
-            "connected": c["status"] == "active",
-            "model_count": p_data.get("model_count", 0),
-            "models": p_data.get("models", []),
-        })
+        result.append(
+            {
+                "id": c["id"],
+                "provider_name": c["provider_name"],
+                "display_name": c.get("display_name")
+                or p_data.get("display_name", c["provider_name"]),
+                "status": c["status"],
+                "connected": c["status"] == "active",
+                "model_count": p_data.get("model_count", 0),
+                "models": p_data.get("models", []),
+            }
+        )
     return result
 
 
@@ -164,15 +165,19 @@ async def connect_provider(
     if not api_key:
         discovery = get_model_discovery()
         api_key = discovery._get_api_key(body.provider_name)
-    org_id = body.organization_id or (str(current_user.organization_id) if current_user.organization_id else None)
-    result = await service.connect(ProviderConnectionCreate(
-        provider_name=body.provider_name,
-        display_name=body.display_name,
-        api_key=api_key,
-        organization_id=org_id,
-        project_id=body.project_id,
-        config=body.config,
-    ))
+    org_id = body.organization_id or (
+        str(current_user.organization_id) if current_user.organization_id else None
+    )
+    result = await service.connect(
+        ProviderConnectionCreate(
+            provider_name=body.provider_name,
+            display_name=body.display_name,
+            api_key=api_key,
+            organization_id=org_id,
+            project_id=body.project_id,
+            config=body.config,
+        )
+    )
     if result.get("requires_oauth"):
         await emit_provider_updated(
             str(current_user.id),
@@ -195,9 +200,18 @@ async def connect_provider(
     )
     if not result.get("requires_oauth"):
         try:
-            await send_provider_connected(current_user.email, provider=body.provider_name, display_name=body.display_name or body.provider_name)
+            event = NotificationEvent(
+                event_type="provider.connected",
+                recipient=current_user.email,
+                data={
+                    "provider": body.provider_name,
+                    "source_name": body.display_name or body.provider_name,
+                },
+                category="general",
+            )
+            enqueue_notification(event)
         except Exception:
-            logger.exception("Failed to send provider connected email")
+            logger.exception("Failed to enqueue provider connected email")
     await emit_provider_updated(
         str(current_user.id),
         body.project_id or "",
@@ -219,8 +233,7 @@ async def update_provider_connection(
     if not existing:
         raise HTTPException(status_code=404, detail="Provider connection not found")
     updated = await uow.providers.update(
-        existing,
-        **{k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
+        existing, **{k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
     )
     await uow.commit()
     response = ProviderConnectionRead(
@@ -259,6 +272,12 @@ async def disconnect_provider(
         await ProviderService(uow).disconnect(connection_id)
         await emit_provider_updated(str(current_user.id), project_id, provider_name, False)
         try:
-            await send_provider_disconnected(current_user.email, provider=provider_name, display_name=display_name)
+            event = NotificationEvent(
+                event_type="provider.disconnected",
+                recipient=current_user.email,
+                data={"provider": provider_name, "display_name": display_name},
+                category="general",
+            )
+            enqueue_notification(event)
         except Exception:
-            logger.exception("Failed to send provider disconnected email")
+            logger.exception("Failed to enqueue provider disconnected email")
