@@ -2,24 +2,44 @@ from __future__ import annotations
 
 from typing import Any
 
+import httpx
+
 from app.services.connectors.base import BaseConnector, ConnectorAuthError, ConnectorDiscoveryError, ConnectorNetworkError, ConnectorRateLimitError
 from app.services.connectors import registry
 
 
 class WebsiteConnector(BaseConnector):
     async def connect(self) -> dict:
-        self._status = {"status": "connected", "message": "Website connected"}
+        result = await self.test()
+        self._status = {"status": "connected" if result.get("success") else "error", "message": result.get("message", "")}
         return self._status
 
     async def test(self) -> dict:
         url = self.config.get("url") or self.credentials.get("url")
         if not url:
             return {"success": False, "message": "Missing website URL"}
-        return {"success": True, "message": f"Website connection test stub for {url}"}
+        try:
+            async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+                resp = await client.get(url)
+                if resp.status_code < 400:
+                    return {"success": True, "message": f"Website reachable: {url}", "status_code": resp.status_code}
+                return {"success": False, "message": f"Website returned {resp.status_code}", "status_code": resp.status_code}
+        except httpx.HTTPError as exc:
+            return {"success": False, "message": str(exc)}
+        except Exception as exc:
+            return {"success": False, "message": str(exc)}
 
     async def discover(self) -> dict:
         url = self.config.get("url") or self.credentials.get("url")
-        return {"items": [], "total": 0, "url": url}
+        if not url:
+            return {"items": [], "total": 0}
+        try:
+            async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+                resp = await client.get(url)
+                text = resp.text
+                return {"items": [{"url": url, "title": url, "content_length": len(text)}], "total": 1}
+        except Exception as exc:
+            return {"items": [], "total": 0, "error": str(exc)}
 
     async def sync(self, options: dict | None = None) -> dict:
         import uuid
@@ -28,7 +48,10 @@ class WebsiteConnector(BaseConnector):
         job_id = str(uuid.uuid4())
         started_at = datetime.now(timezone.utc).isoformat()
         self._status = {"status": "running", "progress": 0, "started_at": started_at}
-        return {"job_id": job_id, "status": "running", "started_at": started_at}
+        discovered = await self.discover()
+        items = discovered.get("items", [])
+        self._status = {"status": "completed", "progress": 100, "items_synced": len(items)}
+        return {"job_id": job_id, "status": "completed", "started_at": started_at, "items": items, "total": len(items)}
 
     async def get_status(self) -> dict:
         return self._status
