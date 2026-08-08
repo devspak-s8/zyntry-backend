@@ -26,12 +26,6 @@ from app.models.refresh_tokens import RefreshToken
 from app.models.sessions import Session
 from app.models.users import User
 from app.schemas.auth import AuthMeResponse
-from app.services.email import send_verification_email
-from app.services.notifications.publishers import (
-    send_email_verified,
-    send_password_changed,
-    send_password_reset,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -43,9 +37,7 @@ async def _get_user_by_email(session: AsyncSession, email: str) -> User | None:
     return result.scalar_one_or_none()
 
 
-async def _create_session(
-    session: AsyncSession, response: Response, user: User
-) -> None:
+async def _create_session(session: AsyncSession, response: Response, user: User) -> None:
     token = generate_session_token()
     token_hash = hash_token(token)
     expires_at = now() + timedelta(minutes=settings.SESSION_TOKEN_TTL_MINUTES)
@@ -69,9 +61,7 @@ async def _create_session(
     )
 
 
-async def _create_refresh_token(
-    session: AsyncSession, user: User
-) -> str:
+async def _create_refresh_token(session: AsyncSession, user: User) -> str:
     token = generate_session_token()
     token_hash = hash_token(token)
     expires_at = now() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
@@ -150,6 +140,7 @@ async def register(
         from app.services.notifications.publishers import (
             send_verification_email as _send_verification_email,
         )
+
         result = await _send_verification_email(email, name, token)
         if not result.get("success"):
             logger.warning("Verification email failed for %s: %s", email, result.get("error"))
@@ -159,6 +150,7 @@ async def register(
     try:
         from app.events import NotificationEvent
         from app.services.notifications import enqueue_notification
+
         event = NotificationEvent(
             event_type="auth.welcome",
             recipient=email,
@@ -222,9 +214,7 @@ async def logout(
     if session_token is not None:
         await redis_client.delete(f"session:{session_token}")
         token_hash = hash_token(session_token)
-        result = await db.execute(
-            select(Session).where(Session.token_hash == token_hash)
-        )
+        result = await db.execute(select(Session).where(Session.token_hash == token_hash))
         session_obj = result.scalar_one_or_none()
         if session_obj is not None:
             session_obj.revoked = True
@@ -242,9 +232,7 @@ async def logout_all(
 ) -> None:
     if session_token is not None:
         token_hash = hash_token(session_token)
-        result = await db.execute(
-            select(Session).where(Session.token_hash == token_hash)
-        )
+        result = await db.execute(select(Session).where(Session.token_hash == token_hash))
         session_obj = result.scalar_one_or_none()
         if session_obj is not None:
             sessions = await db.execute(
@@ -274,9 +262,7 @@ async def refresh(
         raise HTTPException(status_code=401, detail="Refresh token missing")
 
     token_hash = hash_token(refresh_token)
-    result = await db.execute(
-        select(RefreshToken).where(RefreshToken.token_hash == token_hash)
-    )
+    result = await db.execute(select(RefreshToken).where(RefreshToken.token_hash == token_hash))
     refresh_obj = result.scalar_one_or_none()
 
     if refresh_obj is None or refresh_obj.revoked or refresh_obj.expires_at <= now():
@@ -312,9 +298,7 @@ async def me(
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     token_hash = hash_token(session_token)
-    result = await db.execute(
-        select(Session).where(Session.token_hash == token_hash)
-    )
+    result = await db.execute(select(Session).where(Session.token_hash == token_hash))
     session_obj = result.scalar_one_or_none()
 
     if session_obj is None or session_obj.revoked:
@@ -355,9 +339,20 @@ async def forgot_password(
         db.add(reset_obj)
         await db.commit()
         try:
-            await send_password_reset(user.email, user_name=user.name, token=token)
+            from app.events import NotificationEvent
+            from app.services.notifications import enqueue_notification
+
+            event = NotificationEvent(
+                event_type="auth.password_reset",
+                recipient=user.email,
+                data={"user_name": user.name, "token": token},
+                category="security",
+                sender_name="Zyntry Security",
+                sender_email="security@zyntry.space",
+            )
+            enqueue_notification(event)
         except Exception:
-            logger.exception("Failed to send password reset email to %s", user.email)
+            logger.exception("Failed to enqueue password reset email to %s", user.email)
     return {"message": "If an account exists with that email, a reset link has been sent."}
 
 
@@ -391,6 +386,7 @@ async def reset_password(
     try:
         from app.events import NotificationEvent
         from app.services.notifications import enqueue_notification
+
         event = NotificationEvent(
             event_type="auth.password_changed",
             recipient=user.email,
@@ -429,6 +425,7 @@ async def verify_email(
     try:
         from app.events import NotificationEvent
         from app.services.notifications import enqueue_notification
+
         event = NotificationEvent(
             event_type="auth.email_verified",
             recipient=user.email,
@@ -450,10 +447,7 @@ async def resend_verification(
 ) -> dict[str, str]:
     user = await _get_user_by_email(db, email)
     if user is None:
-        msg = (
-            "If an account exists with that email, "
-            "a verification link has been sent."
-        )
+        msg = "If an account exists with that email, a verification link has been sent."
         return {"message": msg}
 
     if user.email_verified:
@@ -481,10 +475,19 @@ async def resend_verification(
 
     await db.commit()
     try:
-        result = await send_verification_email(email, user.name, token)
-        if not result.get("success"):
-            logger.warning("Verification email failed for %s: %s", email, result.get("error"))
+        from app.events import NotificationEvent
+        from app.services.notifications import enqueue_notification
+
+        event = NotificationEvent(
+            event_type="auth.verify_email",
+            recipient=email,
+            data={"user_name": user.name, "token": token},
+            category="security",
+            sender_name="Zyntry Security",
+            sender_email="security@zyntry.space",
+        )
+        enqueue_notification(event)
     except Exception:
-        logger.exception("Failed to send verification email to %s", email)
+        logger.exception("Failed to enqueue verification email to %s", email)
 
     return {"message": "If an account exists with that email, a verification link has been sent."}
