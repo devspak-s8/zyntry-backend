@@ -1394,19 +1394,14 @@ async def send_email(
         return {"success": False, "template": template_name, "to": to, "error": "email_not_configured"}
     client = get_sendbyte_client()
     try:
-        payload: dict[str, Any] = {
-            "to": to,
-            "subject": subject,
-            "html": html,
-            "from": resolved_from,
-        }
-        if text:
-            payload["text"] = text
-        if reply_to:
-            payload["replyTo"] = reply_to
-        if headers:
-            payload["headers"] = headers
-        result = await client.send(**payload)
+        result = await client.send(
+            to=to,
+            subject=subject,
+            html=html,
+            text=text,
+            from_email=resolved_from,
+            reply_to=reply_to,
+        )
         return {"success": True, "template": template_name, "to": to, "data": result}
     except SendByteError as e:
         logger.error("SendByte email failed for template %s", template_name, extra={"to": to, "error": str(e)})
