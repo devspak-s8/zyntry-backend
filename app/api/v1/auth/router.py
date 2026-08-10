@@ -5,7 +5,7 @@ from datetime import timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Body, Cookie, Depends, HTTPException, Response, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -34,7 +34,10 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 async def _get_user_by_email(session: AsyncSession, email: str) -> User | None:
-    result = await session.execute(select(User).where(User.email == email))
+    normalized_email = email.strip().lower()
+    result = await session.execute(
+        select(User).where(func.lower(User.email) == normalized_email)
+    )
     return result.scalar_one_or_none()
 
 
@@ -328,7 +331,7 @@ async def forgot_password(
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
     user = await _get_user_by_email(db, email)
-    if user is not None and user.email_verified:
+    if user is not None:
         token = generate_verification_token()
         token_hash = hash_token(token)
         expires_at = now() + timedelta(minutes=15)
