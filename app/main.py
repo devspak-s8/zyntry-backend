@@ -8,20 +8,21 @@ from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 
+from app.admin.middleware import AdminSecurityMiddleware
+from app.admin.services.feature_seeding import seed_system_feature_flags
+from app.admin.websocket_manager import admin_ws_manager
 from app.api import router as api_router
 from app.api.v1.logs.router import router as logs_router
-from app.admin.middleware import AdminSecurityMiddleware
-from app.admin.websocket_manager import admin_ws_manager
 from app.core.config import settings
 from app.core.database import async_session_factory, init_models
 from app.core.logging import configure_logging
 from app.core.security import hash_token, now
 from app.middleware import RateLimitMiddleware, RequestContextMiddleware, SecurityHeadersMiddleware
 from app.middleware.csrf import CSRFMiddleware
+from app.models.actions import ActionAuditLog, ActionConfirmation, ActionExecution
+from app.models.oauth import OAuthConnection, OAuthProvider, OAuthState
 from app.models.sessions import Session
 from app.models.users import User
-from app.models.actions import ActionExecution, ActionConfirmation, ActionAuditLog
-from app.models.oauth import OAuthProvider, OAuthConnection, OAuthState
 
 
 def _parse_cors_origins(value: str) -> list[str]:
@@ -32,6 +33,8 @@ def _parse_cors_origins(value: str) -> list[str]:
 async def lifespan(app: FastAPI):
     configure_logging()
     await init_models()
+    async with async_session_factory() as db:
+        await seed_system_feature_flags(db)
     if not settings.APP_DEBUG:
         missing = []
         if not settings.SECRET_KEY:
