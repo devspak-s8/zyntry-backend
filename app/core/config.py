@@ -18,6 +18,7 @@ class AppSettings(BaseSettings):
     APP_ENV: str = "development"
     APP_DEBUG: bool = True
     APP_URL: str = "http://localhost:8000"
+    FRONTEND_URL: str = "http://localhost:3000"
     API_PREFIX: str = "/api"
     API_VERSION: str = "v1"
 

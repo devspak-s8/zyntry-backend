@@ -108,7 +108,6 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           envs: API_IMAGE,DEPLOY_PATH,GHCR_USERNAME,GHCR_READ_TOKEN,COMPOSE_OVERRIDE_FILE
-          script_stop: true
           script: |
             set -eu
             cd "$DEPLOY_PATH"
@@ -143,8 +142,16 @@ jobs:
               $compose logs --tail=150 api
               if [ -n "$previous_image" ]; then
                 echo "Health check failed; rolling back to $previous_image"
-                export API_IMAGE="$previous_image"
-                $compose up -d --no-build $services
+                if echo "$previous_image" | grep -q '^ghcr.io/'; then
+                  export API_IMAGE="$previous_image"
+                  $compose up -d --no-build $services
+                else
+                  rollback_compose="docker compose -f docker-compose.yml"
+                  if [ -n "${COMPOSE_OVERRIDE_FILE:-}" ]; then
+                    rollback_compose="$rollback_compose -f $COMPOSE_OVERRIDE_FILE"
+                  fi
+                  $rollback_compose up -d --no-build $services
+                fi
               fi
               exit 1
             fi
