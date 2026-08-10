@@ -8,12 +8,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
+from app.api.v1.features.dependencies import require_feature
 from app.core.database import get_session
 from app.models.users import User
 from app.repositories import UnitOfWork
 from app.schemas.users import UserRead, UserUpdate
 
 router = APIRouter(prefix="/users", tags=["users"])
+DEVELOPER_SETTINGS_GUARD = [Depends(require_feature("developer_settings"))]
 
 
 def _require_superuser(current_user: User) -> None:
@@ -144,7 +146,7 @@ async def delete_user(
         raise HTTPException(status_code=500, detail=f"Failed to delete user: {exc}")
 
 
-@router.get("/me/settings", response_model=dict[str, object])
+@router.get("/me/settings", response_model=dict[str, object], dependencies=DEVELOPER_SETTINGS_GUARD)
 async def get_user_settings(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
@@ -152,7 +154,7 @@ async def get_user_settings(
     return current_user.settings or {}
 
 
-@router.patch("/me/settings", response_model=dict[str, object])
+@router.patch("/me/settings", response_model=dict[str, object], dependencies=DEVELOPER_SETTINGS_GUARD)
 async def update_user_settings(
     body: dict[str, object],
     current_user: Annotated[User, Depends(get_current_user)],

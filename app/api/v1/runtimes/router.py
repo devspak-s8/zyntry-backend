@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
+from app.api.v1.features.dependencies import require_feature
 from app.core.database import get_session
 from app.models.users import User
 from app.repositories import UnitOfWork
@@ -23,6 +24,7 @@ from app.services.health import HealthService
 from app.services.runtimes import RuntimeService
 
 router = APIRouter(prefix="/runtimes", tags=["runtimes"])
+OBSERVABILITY_GUARD = [Depends(require_feature("observability"))]
 
 
 @router.get("", response_model=list[RuntimeRead])
@@ -136,7 +138,7 @@ async def cancel_runtime(
     return result
 
 
-@router.get("/{runtime_id}/health", response_model=RuntimeHealthResponse)
+@router.get("/{runtime_id}/health", response_model=RuntimeHealthResponse, dependencies=OBSERVABILITY_GUARD)
 async def get_runtime_health(
     runtime_id: str,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -148,7 +150,7 @@ async def get_runtime_health(
     return RuntimeHealthResponse(**health)
 
 
-@router.get("/{runtime_id}/metrics", response_model=dict)
+@router.get("/{runtime_id}/metrics", response_model=dict, dependencies=OBSERVABILITY_GUARD)
 async def get_runtime_metrics(
     runtime_id: str,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -163,7 +165,7 @@ async def get_runtime_metrics(
     return summary
 
 
-@router.get("/{runtime_id}/logs", response_model=list[RuntimeBuildLogRead])
+@router.get("/{runtime_id}/logs", response_model=list[RuntimeBuildLogRead], dependencies=OBSERVABILITY_GUARD)
 async def list_runtime_logs(
     runtime_id: str,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -192,7 +194,7 @@ async def list_runtime_logs(
     ]
 
 
-@router.get("/{runtime_id}/chunks", response_model=list[RuntimeBuildChunkRead])
+@router.get("/{runtime_id}/chunks", response_model=list[RuntimeBuildChunkRead], dependencies=OBSERVABILITY_GUARD)
 async def list_runtime_chunks(
     runtime_id: str,
     current_user: Annotated[User, Depends(get_current_user)],

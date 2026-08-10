@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
+from app.api.v1.features.dependencies import require_feature
 from app.core.config import settings
 from app.core.database import get_session
 from app.models.billing import UsageLog
@@ -37,6 +38,11 @@ from app.services.billing import BillingService, InsufficientCredits
 from app.core.ws_events import emit_checkout_completed, emit_wallet_updated
 
 router = APIRouter(prefix="/wallet", tags=["wallet"])
+BILLING_GUARD = [Depends(require_feature("billing"))]
+CREDIT_PURCHASE_GUARD = [
+    Depends(require_feature("billing")),
+    Depends(require_feature("credit_purchases")),
+]
 
 
 def _require_bachs() -> BachsService:
@@ -45,7 +51,7 @@ def _require_bachs() -> BachsService:
     return BachsService()
 
 
-@router.get("", response_model=WalletRead)
+@router.get("", response_model=WalletRead, dependencies=BILLING_GUARD)
 async def get_wallet(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_session)],
@@ -54,7 +60,7 @@ async def get_wallet(
     return await service.get_wallet_read(current_user.id)
 
 
-@router.get("/transactions", response_model=list[WalletTransactionRead])
+@router.get("/transactions", response_model=list[WalletTransactionRead], dependencies=BILLING_GUARD)
 async def list_transactions(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_session)],
@@ -65,7 +71,7 @@ async def list_transactions(
     return await service.get_transactions(current_user.id, limit=limit, offset=offset)
 
 
-@router.post("/add-credits", response_model=CheckoutSessionResponse)
+@router.post("/add-credits", response_model=CheckoutSessionResponse, dependencies=CREDIT_PURCHASE_GUARD)
 async def create_checkout_session(
     body: CheckoutSessionRequest,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -196,7 +202,7 @@ async def bachs_webhook(
         return {"received": True}
 
 
-@router.post("/refund", response_model=WalletTransactionRead)
+@router.post("/refund", response_model=WalletTransactionRead, dependencies=BILLING_GUARD)
 async def refund_transaction(
     body: RefundRequest,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -220,7 +226,7 @@ async def refund_transaction(
     )
 
 
-@router.get("/usage", response_model=UsageSummary)
+@router.get("/usage", response_model=UsageSummary, dependencies=BILLING_GUARD)
 async def get_usage(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_session)],
@@ -230,7 +236,7 @@ async def get_usage(
     return UsageSummary(**summary)
 
 
-@router.get("/usage/logs", response_model=list[UsageLogRead])
+@router.get("/usage/logs", response_model=list[UsageLogRead], dependencies=BILLING_GUARD)
 async def list_usage_logs(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_session)],
@@ -270,7 +276,7 @@ async def list_usage_logs(
     ]
 
 
-@router.get("/pricing", response_model=list[PricingRuleRead])
+@router.get("/pricing", response_model=list[PricingRuleRead], dependencies=BILLING_GUARD)
 async def list_pricing(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_session)],
@@ -296,7 +302,7 @@ async def list_pricing(
     ]
 
 
-@router.post("/estimate", response_model=EstimateCostResponse)
+@router.post("/estimate", response_model=EstimateCostResponse, dependencies=BILLING_GUARD)
 async def estimate_cost(
     body: EstimateCostRequest,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -306,7 +312,7 @@ async def estimate_cost(
     return await service.estimate_request_cost(body)
 
 
-@router.get("/budget", response_model=BudgetRead | None)
+@router.get("/budget", response_model=BudgetRead | None, dependencies=BILLING_GUARD)
 async def get_budget(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_session)],
@@ -331,7 +337,7 @@ async def get_budget(
     )
 
 
-@router.put("/budget", response_model=BudgetRead)
+@router.put("/budget", response_model=BudgetRead, dependencies=BILLING_GUARD)
 async def update_budget(
     body: BudgetUpdate,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -361,7 +367,7 @@ async def update_budget(
     )
 
 
-@router.post("/budget", response_model=BudgetRead, status_code=status.HTTP_201_CREATED)
+@router.post("/budget", response_model=BudgetRead, status_code=status.HTTP_201_CREATED, dependencies=BILLING_GUARD)
 async def create_budget(
     body: BudgetCreate,
     current_user: Annotated[User, Depends(get_current_user)],
