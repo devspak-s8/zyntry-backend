@@ -132,17 +132,18 @@ def build_verify_email(user_name: str | None, token: str) -> tuple[str, str]:
 def build_password_reset(user_name: str | None, token: str) -> tuple[str, str]:
     display = user_name or "there"
     html = build_email(
+        name="password_reset",
         title="Reset your password",
         subtitle=f"Hi {display},",
-        body_html="We received a request to reset your password. Click the button below to set a new password. This link expires in 1 hour and can only be used once.",
-        cta_text="Reset Password",
-        cta_url=f"{_APP_URL}/reset-password?token={token}",
+        body_html=f"We received a request to reset your password. Enter this code in the app:</p><table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\"><tr><td align=\"center\" style=\"padding:20px 0;\"><table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" style=\"background:#f1f5f9;border-radius:12px;border:2px dashed #cbd5e1;\"><tr><td style=\"padding:16px 32px;text-align:center;\"><span style=\"font-size:32px;font-weight:800;letter-spacing:6px;color:#1e293b;font-family:'SF Mono','Fira Code','Consolas',monospace;\">{token}</span></td></tr></table></td></tr></table><p style=\"color:#64748b;margin:0 0 24px;font-size:13px;line-height:1.5;\">This code expires in 15 minutes and can only be used once.",
+        cta_text="Enter Reset Code",
+        cta_url=f"{_APP_URL}/reset-password",
     )
     text = build_email_text(
         title="Reset your password",
-        body=f"We received a request to reset your password. Click below to set a new password.\n\nThis link expires in 1 hour.\n\n{_APP_URL}/reset-password?token={token}",
-        cta_text="Reset Password",
-        cta_url=f"{_APP_URL}/reset-password?token={token}",
+        body=f"We received a request to reset your password.\n\nYour reset code is: {token}\n\nThis code expires in 15 minutes and can only be used once.",
+        cta_text="Enter Reset Code",
+        cta_url=f"{_APP_URL}/reset-password",
     )
     return html, text
 
