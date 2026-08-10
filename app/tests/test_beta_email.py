@@ -9,24 +9,27 @@ def test_beta_invitation_is_registered() -> None:
 
 def test_beta_invitation_contains_branded_content_and_plain_text() -> None:
     html, text = build_zyntry_beta_invitation(
-        access_date="tomorrow",
+        access_date="today",
         recipient_name="Ada",
         app_url="https://staging.zyntry.space",
+        credit_amount="$5.00",
     )
 
-    assert "FOUNDING BETA" in html
-    assert "You're one of the first in." in html
-    assert "Check your inbox again tomorrow" in html
+    assert "EARLY ACCESS" in html
+    assert "Your Zyntry beta access is ready." in html
+    assert "$5.00 is now in your wallet" in html
     assert 'href="https://staging.zyntry.space"' in html
     assert "Hey Ada" in text
-    assert "Nothing is required from you today" in text
+    assert "We added $5.00 in testing credit" in text
+    assert "linear-gradient" not in html
+    assert "—" not in html
 
 
 def test_beta_invitation_escapes_dynamic_html() -> None:
     html, _ = build_zyntry_beta_invitation(
         access_date="<script>alert(1)</script>",
         recipient_name="<b>Ada</b>",
-        app_url='https://example.com/\" onclick=\"alert(1)',
+        app_url='https://example.com/" onclick="alert(1)',
     )
 
     assert "<script>" not in html
