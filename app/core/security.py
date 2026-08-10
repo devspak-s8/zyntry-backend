@@ -43,8 +43,18 @@ def generate_session_token() -> str:
 
 
 def generate_verification_token() -> str:
-    chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    # Verification codes are displayed and entered as uppercase by the UI.
+    # Generate them in that canonical form so presentation never changes the
+    # value that is hashed and stored.
+    chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
     return "".join(secrets.choice(chars) for _ in range(6))
+
+
+def verification_token_candidates(token: str) -> tuple[str, ...]:
+    """Return exact and canonical forms during the mixed-case migration."""
+
+    stripped = token.strip()
+    return tuple(dict.fromkeys((stripped, stripped.upper())))
 
 
 def sign_payload(payload: bytes, secret: str | None = None) -> str:
