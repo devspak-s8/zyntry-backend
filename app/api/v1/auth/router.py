@@ -359,7 +359,7 @@ async def forgot_password(
 
 @router.post("/reset-password")
 async def reset_password(
-    token: Annotated[str, Body(embed=True)],
+    reset_token: Annotated[str, Body(embed=True)],
     password: Annotated[str, Body(embed=True)],
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
@@ -368,7 +368,10 @@ async def reset_password(
             status_code=422,
             detail=f"Password must be at least {settings.PASSWORD_MIN_LENGTH} characters",
         )
-    token_hash = hash_token(token)
+    if not reset_token.startswith("rst_") or len(reset_token) < 32:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+
+    token_hash = hash_token(reset_token)
     result = await db.execute(
         select(PasswordResetToken).where(PasswordResetToken.token_hash == token_hash)
     )
@@ -400,6 +403,52 @@ async def reset_password(
     except Exception:
         logger.exception("Failed to enqueue password changed email to %s", user.email)
     return {"message": "Password has been reset."}
+
+
+@router.post("/verify-reset-code")
+async def verify_reset_code(
+    email: Annotated[str, Body(embed=True)],
+    code: Annotated[str, Body(embed=True)],
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, str]:
+    """Consume an emailed code and exchange it for a short-lived reset token."""
+
+    normalized_code = code.strip()
+    if len(normalized_code) != 6 or not normalized_code.isalnum():
+        raise HTTPException(status_code=400, detail="Invalid or expired reset code")
+
+    user = await _get_user_by_email(db, email)
+    if user is None:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset code")
+
+    code_hashes = [
+        hash_token(value) for value in verification_token_candidates(normalized_code)
+    ]
+    result = await db.execute(
+        select(PasswordResetToken)
+        .where(
+            PasswordResetToken.user_id == user.id,
+            PasswordResetToken.token_hash.in_(code_hashes),
+        )
+        .order_by(PasswordResetToken.created_at.desc())
+        .limit(1)
+    )
+    code_obj = result.scalar_one_or_none()
+
+    if code_obj is None or code_obj.used or code_obj.expires_at <= now():
+        raise HTTPException(status_code=400, detail="Invalid or expired reset code")
+
+    raw_reset_token = f"rst_{generate_session_token()}"
+    reset_obj = PasswordResetToken(
+        user_id=user.id,
+        token_hash=hash_token(raw_reset_token),
+        expires_at=now() + timedelta(minutes=10),
+    )
+    code_obj.used = True
+    db.add(reset_obj)
+    await db.commit()
+
+    return {"reset_token": raw_reset_token}
 
 
 @router.post("/verify-email")
