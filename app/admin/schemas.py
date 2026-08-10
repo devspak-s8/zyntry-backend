@@ -1,9 +1,40 @@
 from __future__ import annotations
 
+import uuid
 from decimal import Decimal
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
+
+from app.admin.constants import FeatureFlagType, FeatureScope
+
+
+def _validate_feature_allowlist(values: list[str] | None) -> list[str] | None:
+    if values is None:
+        return None
+
+    normalized: list[str] = []
+    for raw_value in values:
+        prefix, separator, identifier = raw_value.strip().partition(":")
+        prefix = prefix.lower()
+        identifier = identifier.strip()
+        if not separator or prefix not in {"user", "org", "email"} or not identifier:
+            raise ValueError(
+                "allowlist entries must use user:<uuid>, org:<uuid>, or email:<address>"
+            )
+        if prefix in {"user", "org"}:
+            try:
+                identifier = str(uuid.UUID(identifier))
+            except ValueError as exc:
+                raise ValueError(f"{prefix} allowlist entries must contain a valid UUID") from exc
+        else:
+            identifier = identifier.lower()
+            if "@" not in identifier:
+                raise ValueError("email allowlist entries must contain a valid email address")
+        entry = f"{prefix}:{identifier}"
+        if entry not in normalized:
+            normalized.append(entry)
+    return normalized
 
 
 class AdminUserRead(BaseModel):
@@ -162,24 +193,28 @@ class FeatureFlagRead(BaseModel):
 
 
 class FeatureFlagCreate(BaseModel):
-    key: str
-    name: str
+    key: str = Field(pattern=r"^[a-z][a-z0-9_.-]{2,99}$")
+    name: str = Field(min_length=1, max_length=255)
     description: str | None = None
-    scope: str = "provider"
-    flag_type: str = "toggle"
+    scope: FeatureScope = FeatureScope.PROVIDER
+    flag_type: FeatureFlagType = FeatureFlagType.TOGGLE
     enabled: bool = False
     default_value: bool | None = None
-    rollout_percentage: int = 100
+    rollout_percentage: int = Field(default=100, ge=0, le=100)
     allowlist: list[str] | None = None
+
+    _normalize_allowlist = field_validator("allowlist")(_validate_feature_allowlist)
 
 
 class FeatureFlagUpdate(BaseModel):
-    name: str | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = None
     enabled: bool | None = None
     default_value: bool | None = None
-    rollout_percentage: int | None = None
+    rollout_percentage: int | None = Field(default=None, ge=0, le=100)
     allowlist: list[str] | None = None
+
+    _normalize_allowlist = field_validator("allowlist")(_validate_feature_allowlist)
 
 
 class NotificationConfigRead(BaseModel):

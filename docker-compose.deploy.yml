@@ -1,0 +1,22 @@
+# Used together with docker-compose.yml on deployed hosts:
+# docker compose -f docker-compose.yml -f docker-compose.deploy.yml ...
+services:
+  api:
+    image: ${API_IMAGE:?API_IMAGE must be a SHA-pinned GHCR image}
+    pull_policy: always
+
+  worker:
+    image: ${API_IMAGE:?API_IMAGE must be a SHA-pinned GHCR image}
+    pull_policy: always
+
+  beat:
+    image: ${API_IMAGE:?API_IMAGE must be a SHA-pinned GHCR image}
+    pull_policy: always
+
+  runtime-assistant:
+    image: ${API_IMAGE:?API_IMAGE must be a SHA-pinned GHCR image}
+    pull_policy: always
+
+  realtime:
+    image: ${API_IMAGE:?API_IMAGE must be a SHA-pinned GHCR image}
+    pull_policy: always

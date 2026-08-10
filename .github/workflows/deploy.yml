@@ -1,0 +1,152 @@
+name: Build and deploy API
+
+on:
+  push:
+    branches:
+      - main
+      - staging
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: deploy-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    name: Tests and checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install application and test dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]" pytest-mock
+
+      - name: Lint
+        # Gate new deployments on parser/runtime-fatal lint errors without
+        # making the existing repository-wide style backlog a release blocker.
+        run: ruff check app scripts --select E9,F63,F7
+
+      - name: Test
+        run: python -m pytest -q
+
+  build:
+    name: Build and publish
+    needs: checks
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.image.outputs.uri }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set image name
+        id: image
+        shell: bash
+        run: |
+          repository="${GITHUB_REPOSITORY,,}"
+          echo "uri=ghcr.io/${repository}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish SHA-pinned image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.image.outputs.uri }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy ${{ github.ref_name }}
+    needs: build
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
+    steps:
+      - name: Check out deployment configuration
+        uses: actions/checkout@v4
+
+      - name: Upload deployment override
+        uses: appleboy/scp-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          source: docker-compose.deploy.yml
+          target: ${{ secrets.DEPLOY_PATH }}
+          overwrite: true
+
+      - name: Deploy exact image to EC2
+        uses: appleboy/ssh-action@v1.2.2
+        env:
+          API_IMAGE: ${{ needs.build.outputs.image }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+          COMPOSE_OVERRIDE_FILE: ${{ secrets.COMPOSE_OVERRIDE_FILE }}
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          envs: API_IMAGE,DEPLOY_PATH,GHCR_USERNAME,GHCR_READ_TOKEN,COMPOSE_OVERRIDE_FILE
+          script_stop: true
+          script: |
+            set -eu
+            cd "$DEPLOY_PATH"
+
+            compose="docker compose -f docker-compose.yml"
+            if [ -n "${COMPOSE_OVERRIDE_FILE:-}" ]; then
+              compose="$compose -f $COMPOSE_OVERRIDE_FILE"
+            fi
+            compose="$compose -f docker-compose.deploy.yml"
+            current_id=$($compose ps -q api || true)
+            previous_image=""
+            if [ -n "$current_id" ]; then
+              previous_image=$(docker inspect --format '{{.Config.Image}}' "$current_id")
+            fi
+
+            echo "$GHCR_READ_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
+            export API_IMAGE
+            services="api worker beat runtime-assistant realtime"
+            $compose pull $services
+            $compose up -d --no-build $services
+
+            healthy=false
+            for attempt in $(seq 1 30); do
+              if $compose exec -T api python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"; then
+                healthy=true
+                break
+              fi
+              sleep 2
+            done
+
+            if [ "$healthy" != "true" ]; then
+              $compose logs --tail=150 api
+              if [ -n "$previous_image" ]; then
+                echo "Health check failed; rolling back to $previous_image"
+                export API_IMAGE="$previous_image"
+                $compose up -d --no-build $services
+              fi
+              exit 1
+            fi
+
+            docker image prune -f

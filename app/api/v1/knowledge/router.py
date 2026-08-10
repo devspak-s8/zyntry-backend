@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, stat
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
+from app.api.v1.features.dependencies import require_feature
 from app.core.database import get_session
 from app.models.users import User
 from app.repositories import UnitOfWork
@@ -24,6 +25,7 @@ from app.schemas.knowledge import (
 from app.services.knowledge import KnowledgeService
 
 router = APIRouter(prefix="/knowledge", tags=["knowledge"])
+SOURCE_GUARD = [Depends(require_feature("knowledge_sources"))]
 
 
 @router.get("", response_model=list[KnowledgeBaseRead])
@@ -171,7 +173,7 @@ async def list_documents(
     ]
 
 
-@router.get("/sources", response_model=list[KnowledgeSourceRead])
+@router.get("/sources", response_model=list[KnowledgeSourceRead], dependencies=SOURCE_GUARD)
 async def list_knowledge_sources(
     current_user: Annotated[User, Depends(get_current_user)],
     project_id: str,
@@ -203,7 +205,7 @@ async def list_knowledge_sources(
     ]
 
 
-@router.post("/sources", response_model=KnowledgeSourceRead, status_code=status.HTTP_201_CREATED)
+@router.post("/sources", response_model=KnowledgeSourceRead, status_code=status.HTTP_201_CREATED, dependencies=SOURCE_GUARD)
 async def create_knowledge_source(
     body: KnowledgeSourceCreate,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -232,7 +234,7 @@ async def create_knowledge_source(
     )
 
 
-@router.patch("/sources/{source_id}", response_model=KnowledgeSourceRead)
+@router.patch("/sources/{source_id}", response_model=KnowledgeSourceRead, dependencies=SOURCE_GUARD)
 async def update_knowledge_source(
     source_id: str,
     body: KnowledgeSourceUpdate,
@@ -262,7 +264,7 @@ async def update_knowledge_source(
     )
 
 
-@router.delete("/sources/{source_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/sources/{source_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=SOURCE_GUARD)
 async def delete_knowledge_source(
     source_id: str,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -273,7 +275,7 @@ async def delete_knowledge_source(
     await service.delete_source(source_id)
 
 
-@router.post("/test-connection", tags=["knowledge"])
+@router.post("/test-connection", tags=["knowledge"], dependencies=SOURCE_GUARD)
 async def test_source_connection(
     body: dict,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -291,7 +293,7 @@ async def test_source_connection(
     return result
 
 
-@router.post("/discover", tags=["knowledge"])
+@router.post("/discover", tags=["knowledge"], dependencies=SOURCE_GUARD)
 async def discover_source_metadata(
     body: dict,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -309,7 +311,7 @@ async def discover_source_metadata(
     return result
 
 
-@router.post("/sources/{source_id}/sync", response_model=SyncJobRead, tags=["knowledge"])
+@router.post("/sources/{source_id}/sync", response_model=SyncJobRead, tags=["knowledge"], dependencies=SOURCE_GUARD)
 async def sync_knowledge_source(
     source_id: str,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -335,7 +337,7 @@ async def sync_knowledge_source(
     )
 
 
-@router.get("/sources/{source_id}/sync-jobs", response_model=list[SyncJobRead], tags=["knowledge"])
+@router.get("/sources/{source_id}/sync-jobs", response_model=list[SyncJobRead], tags=["knowledge"], dependencies=SOURCE_GUARD)
 async def list_source_sync_jobs(
     source_id: str,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -363,7 +365,7 @@ async def list_source_sync_jobs(
     ]
 
 
-@router.get("/sync-jobs/{job_id}", response_model=SyncJobRead, tags=["knowledge"])
+@router.get("/sync-jobs/{job_id}", response_model=SyncJobRead, tags=["knowledge"], dependencies=SOURCE_GUARD)
 async def get_sync_job(
     job_id: str,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -390,7 +392,7 @@ async def get_sync_job(
     )
 
 
-@router.post("/sync-jobs/{job_id}/cancel", response_model=SyncJobRead, tags=["knowledge"])
+@router.post("/sync-jobs/{job_id}/cancel", response_model=SyncJobRead, tags=["knowledge"], dependencies=SOURCE_GUARD)
 async def cancel_sync_job(
     job_id: str,
     current_user: Annotated[User, Depends(get_current_user)],

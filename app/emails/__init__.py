@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from html import escape
 from typing import Any
 
 from app.core.config import settings
@@ -526,6 +527,69 @@ def build_new_feature(title: str, description: str | None) -> tuple[str, str]:
         cta_url=f"{_APP_URL}/changelog",
     )
     text = build_email_text(f"New feature: {title}", description or "New feature launched on Zyntra!", "Learn More", f"{_APP_URL}/changelog")
+    return html, text
+
+
+def build_zyntry_beta_invitation(
+    access_date: str,
+    recipient_name: str | None = None,
+    app_url: str | None = None,
+    credit_amount: str = "$5.00",
+) -> tuple[str, str]:
+    """Build the first beta group access message using email safe markup."""
+    name = escape(recipient_name.strip()) if recipient_name else "there"
+    date = escape(access_date.strip())
+    credit = escape(credit_amount.strip())
+    destination = escape((app_url or _APP_URL).rstrip("/"), quote=True)
+
+    html = f'''<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Welcome to the Zyntry beta</title></head>
+<body style="margin:0;padding:0;background:#070b18;font-family:Arial,Helvetica,sans-serif;color:#e8ecff;">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#070b18;"><tr><td align="center" style="padding:36px 16px;">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:600px;background:#10172a;border:1px solid #273252;border-radius:24px;overflow:hidden;">
+<tr><td style="padding:42px 38px 34px;background:#5b21b6;">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"><tr>
+<td style="font-size:22px;font-weight:800;color:#fff;letter-spacing:-.4px;">Zyntry</td>
+<td align="right"><span style="display:inline-block;padding:7px 12px;border:1px solid #c4b5fd;border-radius:999px;color:#fff;font-size:11px;font-weight:700;letter-spacing:1.3px;">EARLY ACCESS</span></td>
+</tr></table>
+<div style="font-size:46px;line-height:1;margin:38px 0 20px;">&#10024;</div>
+<h1 style="margin:0;color:#fff;font-size:34px;line-height:1.14;letter-spacing:-1px;">Your Zyntry beta access is ready.</h1>
+<p style="margin:16px 0 0;color:#ede9fe;font-size:16px;line-height:1.65;">You are part of the first group helping us test and improve Zyntry.</p>
+</td></tr>
+<tr><td style="padding:38px;">
+<p style="margin:0 0 18px;color:#fff;font-size:17px;">Hey {name},</p>
+<p style="margin:0 0 28px;color:#b9c2dd;font-size:15px;line-height:1.75;">Your account has been selected for early access. We have also added testing credit to your wallet so you can explore the available features.</p>
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin:0 0 30px;background:#161f36;border:1px solid #303d60;border-radius:16px;"><tr>
+<td width="58" valign="top" style="padding:22px 0 22px 22px;font-size:26px;">&#128176;</td>
+<td style="padding:20px 22px 20px 10px;"><div style="color:#8b9ac4;font-size:11px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;">Testing credit added</div>
+<div style="margin-top:7px;color:#fff;font-size:22px;font-weight:700;line-height:1.45;">{credit} is now in your wallet</div>
+<div style="margin-top:6px;color:#aeb9d7;font-size:13px;line-height:1.55;">Sign in {date} and use this credit while testing Zyntry. This credit is intended for beta testing.</div></td>
+</tr></table>
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin-bottom:30px;"><tr>
+<td width="33%" valign="top" style="padding-right:8px;"><div style="color:#a78bfa;font-size:18px;font-weight:800;">01</div><div style="margin-top:7px;color:#fff;font-size:13px;font-weight:700;">Explore early</div></td>
+<td width="33%" valign="top" style="padding:0 8px;"><div style="color:#60a5fa;font-size:18px;font-weight:800;">02</div><div style="margin-top:7px;color:#fff;font-size:13px;font-weight:700;">Test freely</div></td>
+<td width="33%" valign="top" style="padding-left:8px;"><div style="color:#34d399;font-size:18px;font-weight:800;">03</div><div style="margin-top:7px;color:#fff;font-size:13px;font-weight:700;">Shape Zyntry</div></td>
+</tr></table>
+<table role="presentation" cellspacing="0" cellpadding="0" border="0" align="center"><tr><td align="center" bgcolor="#7c3aed" style="border-radius:12px;"><a href="{destination}" style="display:inline-block;padding:15px 28px;color:#fff;text-decoration:none;font-size:14px;font-weight:800;">Open Zyntry&nbsp;&nbsp;&rarr;</a></td></tr></table>
+<p style="margin:30px 0 0;text-align:center;color:#7784a8;font-size:12px;line-height:1.6;">Early builds may change while you test. Your feedback will directly influence what ships.</p>
+</td></tr>
+<tr><td style="padding:22px 38px;background:#0c1222;border-top:1px solid #252f4c;text-align:center;color:#697797;font-size:11px;line-height:1.6;">You received this because you were selected for the Zyntry founding beta.<br>&copy; 2026 Zyntry. Build what comes next.</td></tr>
+</table></td></tr></table>
+</body></html>'''
+
+    text = build_email_text(
+        "Your Zyntry beta access is ready",
+        (
+            f"Hey {recipient_name.strip() if recipient_name else 'there'},\n\n"
+            "You are part of Zyntry's first beta testing group. "
+            f"We added {credit_amount.strip()} in testing credit to your wallet. "
+            f"Sign in {access_date.strip()} to begin testing. "
+            "Your feedback will help us improve Zyntry."
+        ),
+        "Open Zyntry",
+        app_url or _APP_URL,
+    )
     return html, text
 
 
@@ -1351,6 +1415,7 @@ EMAIL_TEMPLATES: dict[str, Any] = {
     "security_alert": build_security_alert,
     "abuse_detected": build_abuse_detected,
     "new_feature": build_new_feature,
+    "zyntry_beta_invitation": build_zyntry_beta_invitation,
     "fix_notification": build_fix_notification,
     "maintenance_notice": build_maintenance_notice,
     "incident_notification": build_incident_notification,
@@ -1394,19 +1459,14 @@ async def send_email(
         return {"success": False, "template": template_name, "to": to, "error": "email_not_configured"}
     client = get_sendbyte_client()
     try:
-        payload: dict[str, Any] = {
-            "to": to,
-            "subject": subject,
-            "html": html,
-            "from": resolved_from,
-        }
-        if text:
-            payload["text"] = text
-        if reply_to:
-            payload["replyTo"] = reply_to
-        if headers:
-            payload["headers"] = headers
-        result = await client.send(**payload)
+        result = await client.send(
+            to=to,
+            subject=subject,
+            html=html,
+            text=text,
+            from_email=resolved_from,
+            reply_to=reply_to,
+        )
         return {"success": True, "template": template_name, "to": to, "data": result}
     except SendByteError as e:
         logger.error("SendByte email failed for template %s", template_name, extra={"to": to, "error": str(e)})

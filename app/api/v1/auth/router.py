@@ -17,6 +17,7 @@ from app.core.security import (
     hash_password,
     hash_token,
     now,
+    verification_token_candidates,
     verify_password,
 )
 from app.models.email_verification_tokens import EmailVerificationToken
@@ -406,9 +407,11 @@ async def verify_email(
     token: Annotated[str, Body(embed=True)],
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
-    token_hash = hash_token(token)
+    token_hashes = [hash_token(value) for value in verification_token_candidates(token)]
     result = await db.execute(
-        select(EmailVerificationToken).where(EmailVerificationToken.token_hash == token_hash)
+        select(EmailVerificationToken)
+        .where(EmailVerificationToken.token_hash.in_(token_hashes))
+        .limit(1)
     )
     verification_obj = result.scalar_one_or_none()
 

@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies_api_key import get_api_key_user
+from app.api.v1.features.dependencies import require_api_key_feature
 from app.core.config import settings
 from app.core.database import get_session
 from app.models.users import User
@@ -100,7 +100,7 @@ async def _execute_tool(tool: Any, arguments: dict) -> dict:
 @router.post("/invoke", response_model=InvokeResponse)
 async def invoke(
     body: InvokeRequest,
-    current_user: User = Depends(get_api_key_user),
+    current_user: User = Depends(require_api_key_feature("runtime_console")),
     db: AsyncSession = Depends(get_session),
 ) -> InvokeResponse:
     request_id = f"req_{uuid.uuid4().hex[:12]}"

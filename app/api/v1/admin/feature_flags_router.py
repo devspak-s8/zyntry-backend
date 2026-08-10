@@ -89,7 +89,10 @@ async def admin_create_feature_flag(
         default_value=body.default_value,
         rollout_percentage=body.rollout_percentage,
         allowlist=body.allowlist,
+        updated_by=ctx.admin_id,
     )
+    await db.commit()
+    await service.invalidate(flag.key)
     return FeatureFlagRead(
         id=str(flag.id) if flag.id else None,
         key=flag.key,
@@ -102,7 +105,7 @@ async def admin_create_feature_flag(
         rollout_percentage=flag.rollout_percentage,
         allowlist=flag.allowlist,
         is_system=flag.is_system,
-        updated_by=None,
+        updated_by=str(flag.updated_by) if flag.updated_by else None,
     )
 
 
@@ -114,9 +117,15 @@ async def admin_update_feature_flag(
     db: AsyncSession = Depends(get_session),
 ) -> FeatureFlagRead:
     service = FeatureFlagService(db)
-    flag = await service.update_flag(key, **body.model_dump(exclude_unset=True))
+    flag = await service.update_flag(
+        key,
+        updated_by=ctx.admin_id,
+        **body.model_dump(exclude_unset=True),
+    )
     if flag is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Feature flag not found")
+    await db.commit()
+    await service.invalidate(flag.key)
     return FeatureFlagRead(
         id=str(flag.id) if flag.id else None,
         key=flag.key,
@@ -129,7 +138,7 @@ async def admin_update_feature_flag(
         rollout_percentage=flag.rollout_percentage,
         allowlist=flag.allowlist,
         is_system=flag.is_system,
-        updated_by=None,
+        updated_by=str(flag.updated_by) if flag.updated_by else None,
     )
 
 
@@ -140,9 +149,11 @@ async def admin_enable_feature_flag(
     db: AsyncSession = Depends(get_session),
 ) -> FeatureFlagRead:
     service = FeatureFlagService(db)
-    flag = await service.enable_flag(key)
+    flag = await service.update_flag(key, enabled=True, updated_by=ctx.admin_id)
     if flag is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Feature flag not found")
+    await db.commit()
+    await service.invalidate(flag.key)
     return FeatureFlagRead(
         id=str(flag.id) if flag.id else None,
         key=flag.key,
@@ -155,7 +166,7 @@ async def admin_enable_feature_flag(
         rollout_percentage=flag.rollout_percentage,
         allowlist=flag.allowlist,
         is_system=flag.is_system,
-        updated_by=None,
+        updated_by=str(flag.updated_by) if flag.updated_by else None,
     )
 
 
@@ -166,9 +177,11 @@ async def admin_disable_feature_flag(
     db: AsyncSession = Depends(get_session),
 ) -> FeatureFlagRead:
     service = FeatureFlagService(db)
-    flag = await service.disable_flag(key)
+    flag = await service.update_flag(key, enabled=False, updated_by=ctx.admin_id)
     if flag is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Feature flag not found")
+    await db.commit()
+    await service.invalidate(flag.key)
     return FeatureFlagRead(
         id=str(flag.id) if flag.id else None,
         key=flag.key,
@@ -181,5 +194,5 @@ async def admin_disable_feature_flag(
         rollout_percentage=flag.rollout_percentage,
         allowlist=flag.allowlist,
         is_system=flag.is_system,
-        updated_by=None,
+        updated_by=str(flag.updated_by) if flag.updated_by else None,
     )

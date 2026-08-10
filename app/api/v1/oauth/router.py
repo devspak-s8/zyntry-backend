@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
+from app.api.v1.features.dependencies import require_feature
 from app.core.database import get_session
 from app.models.users import User
 from app.repositories import UnitOfWork
@@ -21,9 +22,10 @@ from app.schemas.oauth import (
 from app.services.oauth.service import OAuthService, OAuthState
 
 router = APIRouter(prefix="/oauth", tags=["oauth"])
+TOOLS_GUARD = [Depends(require_feature("tools_connectors"))]
 
 
-@router.get("/providers", response_model=list[OAuthProviderRead])
+@router.get("/providers", response_model=list[OAuthProviderRead], dependencies=TOOLS_GUARD)
 async def list_providers(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
@@ -34,7 +36,7 @@ async def list_providers(
     return [OAuthProviderRead(**p) for p in providers]
 
 
-@router.post("/authorize", response_model=OAuthAuthorizeResponse)
+@router.post("/authorize", response_model=OAuthAuthorizeResponse, dependencies=TOOLS_GUARD)
 async def authorize(
     body: dict,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -109,7 +111,7 @@ async def callback(
     )
 
 
-@router.post("/token", response_model=dict[str, Any])
+@router.post("/token", response_model=dict[str, Any], dependencies=TOOLS_GUARD)
 async def exchange_token(
     body: OAuthTokenExchangeRequest,
     current_user: Annotated[User, Depends(get_current_user)],
