@@ -98,7 +98,15 @@ async def publish_notification(event: NotificationEvent) -> dict[str, Any]:
 
 async def _safe_fire(coro: Any) -> None:
     try:
-        await coro
+        result = await coro
+        if isinstance(result, dict):
+            failures = {
+                channel: outcome
+                for channel, outcome in result.items()
+                if isinstance(outcome, dict) and outcome.get("success") is False
+            }
+            if failures:
+                logger.error("Notification delivery failed: %s", failures)
     except Exception as exc:
         logger.exception("Notification task failed: %s", exc)
 
