@@ -4,19 +4,29 @@ services:
   api:
     image: ${API_IMAGE:?API_IMAGE must be a SHA-pinned GHCR image}
     pull_policy: always
+    environment:
+      - EMAIL_ASSET_BASE_URL=${EMAIL_ASSET_BASE_URL:-http://localhost:8000/static/email}
 
   worker:
     image: ${API_IMAGE:?API_IMAGE must be a SHA-pinned GHCR image}
     pull_policy: always
+    environment:
+      - EMAIL_ASSET_BASE_URL=${EMAIL_ASSET_BASE_URL:-http://localhost:8000/static/email}
 
   beat:
     image: ${API_IMAGE:?API_IMAGE must be a SHA-pinned GHCR image}
     pull_policy: always
+    environment:
+      - EMAIL_ASSET_BASE_URL=${EMAIL_ASSET_BASE_URL:-http://localhost:8000/static/email}
 
   runtime-assistant:
     image: ${API_IMAGE:?API_IMAGE must be a SHA-pinned GHCR image}
     pull_policy: always
+    environment:
+      - EMAIL_ASSET_BASE_URL=${EMAIL_ASSET_BASE_URL:-http://localhost:8000/static/email}
 
   realtime:
     image: ${API_IMAGE:?API_IMAGE must be a SHA-pinned GHCR image}
     pull_policy: always
+    environment:
+      - EMAIL_ASSET_BASE_URL=${EMAIL_ASSET_BASE_URL:-http://localhost:8000/static/email}
