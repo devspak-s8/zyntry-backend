@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from typing import Any
 
 from app.repositories import UnitOfWork
 from app.schemas.knowledge import (
@@ -291,7 +293,12 @@ class KnowledgeService:
         await self.uow.commit()
         return result
 
-    async def sync_source(self, source_id: str, options: dict | None = None) -> dict:
+    async def sync_source(
+        self,
+        source_id: str,
+        options: dict | None = None,
+        progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    ) -> dict:
         source = await self.uow.knowledge_sources.get(source_id)
         if not source:
             raise ValueError("Knowledge source not found")
@@ -317,13 +324,49 @@ class KnowledgeService:
         )
         await self.uow.commit()
 
+        async def report(
+            sync_status: str,
+            progress: int,
+            current_step: str,
+            *,
+            error_message: str | None = None,
+            stats: dict[str, Any] | None = None,
+        ) -> None:
+            if progress_callback is None:
+                return
+            try:
+                await progress_callback(
+                    {
+                        "job_id": str(job.id),
+                        "source_id": str(source.id),
+                        "project_id": str(source.project_id),
+                        "status": sync_status,
+                        "progress": progress,
+                        "current_step": current_step,
+                        "error_message": error_message,
+                        "stats": stats or {},
+                    }
+                )
+            except Exception:
+                # Realtime delivery must never make the durable sync fail.
+                pass
+
         try:
+            await report("running", 5, "connecting")
+            await self.uow.sync_jobs.update(job, progress=20, current_step="crawling")
+            await self.uow.knowledge_sources.update(source, sync_progress=20)
+            await self.uow.commit()
+            await report("running", 20, "crawling")
             sync_result = await connector.sync(options)
             if sync_result.get("status") == "failed":
                 raise ValueError(sync_result.get("error") or "Source synchronization failed")
 
             documents_synced = 0
             if source.source_type in {"website", "crawler"}:
+                await self.uow.sync_jobs.update(job, progress=80, current_step="persisting")
+                await self.uow.knowledge_sources.update(source, sync_progress=80)
+                await self.uow.commit()
+                await report("running", 80, "persisting")
                 documents_synced = await self._persist_website_items(
                     source,
                     sync_result.get("items", []),
@@ -358,6 +401,7 @@ class KnowledgeService:
                 },
             )
             await self.uow.commit()
+            await report("completed", 100, "completed", stats=stats)
             sync_result["progress"] = 100
             sync_result["stats"] = stats
         except Exception as exc:
@@ -377,6 +421,7 @@ class KnowledgeService:
                 error_count=(source.error_count or 0) + 1,
             )
             await self.uow.commit()
+            await report("failed", 0, "failed", error_message=str(exc))
             raise
 
         sync_result["db_job_id"] = str(job.id)

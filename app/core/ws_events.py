@@ -36,6 +36,34 @@ async def emit_checkout_completed(user_id: str, checkout_id: str, status: str) -
     })
 
 
+async def emit_knowledge_sync_updated(
+    user_id: str,
+    *,
+    job_id: str,
+    source_id: str,
+    project_id: str,
+    status: str,
+    progress: int,
+    current_step: str,
+    error_message: str | None = None,
+    stats: dict | None = None,
+) -> None:
+    await emit_to_user(
+        user_id,
+        "knowledge.sync.updated",
+        {
+            "job_id": job_id,
+            "source_id": source_id,
+            "project_id": project_id,
+            "status": status,
+            "progress": progress,
+            "current_step": current_step,
+            "error_message": error_message,
+            "stats": stats or {},
+        },
+    )
+
+
 async def emit_notification(user_id: str, title: str, message: str, notification_type: str = "info") -> None:
     await emit_to_user(user_id, "notification", {
         "title": title,

@@ -160,7 +160,10 @@ async def test_sync_marks_source_and_job_completed() -> None:
     service._persist_website_items = AsyncMock(return_value=1)  # type: ignore[method-assign]
     service._maybe_trigger_runtime = AsyncMock()  # type: ignore[method-assign]
 
-    result = await service.sync_source(str(source.id))
+    progress_callback = AsyncMock()
+    result = await service.sync_source(
+        str(source.id), progress_callback=progress_callback
+    )
 
     assert result["status"] == "completed"
     assert result["progress"] == 100
@@ -173,3 +176,12 @@ async def test_sync_marks_source_and_job_completed() -> None:
         call.kwargs.get("status") == "completed"
         for call in uow.sync_jobs.update.await_args_list
     )
+    progress_events = [call.args[0] for call in progress_callback.await_args_list]
+    assert [event["current_step"] for event in progress_events] == [
+        "connecting",
+        "crawling",
+        "persisting",
+        "completed",
+    ]
+    assert progress_events[-1]["progress"] == 100
+    assert progress_events[-1]["stats"]["documents_synced"] == 1
