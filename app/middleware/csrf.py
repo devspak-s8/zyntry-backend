@@ -42,17 +42,7 @@ class CSRFMiddleware(BaseHTTPMiddleware):
             logger.warning("CSRF validation failed", extra={"path": path})
             return Response(content='{"detail":"CSRF token missing or invalid"}', status_code=403, media_type="application/json")
 
-        response = await call_next(request)
-
-        new_token = secrets.token_urlsafe(32)
-        response.set_cookie(
-            key=self.TOKEN_NAME,
-            value=new_token,
-            httponly=True,
-            secure=request.url.scheme == "https",
-            samesite="lax",
-            max_age=3600,
-            path="/",
-        )
-
-        return response
+        # Keep the double-submit token stable. Rotating it here would leave the
+        # browser holding a new HttpOnly cookie while the frontend still has the
+        # old response-body token, causing the next mutation to fail.
+        return await call_next(request)

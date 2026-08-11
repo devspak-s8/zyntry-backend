@@ -4,7 +4,7 @@ import logging
 from datetime import timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Body, Cookie, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Body, Cookie, Depends, HTTPException, Request, Response, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,6 +31,9 @@ from app.schemas.auth import AuthMeResponse
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+CSRF_COOKIE_NAME = "zyntra_csrf"
+CSRF_TOKEN_TTL_SECONDS = 3600
 
 
 async def _get_user_by_email(session: AsyncSession, email: str) -> User | None:
@@ -91,6 +94,24 @@ def _set_refresh_cookie(response: Response, token: str) -> None:
         max_age=max_age,
         path="/",
     )
+
+
+@router.get("/csrf-token")
+async def csrf_token(request: Request, response: Response) -> dict[str, str]:
+    """Issue the double-submit token used for authenticated mutations."""
+
+    token = request.cookies.get(CSRF_COOKIE_NAME) or generate_session_token()
+    response.headers["Cache-Control"] = "no-store"
+    response.set_cookie(
+        key=CSRF_COOKIE_NAME,
+        value=token,
+        httponly=True,
+        secure=not settings.APP_DEBUG,
+        samesite="none" if not settings.APP_DEBUG else "lax",
+        max_age=CSRF_TOKEN_TTL_SECONDS,
+        path="/",
+    )
+    return {"csrf_token": token}
 
 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
