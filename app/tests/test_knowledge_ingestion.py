@@ -98,6 +98,32 @@ async def test_website_connector_rejects_local_addresses() -> None:
 
 
 @pytest.mark.asyncio
+async def test_oauth_source_resolves_shared_encrypted_connection(monkeypatch) -> None:
+    connection_id = uuid4()
+    connection = SimpleNamespace(
+        status="active",
+        access_token_encrypted="encrypted-token",
+    )
+    uow = SimpleNamespace(
+        oauth_connections=SimpleNamespace(get=AsyncMock(return_value=connection))
+    )
+    source = SimpleNamespace(
+        source_type="slack",
+        config={"oauth_connection_id": str(connection_id)},
+        credentials_encrypted=None,
+    )
+    monkeypatch.setattr(
+        "app.services.oauth.service.OAuthService._decrypt",
+        lambda value: "shared-oauth-token",
+    )
+
+    credentials = await KnowledgeService(uow)._decrypt_credentials(source)
+
+    assert credentials == {"bot_token": "shared-oauth-token"}
+    uow.oauth_connections.get.assert_awaited_once_with(connection_id)
+
+
+@pytest.mark.asyncio
 async def test_website_items_are_persisted_and_chunked() -> None:
     project_id = uuid4()
     knowledge_base = SimpleNamespace(id=uuid4(), project_id=project_id)

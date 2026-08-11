@@ -38,3 +38,25 @@ async def test_sync_progress_event_is_sent_only_to_the_requesting_user(monkeypat
         },
         "user-1",
     )
+
+
+@pytest.mark.asyncio
+async def test_integration_update_contains_both_materialized_records(monkeypatch) -> None:
+    manager = AsyncMock()
+    monkeypatch.setattr(ws_events, "_get_manager", lambda: manager)
+
+    await ws_events.emit_integration_connection_updated(
+        "user-1",
+        project_id="project-1",
+        provider="github",
+        purpose="both",
+        oauth_connection_id="oauth-1",
+        tool_id="tool-1",
+        source_id="source-1",
+    )
+
+    message, user_id = manager.send_to_user.await_args.args
+    assert user_id == "user-1"
+    assert message["type"] == "integration.connection.updated"
+    assert message["payload"]["tool_id"] == "tool-1"
+    assert message["payload"]["source_id"] == "source-1"

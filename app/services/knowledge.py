@@ -246,7 +246,22 @@ class KnowledgeService:
             credentials=credentials,
         )
 
-    def _decrypt_credentials(self, source) -> dict | None:
+    async def _decrypt_credentials(self, source) -> dict | None:
+        oauth_connection_id = (source.config or {}).get("oauth_connection_id")
+        if oauth_connection_id:
+            try:
+                connection = await self.uow.oauth_connections.get(
+                    uuid.UUID(oauth_connection_id)
+                )
+                if connection is None or connection.status != "active":
+                    return None
+                from app.services.oauth.service import OAuthService
+
+                token = OAuthService._decrypt(connection.access_token_encrypted)
+                credential_key = "bot_token" if source.source_type == "slack" else "token"
+                return {credential_key: token}
+            except (TypeError, ValueError):
+                return None
         if not source.credentials_encrypted:
             return None
         try:
@@ -263,7 +278,7 @@ class KnowledgeService:
             project_id=str(source.project_id),
             source_id=str(source.id),
             config=source.config,
-            credentials=self._decrypt_credentials(source),
+            credentials=await self._decrypt_credentials(source),
         )
         result = await connector.test()
         await self.uow.knowledge_sources.update(
@@ -283,7 +298,7 @@ class KnowledgeService:
             project_id=str(source.project_id),
             source_id=str(source.id),
             config=source.config,
-            credentials=self._decrypt_credentials(source),
+            credentials=await self._decrypt_credentials(source),
         )
         result = await connector.discover()
         await self.uow.knowledge_sources.update(
@@ -308,7 +323,7 @@ class KnowledgeService:
             project_id=str(source.project_id),
             source_id=str(source.id),
             config=source.config,
-            credentials=self._decrypt_credentials(source),
+            credentials=await self._decrypt_credentials(source),
         )
         job = await self.uow.sync_jobs.create(
             source_id=source.id,

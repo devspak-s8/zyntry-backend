@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
+
+ConnectionPurpose = Literal["source", "tool", "both"]
 
 
 class OAuthProviderRead(BaseModel):
@@ -22,8 +26,23 @@ class OAuthConnectionRead(BaseModel):
 
 
 class OAuthAuthorizeResponse(BaseModel):
-    url: str
-    state: str
+    requires_authorization: bool = True
+    url: str | None = None
+    state: str | None = None
+    provider: str | None = None
+    purpose: ConnectionPurpose | None = None
+    oauth_connection_id: str | None = None
+    tool_id: str | None = None
+    source_id: str | None = None
+
+
+class OAuthAuthorizeRequest(BaseModel):
+    provider: str = Field(min_length=1, max_length=64)
+    project_id: str
+    purpose: ConnectionPurpose = "tool"
+    redirect_uri: str | None = None
+    display_name: str | None = Field(default=None, max_length=255)
+    source_config: dict[str, Any] = Field(default_factory=dict)
 
 
 class OAuthCallbackResponse(BaseModel):
@@ -38,3 +57,6 @@ class OAuthTokenExchangeRequest(BaseModel):
     code: str
     state: str
     project_id: str | None = None
+    purpose: ConnectionPurpose = "tool"
+    display_name: str | None = Field(default=None, max_length=255)
+    source_config: dict[str, Any] = Field(default_factory=dict)

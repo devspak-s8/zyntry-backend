@@ -88,6 +88,31 @@ async def emit_knowledge_sync_log(
     )
 
 
+async def emit_integration_connection_updated(
+    user_id: str,
+    *,
+    project_id: str,
+    provider: str,
+    purpose: str,
+    oauth_connection_id: str,
+    tool_id: str | None,
+    source_id: str | None,
+) -> None:
+    await emit_to_user(
+        user_id,
+        "integration.connection.updated",
+        {
+            "project_id": project_id,
+            "provider": provider,
+            "purpose": purpose,
+            "connected": True,
+            "oauth_connection_id": oauth_connection_id,
+            "tool_id": tool_id,
+            "source_id": source_id,
+        },
+    )
+
+
 async def emit_notification(user_id: str, title: str, message: str, notification_type: str = "info") -> None:
     await emit_to_user(user_id, "notification", {
         "title": title,

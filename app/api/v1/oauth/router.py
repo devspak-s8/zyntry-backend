@@ -13,16 +13,18 @@ from app.api.v1.dependencies import get_current_user
 from app.api.v1.dependencies_tenant import require_project_membership
 from app.api.v1.features.dependencies import require_feature
 from app.core.database import get_session
+from app.core.ws_events import emit_integration_connection_updated
 from app.models.users import User
 from app.repositories import UnitOfWork
 from app.schemas.oauth import (
+    OAuthAuthorizeRequest,
     OAuthAuthorizeResponse,
     OAuthCallbackResponse,
     OAuthProviderRead,
     OAuthTokenExchangeRequest,
 )
+from app.services.integrations import IntegrationService
 from app.services.oauth.service import OAuthError, OAuthService, OAuthState
-from app.services.tools import ToolService
 
 router = APIRouter(prefix="/oauth", tags=["oauth"])
 TOOLS_GUARD = [Depends(require_feature("tools_connectors"))]
@@ -41,19 +43,26 @@ def _validate_frontend_redirect(redirect_uri: str | None) -> None:
         raise HTTPException(status_code=400, detail="Invalid OAuth redirect URI")
 
 
-async def _connect_oauth_tool(
+async def _materialize_integration(
     uow: UnitOfWork,
     result: dict[str, Any],
-    project_id: uuid.UUID | None,
-) -> dict[str, Any] | None:
-    if project_id is None or result["provider"] not in {"github", "notion", "slack"}:
-        return None
-    return await ToolService(uow).connect_oauth_catalog_tool(
-        connector_key=result["provider"],
+    project_id: uuid.UUID,
+    purpose: str,
+    display_name: str | None = None,
+    source_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return await IntegrationService(uow).materialize_oauth_connection(
+        provider=result["provider"],
         project_id=str(project_id),
-        display_name=result.get("display_name") or result["provider"],
+        display_name=display_name or result.get("display_name") or result["provider"],
         oauth_connection_id=result["connection_id"],
+        purpose=purpose,
+        source_config=source_config,
     )
+
+
+async def _emit_integration_result(user_id: str, result: dict[str, Any]) -> None:
+    await emit_integration_connection_updated(user_id, **result)
 
 
 @router.get("/providers", response_model=list[OAuthProviderRead], dependencies=TOOLS_GUARD)
@@ -69,30 +78,69 @@ async def list_providers(
 
 @router.post("/authorize", response_model=OAuthAuthorizeResponse, dependencies=TOOLS_GUARD)
 async def authorize(
-    body: dict,
+    body: OAuthAuthorizeRequest,
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> OAuthAuthorizeResponse:
-    provider = body.get("provider")
-    project_id_raw = body.get("project_id")
-    redirect_uri = body.get("redirect_uri")
-    if not provider:
-        raise HTTPException(status_code=400, detail="provider is required")
     try:
-        project_id = uuid.UUID(project_id_raw) if project_id_raw else None
+        project_id = uuid.UUID(body.project_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid project_id") from None
-    if project_id is None:
-        raise HTTPException(status_code=400, detail="project_id is required")
     await require_project_membership(str(project_id), current_user, db)
-    _validate_frontend_redirect(redirect_uri)
+    _validate_frontend_redirect(body.redirect_uri)
     uow = UnitOfWork(db)
     service = OAuthService(uow)
+    existing = await service.get_connection_by_project(project_id, body.provider)
+    if existing is not None and existing.expires_at is not None:
+        expires_at = existing.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=UTC)
+        if expires_at <= datetime.now(UTC):
+            try:
+                await service.refresh_token(existing.id)
+            except OAuthError:
+                existing = None
+    if existing is not None:
+        user_info = (existing.metadata_ or {}).get("user_info", {})
+        display_name = (
+            body.display_name
+            or user_info.get("name")
+            or user_info.get("email")
+            or body.provider
+        )
+        integration = await _materialize_integration(
+            uow,
+            {
+                "provider": body.provider,
+                "connection_id": str(existing.id),
+                "display_name": display_name,
+            },
+            project_id,
+            body.purpose,
+            display_name,
+            body.source_config,
+        )
+        await _emit_integration_result(str(current_user.id), integration)
+        return OAuthAuthorizeResponse(
+            requires_authorization=False,
+            **integration,
+        )
     try:
-        result = await service.authorize(provider, current_user.id, project_id, redirect_uri)
+        result = await service.authorize(
+            body.provider,
+            current_user.id,
+            project_id,
+            body.redirect_uri,
+        )
     except OAuthError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
-    return OAuthAuthorizeResponse(url=result["url"], state=result["state"])
+    return OAuthAuthorizeResponse(
+        requires_authorization=True,
+        url=result["url"],
+        state=result["state"],
+        provider=body.provider,
+        purpose=body.purpose,
+    )
 
 
 @router.get("/callback", response_model=OAuthCallbackResponse)
@@ -125,34 +173,14 @@ async def callback(
         raise HTTPException(status_code=400, detail=str(exc)) from None
 
     project_id = state_obj.project_id
-    org_id = current_user.organization_id
-    if project_id is None and org_id is not None:
-        project = await uow.projects.get_by_organization(org_id)
+    if project_id is None and current_user.organization_id is not None:
+        project = await uow.projects.get_by_organization(current_user.organization_id)
         if project:
             project_id = project.id
-
-    connection = await uow.providers.get_by_provider(
-        str(project_id) if project_id else "",
-        result["provider"],
-    )
-    if connection:
-        await uow.providers.update(
-            connection,
-            status="active",
-            display_name=result.get("display_name") or connection.display_name,
-            config={**(connection.config or {}), "oauth_connection_id": result["connection_id"]},
-        )
-    elif project_id is not None:
-        await uow.providers.create(
-            organization_id=org_id,
-            project_id=project_id,
-            provider_name=result["provider"],
-            display_name=result.get("display_name") or result["provider"],
-            status="active",
-            config={"oauth_connection_id": result["connection_id"]},
-        )
-    await uow.commit()
-    await _connect_oauth_tool(uow, result, project_id)
+    if project_id is None:
+        raise HTTPException(status_code=400, detail="OAuth project is required")
+    integration = await _materialize_integration(uow, result, project_id, "tool")
+    await _emit_integration_result(str(current_user.id), integration)
 
     return OAuthCallbackResponse(
         connection_id=result["connection_id"],
@@ -188,27 +216,14 @@ async def exchange_token(
     except OAuthError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
 
-    connection = await uow.providers.get_by_provider(
-        str(project_id) if project_id else "",
-        result["provider"],
+    integration = await _materialize_integration(
+        uow,
+        result,
+        project_id,
+        body.purpose,
+        body.display_name,
+        body.source_config,
     )
-    if connection:
-        await uow.providers.update(
-            connection,
-            status="active",
-            display_name=result.get("display_name") or connection.display_name,
-            config={**(connection.config or {}), "oauth_connection_id": result["connection_id"]},
-        )
-    elif project_id is not None:
-        await uow.providers.create(
-            organization_id=current_user.organization_id,
-            project_id=project_id,
-            provider_name=result["provider"],
-            display_name=result.get("display_name") or result["provider"],
-            status="active",
-            config={"oauth_connection_id": result["connection_id"]},
-        )
-    await uow.commit()
-    tool = await _connect_oauth_tool(uow, result, project_id)
+    await _emit_integration_result(str(current_user.id), integration)
 
-    return {**result, "tool": tool}
+    return {**result, **integration}
