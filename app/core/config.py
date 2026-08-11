@@ -78,6 +78,7 @@ class AppSettings(BaseSettings):
     # Email (SendByte)
     SENDBYTE_KEY: str = ""
     SENDBYTE_API_URL: str = "https://api.sendbyte.africa"
+    EMAIL_ASSET_BASE_URL: str = "http://localhost:8000/static/email"
 
     # OAuth
     GITHUB_CLIENT_ID: str = ""

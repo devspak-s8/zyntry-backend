@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 _APP_NAME = "Zyntra"
 _APP_URL = settings.APP_URL or "https://app.zyntry.ai"
+_EMAIL_ASSET_BASE_URL = settings.EMAIL_ASSET_BASE_URL.rstrip("/")
 
 
 _BASE_STYLE = """
@@ -20,18 +21,69 @@ body { margin: 0; padding: 0; background-color: #f8fafc; font-family: -apple-sys
 
 _BASE_BG = "#f8fafc"
 _CARD_BG = "#ffffff"
-_ACCENT_BG = "#7c3aed"
+_ACCENT_BG = "#2563eb"
 _TEXT_PRIMARY = "#334155"
 _TEXT_SECONDARY = "#64748b"
 _BORDER = "#e2e8f0"
-_ACCENT = "#7c3aed"
+_ACCENT = "#2563eb"
 
 
-def _gradient_icon(svg: str) -> str:
-    return f'''<div style="width:48px;height:48px;background:{_CARD_BG};border-radius:12px;display:inline-flex;align-items:center;justify-content:center;margin-bottom:16px;">{svg}</div>'''
-
-
-_WELCOME_SVG = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="{accent}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>'
+def _email_visual_category(name: str | None, title: str) -> str:
+    context = f"{name or ''} {title}".lower()
+    categories = (
+        (
+            "security",
+            (
+                "auth",
+                "password",
+                "verify",
+                "login",
+                "security",
+                "mfa",
+                "api key",
+                "oauth",
+                "abuse",
+                "permission",
+                "account deletion",
+            ),
+        ),
+        (
+            "billing",
+            (
+                "billing",
+                "payment",
+                "wallet",
+                "credit",
+                "invoice",
+                "subscription",
+                "refund",
+                "balance",
+                "purchase",
+            ),
+        ),
+        (
+            "knowledge",
+            ("knowledge", "document", "source", "sync", "embedding", "model"),
+        ),
+        (
+            "operations",
+            (
+                "incident",
+                "maintenance",
+                "status",
+                "health",
+                "support",
+                "usage",
+                "unhealthy",
+                "recovered",
+                "alert",
+            ),
+        ),
+    )
+    for category, keywords in categories:
+        if any(keyword in context for keyword in keywords):
+            return category
+    return "platform"
 
 
 def build_email(
@@ -45,8 +97,21 @@ def build_email(
 ) -> str:
     accent = _ACCENT
     footer = footer_text or "If you didn't expect this email, you can safely ignore it."
-    svg = _WELCOME_SVG.format(accent=accent)
-    icon = _gradient_icon(svg) if name == "welcome" else _gradient_icon(svg)
+    category = _email_visual_category(name, title)
+    logo_url = f"{_EMAIL_ASSET_BASE_URL}/zyntry-logo.jpeg"
+    visual_url = f"{_EMAIL_ASSET_BASE_URL}/{category}.png"
+    brand_logo = (
+        f'<img src="{logo_url}" width="64" height="64" alt="Zyntry" '
+        'style="display:block;width:64px;height:64px;object-fit:contain;border-radius:14px;'
+        'background:#ffffff;margin:0 auto 16px;border:0;" />'
+    )
+    visual = (
+        '<tr><td style="padding:24px 32px 0;background:#ffffff;text-align:center;">'
+        f'<img src="{visual_url}" width="416" alt="" role="presentation" '
+        'style="display:block;width:100%;max-width:416px;height:auto;margin:0 auto;'
+        'border:0;border-radius:12px;" />'
+        "</td></tr>"
+    )
     cta = ""
     if cta_text and cta_url:
         cta = f'''<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center"><a href="{cta_url}" style="display:inline-block;background:{accent};color:#ffffff;padding:14px 28px;border-radius:10px;font-size:14px;font-weight:700;text-decoration:none;box-shadow:0 4px 12px rgba(124,58,237,0.3);">{cta_text}</a></td></tr></table>'''
@@ -65,11 +130,12 @@ def build_email(
         <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background-color:{_CARD_BG};border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08);">
           <tr>
             <td style="background:{_ACCENT_BG};padding:32px 32px 28px;text-align:center;">
-              {icon}
+              {brand_logo}
               <h1 style="color:#ffffff;margin:0 0 8px;font-size:22px;font-weight:700;letter-spacing:-0.3px;">{title}</h1>
               <p style="color:rgba(255,255,255,0.85);margin:0;font-size:14px;line-height:1.5;">{subtitle}</p>
             </td>
           </tr>
+          {visual}
           <tr>
             <td style="padding:32px;">
               <p style="color:{_TEXT_PRIMARY};margin:0 0 16px;font-size:14px;line-height:1.6;">{body_html}</p>

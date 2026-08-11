@@ -91,6 +91,7 @@ services:
       - SMTP_FROM=${SMTP_FROM}
       - SENDBYTE_KEY=${SENDBYTE_KEY}
       - SENDBYTE_API_URL=${SENDBYTE_API_URL}
+      - EMAIL_ASSET_BASE_URL=${EMAIL_ASSET_BASE_URL:-http://localhost:8000/static/email}
       - CORS_ORIGINS=${CORS_ORIGINS}
       - FRONTEND_URL=${FRONTEND_URL}
       - LOG_LEVEL=${LOG_LEVEL}
@@ -157,6 +158,7 @@ services:
       - SENTRY_DSN=${SENTRY_DSN}
       - SENDBYTE_KEY=${SENDBYTE_KEY}
       - SENDBYTE_API_URL=${SENDBYTE_API_URL}
+      - EMAIL_ASSET_BASE_URL=${EMAIL_ASSET_BASE_URL:-http://localhost:8000/static/email}
     volumes:
       - logs:/app/logs
       - runtime-artifacts:/app/runtime-artifacts
@@ -201,6 +203,7 @@ services:
       - LOG_LEVEL=${LOG_LEVEL}
       - SENDBYTE_KEY=${SENDBYTE_KEY}
       - SENDBYTE_API_URL=${SENDBYTE_API_URL}
+      - EMAIL_ASSET_BASE_URL=${EMAIL_ASSET_BASE_URL:-http://localhost:8000/static/email}
     volumes:
       - beat-data:/var/run/celery
       - logs:/app/logs
@@ -255,6 +258,7 @@ services:
       - SENTRY_DSN=${SENTRY_DSN}
       - SENDBYTE_KEY=${SENDBYTE_KEY}
       - SENDBYTE_API_URL=${SENDBYTE_API_URL}
+      - EMAIL_ASSET_BASE_URL=${EMAIL_ASSET_BASE_URL:-http://localhost:8000/static/email}
     volumes:
       - runtime-artifacts:/app/runtime-artifacts
       - logs:/app/logs
@@ -300,6 +304,7 @@ services:
       - SENTRY_DSN=${SENTRY_DSN}
       - SENDBYTE_KEY=${SENDBYTE_KEY}
       - SENDBYTE_API_URL=${SENDBYTE_API_URL}
+      - EMAIL_ASSET_BASE_URL=${EMAIL_ASSET_BASE_URL:-http://localhost:8000/static/email}
     volumes:
       - logs:/app/logs
     networks:

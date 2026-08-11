@@ -5,6 +5,7 @@ services:
       - APP_DEBUG=false
       - SENDBYTE_KEY=${SENDBYTE_KEY}
       - SENDBYTE_API_URL=${SENDBYTE_API_URL}
+      - EMAIL_ASSET_BASE_URL=${EMAIL_ASSET_BASE_URL:-http://localhost:8000/static/email}
     logging:
       driver: "json-file"
       options:
@@ -21,6 +22,7 @@ services:
       - APP_DEBUG=false
       - SENDBYTE_KEY=${SENDBYTE_KEY}
       - SENDBYTE_API_URL=${SENDBYTE_API_URL}
+      - EMAIL_ASSET_BASE_URL=${EMAIL_ASSET_BASE_URL:-http://localhost:8000/static/email}
     logging:
       driver: "json-file"
       options:
@@ -37,6 +39,7 @@ services:
       - APP_DEBUG=false
       - SENDBYTE_KEY=${SENDBYTE_KEY}
       - SENDBYTE_API_URL=${SENDBYTE_API_URL}
+      - EMAIL_ASSET_BASE_URL=${EMAIL_ASSET_BASE_URL:-http://localhost:8000/static/email}
     logging:
       driver: "json-file"
       options:
@@ -53,6 +56,7 @@ services:
       - APP_DEBUG=false
       - SENDBYTE_KEY=${SENDBYTE_KEY}
       - SENDBYTE_API_URL=${SENDBYTE_API_URL}
+      - EMAIL_ASSET_BASE_URL=${EMAIL_ASSET_BASE_URL:-http://localhost:8000/static/email}
     logging:
       driver: "json-file"
       options:
@@ -69,6 +73,7 @@ services:
       - APP_DEBUG=false
       - SENDBYTE_KEY=${SENDBYTE_KEY}
       - SENDBYTE_API_URL=${SENDBYTE_API_URL}
+      - EMAIL_ASSET_BASE_URL=${EMAIL_ASSET_BASE_URL:-http://localhost:8000/static/email}
     logging:
       driver: "json-file"
       options:

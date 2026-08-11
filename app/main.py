@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import re
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 
 from app.admin.middleware import AdminSecurityMiddleware
@@ -122,6 +124,11 @@ def create_app() -> FastAPI:
 
     app.include_router(api_router, prefix=f"{settings.API_PREFIX}/{settings.API_VERSION}")
     app.include_router(logs_router)
+    app.mount(
+        "/static",
+        StaticFiles(directory=Path(__file__).parent / "static"),
+        name="static",
+    )
 
     @app.get("/health", tags=["health"])
     async def health() -> dict[str, str]:
