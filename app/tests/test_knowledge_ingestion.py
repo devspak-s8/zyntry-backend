@@ -69,6 +69,7 @@ async def test_website_connector_crawls_only_same_origin_pages() -> None:
         text="<html><head><title>Docs</title></head><body>Documentation</body></html>",
     )
     connector._fetch = AsyncMock(side_effect=[root, docs])  # type: ignore[method-assign]
+    connector.progress_callback = AsyncMock()
 
     items = await connector._crawl(include_content=True)
 
@@ -77,6 +78,9 @@ async def test_website_connector_crawls_only_same_origin_pages() -> None:
         "https://example.com/docs",
     ]
     assert items[1]["content"] == "Docs\nDocumentation"
+    events = [call.args[0] for call in connector.progress_callback.await_args_list]
+    assert "page.discovered" in {event["event"] for event in events}
+    assert [event["event"] for event in events].count("page.extracted") == 2
 
 
 @pytest.mark.asyncio

@@ -298,6 +298,7 @@ class KnowledgeService:
         source_id: str,
         options: dict | None = None,
         progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+        log_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> dict:
         source = await self.uow.knowledge_sources.get(source_id)
         if not source:
@@ -351,6 +352,27 @@ class KnowledgeService:
                 # Realtime delivery must never make the durable sync fail.
                 pass
 
+        async def log(event: str, message: str, details: dict[str, Any] | None = None) -> None:
+            if log_callback is None:
+                return
+            try:
+                await log_callback(
+                    {
+                        "job_id": str(job.id),
+                        "source_id": str(source.id),
+                        "project_id": str(source.project_id),
+                        "event": event,
+                        "message": message,
+                        "details": details or {},
+                    }
+                )
+            except Exception:
+                pass
+
+        connector.progress_callback = lambda payload: log(
+            payload["event"], payload["message"], payload.get("details")
+        )
+
         try:
             await report("running", 5, "connecting")
             await self.uow.sync_jobs.update(job, progress=20, current_step="crawling")
@@ -370,6 +392,7 @@ class KnowledgeService:
                 documents_synced = await self._persist_website_items(
                     source,
                     sync_result.get("items", []),
+                    log_callback=log,
                 )
 
             completed_at = datetime.now(UTC)
@@ -430,7 +453,12 @@ class KnowledgeService:
         )
         return sync_result
 
-    async def _persist_website_items(self, source, items: list[dict]) -> int:
+    async def _persist_website_items(
+        self,
+        source,
+        items: list[dict],
+        log_callback: Callable[[str, str, dict[str, Any] | None], Awaitable[None]] | None = None,
+    ) -> int:
         knowledge_base_id = source.config.get("knowledge_base_id")
         knowledge_base = None
         if knowledge_base_id:
@@ -459,6 +487,12 @@ class KnowledgeService:
                 continue
             content = content.replace("\x00", "").strip()
             chunks = chunk_document(content, source=url, document_id=None)
+            if log_callback is not None:
+                await log_callback(
+                    "page.chunked",
+                    f"Created {len(chunks)} chunks for {url}",
+                    {"url": url, "chunk_count": len(chunks)},
+                )
             content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
             metadata = {
                 "source_type": "website",

@@ -104,6 +104,13 @@ class WebsiteConnector(BaseConnector):
                 if url in visited:
                     continue
                 visited.add(url)
+                await self.emit_progress(
+                    "page.downloading",
+                    f"Downloading {url}",
+                    url=url,
+                    pages_processed=len(items),
+                    max_pages=max_pages,
+                )
                 response = await self._fetch(client, url)
                 final_url = urldefrag(str(response.url))[0]
                 if urlparse(final_url).netloc.lower() != start_origin:
@@ -119,6 +126,15 @@ class WebsiteConnector(BaseConnector):
                     if include_content:
                         item["content"] = text
                     items.append(item)
+                    await self.emit_progress(
+                        "page.extracted",
+                        f"Extracted {len(text):,} characters from {final_url}",
+                        url=final_url,
+                        title=title,
+                        content_length=len(text),
+                        pages_processed=len(items),
+                        max_pages=max_pages,
+                    )
                 for link in links:
                     normalized = urldefrag(link)[0]
                     parsed = urlparse(normalized)
@@ -129,6 +145,12 @@ class WebsiteConnector(BaseConnector):
                     ):
                         queued.add(normalized)
                         queue.append(normalized)
+                        await self.emit_progress(
+                            "page.discovered",
+                            f"Discovered {normalized}",
+                            url=normalized,
+                            discovered_count=len(queued),
+                        )
         return items
 
     async def connect(self) -> dict:

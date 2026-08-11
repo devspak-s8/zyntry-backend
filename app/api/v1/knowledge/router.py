@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.dependencies import get_current_user
 from app.api.v1.features.dependencies import require_feature
 from app.core.database import get_session
-from app.core.ws_events import emit_knowledge_sync_updated
+from app.core.ws_events import emit_knowledge_sync_log, emit_knowledge_sync_updated
 from app.models.users import User
 from app.repositories import UnitOfWork
 from app.schemas.documents import FileUploadCreate
@@ -305,7 +305,14 @@ async def sync_knowledge_source(
     async def emit_progress(payload: dict) -> None:
         await emit_knowledge_sync_updated(str(current_user.id), **payload)
 
-    result = await service.sync_source(source_id, progress_callback=emit_progress)
+    async def emit_log(payload: dict) -> None:
+        await emit_knowledge_sync_log(str(current_user.id), **payload)
+
+    result = await service.sync_source(
+        source_id,
+        progress_callback=emit_progress,
+        log_callback=emit_log,
+    )
     job_id = result.get("db_job_id") or result.get("job_id") or source_id
     return SyncJobRead(
         id=job_id,

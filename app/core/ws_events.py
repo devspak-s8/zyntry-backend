@@ -64,6 +64,30 @@ async def emit_knowledge_sync_updated(
     )
 
 
+async def emit_knowledge_sync_log(
+    user_id: str,
+    *,
+    job_id: str,
+    source_id: str,
+    project_id: str,
+    event: str,
+    message: str,
+    details: dict | None = None,
+) -> None:
+    await emit_to_user(
+        user_id,
+        "knowledge.sync.log",
+        {
+            "job_id": job_id,
+            "source_id": source_id,
+            "project_id": project_id,
+            "event": event,
+            "message": message,
+            "details": details or {},
+        },
+    )
+
+
 async def emit_notification(user_id: str, title: str, message: str, notification_type: str = "info") -> None:
     await emit_to_user(user_id, "notification", {
         "title": title,

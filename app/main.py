@@ -25,6 +25,7 @@ from app.models.actions import ActionAuditLog, ActionConfirmation, ActionExecuti
 from app.models.oauth import OAuthConnection, OAuthProvider, OAuthState
 from app.models.sessions import Session
 from app.models.users import User
+from app.services.oauth.seeding import seed_oauth_tool_providers
 
 
 def _parse_cors_origins(value: str) -> list[str]:
@@ -37,6 +38,7 @@ async def lifespan(app: FastAPI):
     await init_models()
     async with async_session_factory() as db:
         await seed_system_feature_flags(db)
+        await seed_oauth_tool_providers(db)
     if not settings.APP_DEBUG:
         missing = []
         if not settings.SECRET_KEY:

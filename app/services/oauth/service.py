@@ -4,6 +4,7 @@ import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 from sqlalchemy import select
@@ -27,7 +28,10 @@ class OAuthService:
     async def _get_provider_cached(self, name: str) -> OAuthProvider | None:
         if name in self._provider_cache:
             return self._provider_cache[name]
-        provider = await self.get_provider(name)
+        result = await self.uow.session.execute(
+            select(OAuthProvider).where(OAuthProvider.name == name, OAuthProvider.is_enabled)
+        )
+        provider = result.scalars().first()
         if provider is not None:
             self._provider_cache[name] = provider
         return provider
@@ -101,7 +105,7 @@ class OAuthService:
             "code_challenge": self._generate_code_challenge(code_verifier),
             "code_challenge_method": "S256",
         }
-        url = f"{provider.auth_url}?{'&'.join(f'{k}={v}' for k, v in params.items())}"
+        url = f"{provider.auth_url}?{urlencode(params)}"
         return {"url": url, "state": state}
 
     async def callback(
@@ -110,8 +114,13 @@ class OAuthService:
         code: str,
         state: str,
         project_id: uuid.UUID | None = None,
+        expected_user_id: uuid.UUID | None = None,
     ) -> dict[str, Any]:
         state_obj = await self._validate_state(provider_name, state)
+        if expected_user_id is not None and state_obj.user_id != expected_user_id:
+            raise OAuthError("OAuth state does not belong to the current user")
+        if project_id is not None and state_obj.project_id != project_id:
+            raise OAuthError("OAuth project does not match the authorization request")
         provider = await self.get_provider(provider_name)
         if provider is None:
             raise OAuthError(f"Provider '{provider_name}' not found")
@@ -119,6 +128,7 @@ class OAuthService:
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
                 provider.token_url,
+                headers={"Accept": "application/json"},
                 data={
                     "grant_type": "authorization_code",
                     "client_id": provider.client_id,
@@ -148,7 +158,7 @@ class OAuthService:
             expires_at = datetime.now(UTC) + timedelta(seconds=int(expires_in))
 
         user_info = await self._fetch_user_info(provider_name, access_token)
-        connection = OAuthConnection(
+        connection = await self.uow.oauth_connections.create(
             user_id=state_obj.user_id,
             project_id=project_id or state_obj.project_id,
             provider_id=provider.id,
@@ -157,15 +167,6 @@ class OAuthService:
             expires_at=expires_at,
             scope=scope,
             metadata_={"user_info": user_info},
-        )
-        await self.uow.oauth_connections.create(
-            user_id=state_obj.user_id,
-            project_id=project_id or state_obj.project_id,
-            provider_id=provider.id,
-            access_token_encrypted=self._encrypt(access_token),
-            refresh_token_encrypted=self._encrypt(refresh_token) if refresh_token else None,
-            expires_at=expires_at,
-            scope=scope,
         )
         await self.uow.commit()
 

@@ -11,9 +11,9 @@ from app.services.encryption import encrypt_value
 
 
 TOOL_CATALOG: tuple[dict[str, Any], ...] = (
-    {"key": "github", "name": "GitHub", "description": "Connect repositories and code metadata.", "category": "Development", "auth_type": "token", "credential_fields": ["token"], "config_fields": []},
+    {"key": "github", "name": "GitHub", "description": "Connect repositories and code metadata.", "category": "Development", "auth_type": "oauth", "credential_fields": [], "config_fields": []},
     {"key": "gitlab", "name": "GitLab", "description": "Connect GitLab projects and repositories.", "category": "Development", "auth_type": "token", "credential_fields": ["token"], "config_fields": ["base_url"]},
-    {"key": "notion", "name": "Notion", "description": "Connect Notion pages and databases.", "category": "Knowledge", "auth_type": "token", "credential_fields": ["token"], "config_fields": []},
+    {"key": "notion", "name": "Notion", "description": "Connect Notion pages and databases.", "category": "Knowledge", "auth_type": "oauth", "credential_fields": [], "config_fields": []},
     {"key": "google_drive", "name": "Google Drive", "description": "Connect files stored in Google Drive.", "category": "Knowledge", "auth_type": "oauth", "credential_fields": ["access_token"], "config_fields": []},
     {"key": "slack", "name": "Slack", "description": "Connect Slack workspaces and channels.", "category": "Communication", "auth_type": "oauth", "credential_fields": ["token"], "config_fields": []},
     {"key": "postgres", "name": "PostgreSQL", "description": "Connect a PostgreSQL-compatible database.", "category": "Database", "auth_type": "connection_string", "credential_fields": ["connection_string"], "config_fields": []},
@@ -38,6 +38,7 @@ _LIVE_CONNECTORS = {
     "sqlite",
     "website",
 }
+_OAUTH_CONNECTORS = {"github", "notion", "slack"}
 _INTERNAL_CONNECTION_KEY = "_zyntry_connection"
 
 
@@ -139,6 +140,8 @@ class ToolService:
             or key not in _LIVE_CONNECTORS
         ):
             raise ValueError("Unsupported tool connector")
+        if key in _OAUTH_CONNECTORS:
+            raise ValueError("This connector must be connected with OAuth")
 
         tools = await self.uow.tools.get_by_project(project_id)
         existing = next(
@@ -183,6 +186,49 @@ class ToolService:
                 name=display_name or catalog_item["name"],
                 description=catalog_item["description"],
                 schema=public_schema,
+                implementation=f"connector://{key}",
+                project_id=project_id,
+            )
+        await self.uow.commit()
+        return self._connection_status(tool)
+
+    async def connect_oauth_catalog_tool(
+        self,
+        connector_key: str,
+        project_id: str,
+        display_name: str,
+        oauth_connection_id: str,
+    ) -> dict[str, Any]:
+        key = connector_key.lower()
+        catalog_item = _CATALOG_BY_KEY.get(key)
+        if catalog_item is None or key not in _OAUTH_CONNECTORS:
+            raise ValueError("Unsupported OAuth tool connector")
+        tools = await self.uow.tools.get_by_project(project_id)
+        existing = next(
+            (tool for tool in tools if (tool.schema or {}).get(_INTERNAL_CONNECTION_KEY, {}).get("connector") == key),
+            None,
+        )
+        connection = {
+            "connector": key,
+            "status": "connected",
+            "message": f"Connected with {catalog_item['name']} OAuth",
+            "tested_at": datetime.now(UTC).isoformat(),
+            "oauth_connection_id": oauth_connection_id,
+        }
+        schema = {_INTERNAL_CONNECTION_KEY: connection, "type": "connector"}
+        if existing:
+            tool = await self.uow.tools.update(
+                existing,
+                name=display_name or catalog_item["name"],
+                description=catalog_item["description"],
+                schema=schema,
+                implementation=f"connector://{key}",
+            )
+        else:
+            tool = await self.uow.tools.create(
+                name=display_name or catalog_item["name"],
+                description=catalog_item["description"],
+                schema=schema,
                 implementation=f"connector://{key}",
                 project_id=project_id,
             )

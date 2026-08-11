@@ -73,11 +73,11 @@ async def test_connect_catalog_tool_tests_and_persists_status(monkeypatch) -> No
     monkeypatch.setattr("app.services.tools.encrypt_value", Mock(return_value="encrypted"))
 
     result = await ToolService(uow).connect_catalog_tool(
-        connector_key="github",
+        connector_key="postgres",
         project_id=project_id,
         display_name="Engineering GitHub",
         config={},
-        credentials={"token": "do-not-return"},
+        credentials={"connection_string": "do-not-return"},
     )
 
     assert result["connected"] is True

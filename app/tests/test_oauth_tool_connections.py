@@ -1,0 +1,61 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+from uuid import uuid4
+
+import pytest
+
+from app.services.oauth.service import OAuthService
+from app.services.tools import ToolService
+
+
+@pytest.mark.asyncio
+async def test_oauth_provider_lookup_uses_database_without_recursing() -> None:
+    provider = SimpleNamespace(name="github", is_enabled=True)
+    scalar_result = SimpleNamespace(first=lambda: provider)
+    session = SimpleNamespace(
+        execute=AsyncMock(return_value=SimpleNamespace(scalars=lambda: scalar_result))
+    )
+    service = OAuthService(SimpleNamespace(session=session))
+    service._provider_cache.clear()
+
+    result = await service.get_provider("github")
+
+    assert result is provider
+    session.execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_oauth_completion_creates_connected_project_tool() -> None:
+    project_id = str(uuid4())
+
+    async def create_tool(**kwargs):
+        return SimpleNamespace(
+            id=uuid4(),
+            project_id=kwargs["project_id"],
+            name=kwargs["name"],
+            schema=kwargs["schema"],
+            created_at=datetime.now(UTC),
+        )
+
+    tools = SimpleNamespace(
+        get_by_project=AsyncMock(return_value=[]),
+        create=AsyncMock(side_effect=create_tool),
+        update=AsyncMock(),
+    )
+    uow = SimpleNamespace(tools=tools, commit=AsyncMock())
+
+    result = await ToolService(uow).connect_oauth_catalog_tool(
+        connector_key="github",
+        project_id=project_id,
+        display_name="Octocat",
+        oauth_connection_id="oauth-1",
+    )
+
+    assert result["connected"] is True
+    assert result["status"] == "connected"
+    schema = tools.create.await_args.kwargs["schema"]
+    assert schema["_zyntry_connection"]["oauth_connection_id"] == "oauth-1"
+    uow.commit.assert_awaited_once()
