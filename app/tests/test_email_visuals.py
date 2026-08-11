@@ -33,9 +33,9 @@ def test_email_html_contains_logo_and_relevant_visual() -> None:
     security_html, _ = build_password_reset("Test User", "AB12CD")
     project_html, _ = build_project_created("Test User", "Demo Project")
 
-    assert "/zyntry-logo.jpeg" in security_html
+    assert "/zyntry-logo.jpeg" not in security_html
     assert "/security.png" in security_html
-    assert "/zyntry-logo.jpeg" in project_html
+    assert "/zyntry-logo.jpeg" not in project_html
     assert "/platform.png" in project_html
     assert 'background-image:url(' in project_html
     assert '<td background="' in project_html

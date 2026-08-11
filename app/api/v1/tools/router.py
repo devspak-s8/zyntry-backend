@@ -9,10 +9,63 @@ from app.api.v1.dependencies import get_current_user
 from app.core.database import get_session
 from app.models.users import User
 from app.repositories import UnitOfWork
-from app.schemas.tools import ToolCreate, ToolRead, ToolUpdate
+from app.api.v1.dependencies_tenant import require_project_membership
+from app.schemas.tools import (
+    ToolCatalogItem,
+    ToolConnectRequest,
+    ToolConnectionStatus,
+    ToolCreate,
+    ToolRead,
+    ToolUpdate,
+)
 from app.services.tools import ToolService
 
 router = APIRouter(prefix="/tools", tags=["tools"])
+
+
+@router.get("/catalog", response_model=list[ToolCatalogItem])
+async def list_tool_catalog(
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> list[ToolCatalogItem]:
+    return [ToolCatalogItem(**item) for item in ToolService.catalog()]
+
+
+@router.post("/{connector_key}/connect", response_model=ToolConnectionStatus)
+async def connect_catalog_tool(
+    connector_key: str,
+    body: ToolConnectRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_session),
+) -> ToolConnectionStatus:
+    await require_project_membership(body.project_id, current_user, db)
+    service = ToolService(UnitOfWork(db))
+    try:
+        result = await service.connect_catalog_tool(
+            connector_key=connector_key,
+            project_id=body.project_id,
+            display_name=body.display_name,
+            config=body.config,
+            credentials=body.credentials,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    return ToolConnectionStatus(**result)
+
+
+@router.get("/{connector_key}/status", response_model=ToolConnectionStatus)
+async def get_catalog_tool_status(
+    connector_key: str,
+    project_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_session),
+) -> ToolConnectionStatus:
+    await require_project_membership(project_id, current_user, db)
+    service = ToolService(UnitOfWork(db))
+    try:
+        result = await service.get_catalog_tool_status(connector_key, project_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    return ToolConnectionStatus(**result)
 
 
 @router.get("", response_model=list[ToolRead])

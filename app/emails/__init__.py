@@ -98,13 +98,7 @@ def build_email(
     accent = _ACCENT
     footer = footer_text or "If you didn't expect this email, you can safely ignore it."
     category = _email_visual_category(name, title)
-    logo_url = f"{_EMAIL_ASSET_BASE_URL}/zyntry-logo.jpeg"
     visual_url = f"{_EMAIL_ASSET_BASE_URL}/{category}.png"
-    brand_logo = (
-        f'<img src="{logo_url}" width="64" height="64" alt="Zyntry" '
-        'style="display:block;width:64px;height:64px;object-fit:contain;border-radius:14px;'
-        'background:#ffffff;margin:0 auto 16px;border:0;" />'
-    )
     cta = ""
     if cta_text and cta_url:
         cta = f'''<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center"><a href="{cta_url}" style="display:inline-block;background:{accent};color:#ffffff;padding:14px 28px;border-radius:10px;font-size:14px;font-weight:700;text-decoration:none;box-shadow:0 4px 12px rgba(124,58,237,0.3);">{cta_text}</a></td></tr></table>'''
@@ -123,7 +117,6 @@ def build_email(
         <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background-color:{_CARD_BG};border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08);">
           <tr>
             <td background="{visual_url}" style="background-color:#eff6ff;background-image:url('{visual_url}');background-repeat:no-repeat;background-position:center;background-size:cover;padding:28px 32px;text-align:center;">
-              {brand_logo}
               <table role="presentation" cellpadding="0" cellspacing="0" align="center" style="margin:0 auto;background:rgba(255,255,255,0.92);border-radius:12px;">
                 <tr>
                   <td style="padding:14px 20px;text-align:center;">

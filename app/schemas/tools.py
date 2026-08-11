@@ -31,3 +31,31 @@ class ToolUpdate(BaseModel):
     schema: dict[str, Any] | None = None
     implementation: str | None = None
     is_active: bool | None = None
+
+
+class ToolCatalogItem(BaseModel):
+    key: str
+    name: str
+    description: str
+    category: str
+    auth_type: str
+    credential_fields: list[str] = Field(default_factory=list)
+    config_fields: list[str] = Field(default_factory=list)
+
+
+class ToolConnectRequest(BaseModel):
+    project_id: str
+    display_name: str | None = Field(default=None, max_length=255)
+    config: dict[str, Any] = Field(default_factory=dict)
+    credentials: dict[str, Any] = Field(default_factory=dict)
+
+
+class ToolConnectionStatus(BaseModel):
+    connector: str
+    project_id: str
+    connected: bool
+    status: str
+    message: str | None = None
+    tool_id: str | None = None
+    display_name: str | None = None
+    tested_at: datetime | None = None
