@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 from app.repositories import UnitOfWork
 from app.schemas.knowledge import (
@@ -11,6 +12,7 @@ from app.schemas.knowledge import (
     KnowledgeSourceCreate,
     KnowledgeSourceUpdate,
 )
+from app.services.chunking import chunk_document
 from app.services.connectors import registry
 from app.services.document_processor import build_metadata, extract_text
 from app.services.encryption import decrypt_value, encrypt_value
@@ -65,7 +67,9 @@ class KnowledgeService:
         kb = await self.uow.knowledge_bases.get(uuid.UUID(data.knowledge_base_id))
         project_id = str(kb.project_id) if kb else None
         if project_id:
-            await self._maybe_trigger_runtime(project_id, trigger="document_uploaded")
+            await self._maybe_trigger_runtime(
+                project_id, trigger="document_uploaded", include_active=True
+            )
         return {
             "id": str(doc.id),
             "title": doc.title,
@@ -96,7 +100,9 @@ class KnowledgeService:
         kb = await self.uow.knowledge_bases.get(uuid.UUID(knowledge_base_id))
         project_id = str(kb.project_id) if kb else None
         if project_id:
-            await self._maybe_trigger_runtime(project_id, trigger="document_uploaded")
+            await self._maybe_trigger_runtime(
+                project_id, trigger="document_uploaded", include_active=True
+            )
         return {
             "id": str(doc.id),
             "title": doc.title,
@@ -296,13 +302,12 @@ class KnowledgeService:
             config=source.config,
             credentials=self._decrypt_credentials(source),
         )
-        sync_result = await connector.sync(options)
         job = await self.uow.sync_jobs.create(
             source_id=source.id,
             project_id=source.project_id,
-            status=sync_result.get("status", "queued"),
+            status="running",
             progress=0,
-            started_at=datetime.now(),
+            started_at=datetime.now(UTC),
             stats={},
         )
         await self.uow.knowledge_sources.update(
@@ -311,9 +316,128 @@ class KnowledgeService:
             sync_progress=0,
         )
         await self.uow.commit()
+
+        try:
+            sync_result = await connector.sync(options)
+            if sync_result.get("status") == "failed":
+                raise ValueError(sync_result.get("error") or "Source synchronization failed")
+
+            documents_synced = 0
+            if source.source_type in {"website", "crawler"}:
+                documents_synced = await self._persist_website_items(
+                    source,
+                    sync_result.get("items", []),
+                )
+
+            completed_at = datetime.now(UTC)
+            stats = {
+                "items_discovered": sync_result.get("total", 0),
+                "documents_synced": documents_synced,
+            }
+            await self.uow.sync_jobs.update(
+                job,
+                status="completed",
+                progress=100,
+                current_step="completed",
+                completed_at=completed_at,
+                stats=stats,
+            )
+            await self.uow.knowledge_sources.update(
+                source,
+                status="completed",
+                connection_status="connected",
+                sync_progress=100,
+                last_synced_at=completed_at.isoformat(),
+                last_error=None,
+                metadata_={
+                    "items": [
+                        {key: value for key, value in item.items() if key != "content"}
+                        for item in sync_result.get("items", [])
+                    ],
+                    **stats,
+                },
+            )
+            await self.uow.commit()
+            sync_result["progress"] = 100
+            sync_result["stats"] = stats
+        except Exception as exc:
+            await self.uow.sync_jobs.update(
+                job,
+                status="failed",
+                progress=0,
+                current_step="failed",
+                completed_at=datetime.now(UTC),
+                error_message=str(exc),
+            )
+            await self.uow.knowledge_sources.update(
+                source,
+                status="failed",
+                sync_progress=0,
+                last_error=str(exc),
+                error_count=(source.error_count or 0) + 1,
+            )
+            await self.uow.commit()
+            raise
+
         sync_result["db_job_id"] = str(job.id)
-        await self._maybe_trigger_runtime(str(source.project_id), trigger="source_synced")
+        await self._maybe_trigger_runtime(
+            str(source.project_id), trigger="source_synced", include_active=True
+        )
         return sync_result
+
+    async def _persist_website_items(self, source, items: list[dict]) -> int:
+        knowledge_base_id = source.config.get("knowledge_base_id")
+        knowledge_base = None
+        if knowledge_base_id:
+            try:
+                knowledge_base = await self.uow.knowledge_bases.get(uuid.UUID(knowledge_base_id))
+            except (TypeError, ValueError):
+                knowledge_base = None
+            if knowledge_base is None or knowledge_base.project_id != source.project_id:
+                raise ValueError("Website source knowledge_base_id is invalid")
+        else:
+            knowledge_bases = await self.uow.knowledge_bases.get_by_project(source.project_id)
+            knowledge_base = knowledge_bases[0] if knowledge_bases else None
+            if knowledge_base is None:
+                knowledge_base = await self.uow.knowledge_bases.create(
+                    name="Website Sources",
+                    description="Content synchronized from website sources",
+                    project_id=source.project_id,
+                    config={},
+                )
+
+        synced = 0
+        for item in items:
+            url = item.get("url")
+            content = item.get("content")
+            if not isinstance(url, str) or not isinstance(content, str) or not content.strip():
+                continue
+            content = content.replace("\x00", "").strip()
+            chunks = chunk_document(content, source=url, document_id=None)
+            content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            metadata = {
+                "source_type": "website",
+                "content_type": item.get("content_type"),
+                "content_length": len(content),
+            }
+            existing = await self.uow.documents.get_by_source(knowledge_base.id, url)
+            values = {
+                "title": str(item.get("title") or url)[:512],
+                "content": content,
+                "chunk_count": len(chunks),
+                "doc_metadata": metadata,
+                "content_hash": content_hash,
+            }
+            if existing:
+                await self.uow.documents.update(existing, **values)
+            else:
+                await self.uow.documents.create(
+                    source=url,
+                    knowledge_base_id=knowledge_base.id,
+                    **values,
+                )
+            synced += 1
+        return synced
 
     async def cancel_sync(self, job_id: str) -> dict:
         job = await self.uow.sync_jobs.get(job_id)
@@ -369,9 +493,18 @@ class KnowledgeService:
             for j in jobs
         ]
 
-    async def _maybe_trigger_runtime(self, project_id: str, trigger: str) -> None:
+    async def _maybe_trigger_runtime(
+        self,
+        project_id: str,
+        trigger: str,
+        *,
+        include_active: bool = False,
+    ) -> None:
         from app.services.runtimes import RuntimeService
         service = RuntimeService(self.uow)
         runtime = await service.get_by_project(project_id)
-        if runtime and runtime.get("status") in ("queued", "failed", "cancelled"):
+        rebuildable_statuses = {"queued", "failed", "cancelled"}
+        if include_active:
+            rebuildable_statuses.add("active")
+        if runtime and runtime.get("status") in rebuildable_statuses:
             await service.enqueue_build(runtime["id"], trigger=trigger)

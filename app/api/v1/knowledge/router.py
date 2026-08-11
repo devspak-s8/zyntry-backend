@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
@@ -94,37 +94,18 @@ async def upload_document(
 
 @router.post("/documents/upload", response_model=DocumentRead, status_code=status.HTTP_201_CREATED)
 async def upload_document_file(
-    request: Request,
+    file: Annotated[UploadFile, File()],
+    title: Annotated[str, Form(min_length=1)],
+    knowledge_base_id: Annotated[str, Form(min_length=1)],
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
+    source: Annotated[str | None, Form()] = None,
 ) -> DocumentRead:
-    content_type = request.headers.get("content-type", "")
-    if "multipart/form-data" in content_type.lower():
-        form = await request.form()
-        file = form.get("file")
-        title = form.get("title")
-        knowledge_base_id = form.get("knowledge_base_id")
-        source = form.get("source")
-
-        if not isinstance(file, UploadFile):
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="file is required")
-        if not isinstance(title, str) or not title.strip():
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="title is required")
-        if not isinstance(knowledge_base_id, str) or not knowledge_base_id.strip():
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="knowledge_base_id is required")
-
-        body = FileUploadCreate(
-            title=title.strip(),
-            knowledge_base_id=knowledge_base_id.strip(),
-            source=source.strip() if isinstance(source, str) and source.strip() else None,
-        )
-    else:
-        payload = await request.json()
-        body = FileUploadCreate(**payload)
-        file = None
-
-    if file is None:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="file is required")
+    body = FileUploadCreate(
+        title=title.strip(),
+        knowledge_base_id=knowledge_base_id.strip(),
+        source=source.strip() if source and source.strip() else None,
+    )
 
     uow = UnitOfWork(db)
     service = KnowledgeService(uow)

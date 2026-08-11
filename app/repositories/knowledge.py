@@ -51,11 +51,26 @@ class DocumentRepository:
     async def get(self, id: UUID) -> Document | None:
         return await self.session.get(Document, id)
 
+    async def get_by_source(self, knowledge_base_id: UUID, source: str) -> Document | None:
+        result = await self.session.execute(
+            select(Document).where(
+                Document.knowledge_base_id == knowledge_base_id,
+                Document.source == source,
+            )
+        )
+        return result.scalars().first()
+
     async def create(self, **kwargs: object) -> Document:
         doc = Document(**kwargs)
         self.session.add(doc)
         await self.session.flush()
         return doc
+
+    async def update(self, instance: Document, **kwargs: object) -> Document:
+        for key, value in kwargs.items():
+            setattr(instance, key, value)
+        await self.session.flush()
+        return instance
 
     async def delete(self, instance: Document) -> None:
         await self.session.delete(instance)

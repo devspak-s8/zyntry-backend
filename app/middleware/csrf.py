@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import logging
 import secrets
-from typing import Callable
+from collections.abc import Callable
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -21,9 +20,6 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         if request.method in ("GET", "HEAD", "OPTIONS"):
             return await call_next(request)
 
-        if request.headers.get("content-type", "").startswith("multipart/form-data"):
-            return await call_next(request)
-
         path = request.url.path
 
         if path.startswith("/api/v1/auth"):
@@ -40,7 +36,11 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 
         if not token or not header_token or not secrets.compare_digest(token, header_token):
             logger.warning("CSRF validation failed", extra={"path": path})
-            return Response(content='{"detail":"CSRF token missing or invalid"}', status_code=403, media_type="application/json")
+            return Response(
+                content='{"detail":"CSRF token missing or invalid"}',
+                status_code=403,
+                media_type="application/json",
+            )
 
         # Keep the double-submit token stable. Rotating it here would leave the
         # browser holding a new HttpOnly cookie while the frontend still has the

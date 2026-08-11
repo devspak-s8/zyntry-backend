@@ -22,11 +22,24 @@ from app.models.projects import Project
 from app.models.users import User
 from app.repositories import UnitOfWork
 from app.schemas.projects import ProjectCreate, ProjectRead
-from app.services.notifications import enqueue_notification
+from app.services.notifications import publish_notification
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/projects", tags=["projects"])
+
+
+async def _deliver_project_created_email(event: NotificationEvent, project_id: uuid.UUID) -> bool:
+    delivery = await publish_notification(event)
+    email_delivery = delivery.get("email", {})
+    if email_delivery.get("success"):
+        logger.info("Project created email delivered", extra={"project_id": str(project_id)})
+        return True
+    logger.warning(
+        "Project created email delivery failed",
+        extra={"project_id": str(project_id), "delivery": email_delivery},
+    )
+    return False
 
 
 def _to_read(p: Project) -> ProjectRead:
@@ -190,9 +203,9 @@ async def create_project(
             data={"user_name": current_user.name, "project_name": body.name},
             category="general",
         )
-        enqueue_notification(event)
+        await _deliver_project_created_email(event, proj.id)
     except Exception:
-        logger.exception("Failed to enqueue project created email to %s", current_user.email)
+        logger.exception("Failed to deliver project created email to %s", current_user.email)
 
     response = ProjectRead(
         id=proj.id,

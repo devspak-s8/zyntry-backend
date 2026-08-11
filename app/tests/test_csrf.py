@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import pytest
 from httpx import AsyncClient
+from starlette.requests import Request
+
+from app.core.config import settings
+from app.middleware.csrf import CSRFMiddleware
 
 
 @pytest.mark.asyncio
@@ -26,3 +30,35 @@ async def test_csrf_token_endpoint_reuses_existing_token(client: AsyncClient) ->
 
     assert response.status_code == 200
     assert response.json() == {"csrf_token": "existing-token"}
+
+
+@pytest.mark.asyncio
+async def test_multipart_mutations_still_require_csrf(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "APP_DEBUG", False)
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "https",
+        "path": "/api/v1/knowledge/documents/upload",
+        "raw_path": b"/api/v1/knowledge/documents/upload",
+        "query_string": b"",
+        "headers": [
+            (b"content-type", b"multipart/form-data; boundary=test"),
+            (b"cookie", b"zyntra_session=session; zyntra_csrf=token"),
+        ],
+        "client": ("127.0.0.1", 1234),
+        "server": ("test", 443),
+    }
+    request = Request(scope)
+    called = False
+
+    async def call_next(_request):
+        nonlocal called
+        called = True
+
+    middleware = CSRFMiddleware(app=lambda scope, receive, send: None)
+    response = await middleware.dispatch(request, call_next)
+
+    assert response.status_code == 403
+    assert called is False
