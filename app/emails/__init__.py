@@ -105,13 +105,6 @@ def build_email(
         'style="display:block;width:64px;height:64px;object-fit:contain;border-radius:14px;'
         'background:#ffffff;margin:0 auto 16px;border:0;" />'
     )
-    visual = (
-        '<tr><td style="padding:24px 32px 0;background:#ffffff;text-align:center;">'
-        f'<img src="{visual_url}" width="416" alt="" role="presentation" '
-        'style="display:block;width:100%;max-width:416px;height:auto;margin:0 auto;'
-        'border:0;border-radius:12px;" />'
-        "</td></tr>"
-    )
     cta = ""
     if cta_text and cta_url:
         cta = f'''<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center"><a href="{cta_url}" style="display:inline-block;background:{accent};color:#ffffff;padding:14px 28px;border-radius:10px;font-size:14px;font-weight:700;text-decoration:none;box-shadow:0 4px 12px rgba(124,58,237,0.3);">{cta_text}</a></td></tr></table>'''
@@ -129,13 +122,18 @@ def build_email(
       <td align="center" style="padding:40px 20px;">
         <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background-color:{_CARD_BG};border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08);">
           <tr>
-            <td style="background:{_ACCENT_BG};padding:32px 32px 28px;text-align:center;">
+            <td background="{visual_url}" style="background-color:#eff6ff;background-image:url('{visual_url}');background-repeat:no-repeat;background-position:center;background-size:cover;padding:28px 32px;text-align:center;">
               {brand_logo}
-              <h1 style="color:#ffffff;margin:0 0 8px;font-size:22px;font-weight:700;letter-spacing:-0.3px;">{title}</h1>
-              <p style="color:rgba(255,255,255,0.85);margin:0;font-size:14px;line-height:1.5;">{subtitle}</p>
+              <table role="presentation" cellpadding="0" cellspacing="0" align="center" style="margin:0 auto;background:rgba(255,255,255,0.92);border-radius:12px;">
+                <tr>
+                  <td style="padding:14px 20px;text-align:center;">
+                    <h1 style="color:#172554;margin:0 0 6px;font-size:22px;font-weight:700;letter-spacing:-0.3px;">{title}</h1>
+                    <p style="color:#334155;margin:0;font-size:14px;line-height:1.5;">{subtitle}</p>
+                  </td>
+                </tr>
+              </table>
             </td>
           </tr>
-          {visual}
           <tr>
             <td style="padding:32px;">
               <p style="color:{_TEXT_PRIMARY};margin:0 0 16px;font-size:14px;line-height:1.6;">{body_html}</p>
@@ -569,10 +567,11 @@ def build_mfa_disabled() -> tuple[str, str]:
     return html, text
 
 
-def build_password_changed() -> tuple[str, str]:
+def build_password_changed(user_name: str | None = None) -> tuple[str, str]:
+    display = user_name or "there"
     html = build_email(
         title="Password changed successfully",
-        subtitle="Security",
+        subtitle=f"Hi {display},",
         body_html="Your password has been successfully changed.",
         cta_text="View Security Settings",
         cta_url=f"{_APP_URL}/settings/security",
@@ -940,15 +939,28 @@ def build_credits_purchased(amount: str, currency: str, balance: str | None = No
     return html, text
 
 
-def build_credits_running_low(balance: str, currency: str) -> tuple[str, str]:
+def build_credits_running_low(
+    balance: str,
+    currency: str = "USD",
+    threshold: str | None = None,
+) -> tuple[str, str]:
+    threshold_text = f" Your configured threshold is {threshold}." if threshold else ""
     html = build_email(
         title="Credits running low",
         subtitle=f"Balance: {balance} {currency}",
-        body_html=f"Your credit balance is low ({balance} {currency}). Add funds soon to avoid service interruptions.",
+        body_html=(
+            f"Your credit balance is low ({balance} {currency}).{threshold_text} "
+            "Add funds soon to avoid service interruptions."
+        ),
         cta_text="Add Funds",
         cta_url=f"{_APP_URL}/billing",
     )
-    text = build_email_text("Credits running low", f"Credit balance is low: {balance} {currency}. Add funds at: {_APP_URL}/billing", "Add Funds", f"{_APP_URL}/billing")
+    text = build_email_text(
+        "Credits running low",
+        f"Credit balance is low: {balance} {currency}.{threshold_text} Add funds at: {_APP_URL}/billing",
+        "Add Funds",
+        f"{_APP_URL}/billing",
+    )
     return html, text
 
 
@@ -1454,6 +1466,12 @@ EMAIL_TEMPLATES: dict[str, Any] = {
     "source_connected": build_source_connected,
     "source_disconnected": build_source_disconnected,
     "source_reauth": build_source_reauth,
+    "provider_connected": build_source_connected,
+    "provider_disconnected": lambda provider, display_name=None, source_name=None: build_source_disconnected(
+        provider, source_name or display_name
+    ),
+    "provider_token_expired": build_provider_token_expired,
+    "provider_reconnect_required": build_provider_reconnect_required,
     "credits_purchased": build_credits_purchased,
     "credits_running_low": build_credits_running_low,
     "credits_exhausted": build_credits_exhausted,
