@@ -34,7 +34,15 @@ def _gradient_icon(svg: str) -> str:
 _WELCOME_SVG = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="{accent}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>'
 
 
-def build_email(name: str, title: str, subtitle: str, body_html: str, cta_text: str | None = None, cta_url: str | None = None, footer_text: str | None = None) -> str:
+def build_email(
+    title: str,
+    subtitle: str,
+    body_html: str,
+    cta_text: str | None = None,
+    cta_url: str | None = None,
+    footer_text: str | None = None,
+    name: str | None = None,
+) -> str:
     accent = _ACCENT
     footer = footer_text or "If you didn't expect this email, you can safely ignore it."
     svg = _WELCOME_SVG.format(accent=accent)

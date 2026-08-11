@@ -6,7 +6,16 @@ from uuid import uuid4
 import pytest
 
 from app.api.v1.projects import router as projects_router
+from app.emails import build_project_created
 from app.events import NotificationEvent
+
+
+def test_project_created_email_template_renders() -> None:
+    html, text = build_project_created("Test User", "Demo Project")
+
+    assert "Project created successfully" in html
+    assert "Demo Project" in html
+    assert "Demo Project" in text
 
 
 @pytest.mark.asyncio
