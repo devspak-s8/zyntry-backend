@@ -133,6 +133,9 @@ async def authorize(
             current_user.id,
             project_id,
             body.redirect_uri,
+            body.purpose,
+            body.display_name,
+            body.source_config,
         )
     except OAuthError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
@@ -208,23 +211,43 @@ async def provider_callback(
             OAuthState.expires_at > datetime.now(UTC),
         )
     )
-    if db_result.scalar_one_or_none() is None:
+    state_obj = db_result.scalar_one_or_none()
+    if state_obj is None:
         raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
 
-    query = urlencode(
-        {
-            key: value
-            for key, value in {
-                "provider": provider.lower(),
-                "code": code,
-                "state": state,
-                "error": error,
-                "error_description": error_description,
-            }.items()
-            if value
-        }
-    )
     frontend_callback = f"{settings.FRONTEND_URL.rstrip('/')}/oauth/callback"
+    if error:
+        query = urlencode({"status": "error", "provider": provider.lower(), "error": error_description or error})
+        return RedirectResponse(f"{frontend_callback}?{query}", status_code=302)
+    if not code or state_obj.project_id is None or state_obj.user_id is None:
+        raise HTTPException(status_code=400, detail="Incomplete OAuth callback")
+
+    project_id = state_obj.project_id
+    user_id = state_obj.user_id
+    purpose = state_obj.purpose
+    display_name = state_obj.display_name
+    source_config = dict(state_obj.source_config or {})
+    uow = UnitOfWork(db)
+    service = OAuthService(uow)
+    try:
+        result = await service.callback(
+            provider.lower(), code, state, project_id,
+            expected_user_id=user_id,
+        )
+        integration = await _materialize_integration(
+            uow, result, project_id, purpose, display_name, source_config,
+        )
+        await _emit_integration_result(str(user_id), integration)
+    except (OAuthError, ValueError) as exc:
+        query = urlencode({"status": "error", "provider": provider.lower(), "error": str(exc)})
+        return RedirectResponse(f"{frontend_callback}?{query}", status_code=302)
+
+    query = urlencode({
+        "status": "success", "provider": provider.lower(),
+        "purpose": integration["purpose"],
+        "tool_id": integration.get("tool_id") or "",
+        "source_id": integration.get("source_id") or "",
+    })
     return RedirectResponse(f"{frontend_callback}?{query}", status_code=302)
 
 

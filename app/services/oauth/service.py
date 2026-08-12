@@ -76,6 +76,9 @@ class OAuthService:
         user_id: uuid.UUID,
         project_id: uuid.UUID | None = None,
         redirect_uri: str | None = None,
+        purpose: str = "tool",
+        display_name: str | None = None,
+        source_config: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         provider = await self._get_provider_cached(provider_name)
         if provider is None:
@@ -97,6 +100,9 @@ class OAuthService:
             user_id=user_id,
             project_id=project_id,
             redirect_uri=provider_redirect_uri,
+            purpose=purpose,
+            display_name=display_name,
+            source_config=source_config or {},
             expires_at=expires_at,
         )
         await self.uow.commit()

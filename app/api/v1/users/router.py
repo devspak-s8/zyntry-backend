@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -175,24 +175,53 @@ async def enable_two_factor(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
-    import secrets
+    from app.admin.auth import generate_totp_secret, generate_totp_uri
+    from app.services.encryption import encrypt_value
 
-    secret = secrets.token_base32()
+    secret = generate_totp_secret()
     uow = UnitOfWork(db)
     try:
-        await uow.users.update(current_user, two_factor_secret=secret, two_factor_enabled=True)
+        await uow.users.update(current_user, two_factor_secret=encrypt_value(secret), two_factor_enabled=False)
         await uow.commit()
     except Exception as exc:
         await uow.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to enable 2FA: {exc}")
-    return {"secret": secret, "status": "enabled"}
+    return {"secret": secret, "otpauth_uri": generate_totp_uri(secret, current_user.email), "status": "pending_verification"}
+
+
+@router.post("/me/2fa/verify")
+async def verify_two_factor_setup(
+    code: Annotated[str, Body(embed=True)],
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, str]:
+    from app.admin.auth import verify_totp
+    from app.services.encryption import decrypt_value
+
+    if not current_user.two_factor_secret:
+        raise HTTPException(status_code=400, detail="Start 2FA setup first")
+    secret = decrypt_value(current_user.two_factor_secret)
+    if not verify_totp(secret, code.strip().replace(" ", "")):
+        raise HTTPException(status_code=400, detail="Invalid authentication code")
+    uow = UnitOfWork(db)
+    await uow.users.update(current_user, two_factor_enabled=True)
+    await uow.commit()
+    return {"status": "enabled"}
 
 
 @router.post("/me/2fa/disable")
 async def disable_two_factor(
+    code: Annotated[str, Body(embed=True)],
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
+    from app.admin.auth import verify_totp
+    from app.services.encryption import decrypt_value
+
+    if not current_user.two_factor_secret or not verify_totp(
+        decrypt_value(current_user.two_factor_secret), code.strip().replace(" ", "")
+    ):
+        raise HTTPException(status_code=400, detail="Invalid authentication code")
     uow = UnitOfWork(db)
     try:
         await uow.users.update(current_user, two_factor_secret=None, two_factor_enabled=False)

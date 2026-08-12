@@ -206,6 +206,7 @@ async def login(
     response: Response,
     email: Annotated[str, Body(embed=True)],
     password: Annotated[str, Body(embed=True)],
+    two_factor_code: Annotated[str | None, Body(embed=True)] = None,
     db: AsyncSession = Depends(get_session),
 ) -> AuthMeResponse:
     user = await _get_user_by_email(db, email)
@@ -214,6 +215,18 @@ async def login(
 
     if not verify_password(password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    if user.two_factor_enabled:
+        from app.admin.auth import verify_totp
+        from app.services.encryption import decrypt_value
+
+        if not two_factor_code:
+            raise HTTPException(status_code=428, detail={"code": "two_factor_required", "message": "Authentication code required"})
+        if not user.two_factor_secret or not verify_totp(
+            decrypt_value(user.two_factor_secret),
+            two_factor_code.strip().replace(" ", ""),
+        ):
+            raise HTTPException(status_code=401, detail="Invalid authentication code")
 
     await _create_session(db, response, user)
     refresh_token = await _create_refresh_token(db, user)

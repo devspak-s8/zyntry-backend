@@ -58,5 +58,8 @@ class OAuthState(Base):
     user_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     project_id: Mapped[uuid.UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     redirect_uri: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    purpose: Mapped[str] = mapped_column(String(16), default="tool")
+    display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_config: Mapped[dict] = mapped_column(JSON, default=dict)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.now(UTC))
