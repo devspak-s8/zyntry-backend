@@ -103,6 +103,8 @@ jobs:
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
           GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
           COMPOSE_OVERRIDE_FILE: ${{ secrets.COMPOSE_OVERRIDE_FILE }}
+          DEPLOY_PUBLIC_API_URL: ${{ github.ref_name == 'main' && 'https://api.zyntry.space' || 'https://staging-api.zyntry.space' }}
+          DEPLOY_PUBLIC_FRONTEND_URL: ${{ github.ref_name == 'main' && 'https://zyntry.space' || 'https://staging.zyntry.space' }}
           DEPLOY_OAUTH_GITHUB_CLIENT_ID: ${{ secrets.GITHB_CLIENT_ID }}
           DEPLOY_OAUTH_GITHUB_CLIENT_SECRET: ${{ secrets.GITHB_CLIENT_SECRET }}
           DEPLOY_OAUTH_NOTION_CLIENT_ID: ${{ secrets.NOTION_CLIENT_ID }}
@@ -113,7 +115,7 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          envs: API_IMAGE,DEPLOY_PATH,GHCR_USERNAME,GHCR_READ_TOKEN,COMPOSE_OVERRIDE_FILE,DEPLOY_OAUTH_GITHUB_CLIENT_ID,DEPLOY_OAUTH_GITHUB_CLIENT_SECRET,DEPLOY_OAUTH_NOTION_CLIENT_ID,DEPLOY_OAUTH_NOTION_CLIENT_SECRET,DEPLOY_OAUTH_SLACK_CLIENT_ID,DEPLOY_OAUTH_SLACK_CLIENT_SECRET
+          envs: API_IMAGE,DEPLOY_PATH,GHCR_USERNAME,GHCR_READ_TOKEN,COMPOSE_OVERRIDE_FILE,DEPLOY_PUBLIC_API_URL,DEPLOY_PUBLIC_FRONTEND_URL,DEPLOY_OAUTH_GITHUB_CLIENT_ID,DEPLOY_OAUTH_GITHUB_CLIENT_SECRET,DEPLOY_OAUTH_NOTION_CLIENT_ID,DEPLOY_OAUTH_NOTION_CLIENT_SECRET,DEPLOY_OAUTH_SLACK_CLIENT_ID,DEPLOY_OAUTH_SLACK_CLIENT_SECRET
           script: |
             set -eu
             cd "$DEPLOY_PATH"
@@ -134,6 +136,8 @@ jobs:
             export NOTION_CLIENT_SECRET="$DEPLOY_OAUTH_NOTION_CLIENT_SECRET"
             export SLACK_CLIENT_ID="$DEPLOY_OAUTH_SLACK_CLIENT_ID"
             export SLACK_CLIENT_SECRET="$DEPLOY_OAUTH_SLACK_CLIENT_SECRET"
+            export APP_URL="$DEPLOY_PUBLIC_API_URL"
+            export FRONTEND_URL="$DEPLOY_PUBLIC_FRONTEND_URL"
 
             compose="docker compose -f docker-compose.yml"
             if [ -n "${COMPOSE_OVERRIDE_FILE:-}" ]; then
@@ -153,6 +157,7 @@ jobs:
             $compose up -d --no-build $services
 
             $compose exec -T api python -c "from app.core.config import settings; assert all((settings.GITHUB_CLIENT_ID, settings.GITHUB_CLIENT_SECRET, settings.NOTION_CLIENT_ID, settings.NOTION_CLIENT_SECRET, settings.SLACK_CLIENT_ID, settings.SLACK_CLIENT_SECRET)), 'OAuth credentials were not injected into the API container'"
+            $compose exec -T api python -c "from app.core.config import settings; assert settings.APP_URL == '$DEPLOY_PUBLIC_API_URL' and settings.FRONTEND_URL == '$DEPLOY_PUBLIC_FRONTEND_URL', 'Public OAuth URLs were not injected into the API container'"
 
             healthy=false
             for attempt in $(seq 1 30); do
