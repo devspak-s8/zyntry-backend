@@ -103,11 +103,17 @@ jobs:
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
           GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
           COMPOSE_OVERRIDE_FILE: ${{ secrets.COMPOSE_OVERRIDE_FILE }}
+          GITHUB_CLIENT_ID: ${{ secrets.GITHB_CLIENT_ID }}
+          GITHUB_CLIENT_SECRET: ${{ secrets.GITHB_CLIENT_SECRET }}
+          NOTION_CLIENT_ID: ${{ secrets.NOTION_CLIENT_ID }}
+          NOTION_CLIENT_SECRET: ${{ secrets.NOTION_CLIENT_SECRET }}
+          SLACK_CLIENT_ID: ${{ secrets.SLACK_CLIENT_ID }}
+          SLACK_CLIENT_SECRET: ${{ secrets.SLACK_CLIENT_SECRET }}
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          envs: API_IMAGE,DEPLOY_PATH,GHCR_USERNAME,GHCR_READ_TOKEN,COMPOSE_OVERRIDE_FILE
+          envs: API_IMAGE,DEPLOY_PATH,GHCR_USERNAME,GHCR_READ_TOKEN,COMPOSE_OVERRIDE_FILE,GITHUB_CLIENT_ID,GITHUB_CLIENT_SECRET,NOTION_CLIENT_ID,NOTION_CLIENT_SECRET,SLACK_CLIENT_ID,SLACK_CLIENT_SECRET
           script: |
             set -eu
             cd "$DEPLOY_PATH"
