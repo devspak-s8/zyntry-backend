@@ -7,9 +7,19 @@ from uuid import uuid4
 
 import pytest
 
+from app.core.config import settings
 from app.services.oauth.service import OAuthError, OAuthService
 from app.services.integrations import IntegrationService
 from app.services.tools import ToolService
+
+
+def test_oauth_encryption_accepts_configured_master_secret(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "ENCRYPTION_KEY", "production-style-master-secret")
+
+    encrypted = OAuthService._encrypt("oauth-client-secret")
+
+    assert encrypted.startswith("ENCV1:")
+    assert OAuthService._decrypt(encrypted) == "oauth-client-secret"
 
 
 @pytest.mark.asyncio

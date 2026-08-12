@@ -363,14 +363,12 @@ class OAuthService:
 
     @staticmethod
     def _encrypt(value: str) -> str:
-        from cryptography.fernet import Fernet
-        key = settings.ENCRYPTION_KEY.encode() if settings.ENCRYPTION_KEY else Fernet.generate_key()
-        f = Fernet(key)
-        return f.encrypt(value.encode()).decode()
+        from app.services.encryption import encrypt_value
+
+        return encrypt_value(value)
 
     @staticmethod
     def _decrypt(value: str) -> str:
-        from cryptography.fernet import Fernet
-        key = settings.ENCRYPTION_KEY.encode() if settings.ENCRYPTION_KEY else Fernet.generate_key()
-        f = Fernet(key)
-        return f.decrypt(value.encode()).decode()
+        from app.services.encryption import decrypt_value
+
+        return decrypt_value(value)
