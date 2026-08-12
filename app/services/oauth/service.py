@@ -86,6 +86,9 @@ class OAuthService:
         state = secrets.token_urlsafe(32)
         code_verifier = secrets.token_urlsafe(64)
         expires_at = datetime.now(UTC) + timedelta(minutes=10)
+        provider_redirect_uri = (
+            f"{settings.APP_URL.rstrip('/')}/api/v1/oauth/{provider_name}/callback"
+        )
 
         await self.uow.oauth_states.create(
             provider=provider_name,
@@ -93,14 +96,14 @@ class OAuthService:
             code_verifier=code_verifier,
             user_id=user_id,
             project_id=project_id,
-            redirect_uri=redirect_uri,
+            redirect_uri=provider_redirect_uri,
             expires_at=expires_at,
         )
         await self.uow.commit()
 
         params = {
             "client_id": provider.client_id,
-            "redirect_uri": redirect_uri or f"{settings.APP_URL}/api/v1/oauth/callback",
+            "redirect_uri": provider_redirect_uri,
             "response_type": "code",
             "scope": " ".join(provider.scopes),
             "state": state,
@@ -138,7 +141,7 @@ class OAuthService:
                     "code": code,
                     "redirect_uri": (
                         state_obj.redirect_uri
-                        or f"{settings.APP_URL}/api/v1/oauth/callback"
+                        or f"{settings.APP_URL.rstrip('/')}/api/v1/oauth/{provider_name}/callback"
                     ),
                     "code_verifier": state_obj.code_verifier,
                 },

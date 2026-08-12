@@ -3,9 +3,10 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Any
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,6 +14,7 @@ from app.api.v1.dependencies import get_current_user
 from app.api.v1.dependencies_tenant import require_project_membership
 from app.api.v1.features.dependencies import require_feature
 from app.core.database import get_session
+from app.core.config import settings
 from app.core.ws_events import emit_integration_connection_updated
 from app.models.users import User
 from app.repositories import UnitOfWork
@@ -188,6 +190,42 @@ async def callback(
         display_name=result["display_name"],
         scope=result["scope"],
     )
+
+
+@router.get("/{provider}/callback", response_class=RedirectResponse)
+async def provider_callback(
+    provider: str,
+    code: Annotated[str, Query()] = "",
+    state: Annotated[str, Query()] = "",
+    error: Annotated[str, Query()] = "",
+    error_description: Annotated[str, Query()] = "",
+    db: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    db_result = await db.execute(
+        select(OAuthState).where(
+            OAuthState.state == state,
+            OAuthState.provider == provider.lower(),
+            OAuthState.expires_at > datetime.now(UTC),
+        )
+    )
+    if db_result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
+
+    query = urlencode(
+        {
+            key: value
+            for key, value in {
+                "provider": provider.lower(),
+                "code": code,
+                "state": state,
+                "error": error,
+                "error_description": error_description,
+            }.items()
+            if value
+        }
+    )
+    frontend_callback = f"{settings.FRONTEND_URL.rstrip('/')}/oauth/callback"
+    return RedirectResponse(f"{frontend_callback}?{query}", status_code=302)
 
 
 @router.post("/token", response_model=dict[str, Any], dependencies=TOOLS_GUARD)

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 import pytest
@@ -20,6 +21,33 @@ def test_oauth_encryption_accepts_configured_master_secret(monkeypatch) -> None:
 
     assert encrypted.startswith("ENCV1:")
     assert OAuthService._decrypt(encrypted) == "oauth-client-secret"
+
+
+@pytest.mark.asyncio
+async def test_oauth_authorize_uses_provider_specific_api_callback(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "APP_URL", "https://api.zyntry.space")
+    oauth_states = SimpleNamespace(create=AsyncMock())
+    uow = SimpleNamespace(oauth_states=oauth_states, commit=AsyncMock())
+    service = OAuthService(uow)
+    service._get_provider_cached = AsyncMock(
+        return_value=SimpleNamespace(
+            client_id="github-client",
+            auth_url="https://github.com/login/oauth/authorize",
+            scopes=["repo"],
+        )
+    )
+
+    result = await service.authorize(
+        "github",
+        uuid4(),
+        uuid4(),
+        "https://zyntry.space/oauth/callback",
+    )
+
+    expected = "https://api.zyntry.space/api/v1/oauth/github/callback"
+    params = parse_qs(urlparse(result["url"]).query)
+    assert params["redirect_uri"] == [expected]
+    assert oauth_states.create.await_args.kwargs["redirect_uri"] == expected
 
 
 @pytest.mark.asyncio
