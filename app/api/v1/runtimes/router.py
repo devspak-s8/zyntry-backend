@@ -8,7 +8,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
+from app.api.v1.dependencies_tenant import require_project_membership
 from app.api.v1.features.dependencies import require_feature
+from app.api.v1.invoke.router import InvokeRequest, InvokeResponse, invoke
 from app.core.database import get_session
 from app.models.users import User
 from app.repositories import UnitOfWork
@@ -112,6 +114,35 @@ async def rebuild_runtime(
     service = RuntimeService(uow)
     result = await service.enqueue_build(runtime_id, trigger="manual")
     return result
+
+
+@router.post(
+    "/{runtime_id}/console/invoke",
+    response_model=InvokeResponse,
+    dependencies=[Depends(require_feature("runtime_console"))],
+)
+async def invoke_runtime_console(
+    runtime_id: str,
+    body: InvokeRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_session),
+) -> InvokeResponse:
+    """Invoke a runtime from the authenticated browser console without exposing an API key."""
+    try:
+        runtime_uuid = uuid.UUID(runtime_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid runtime_id format") from None
+
+    uow = UnitOfWork(db)
+    runtime = await uow.runtimes.get(runtime_uuid)
+    if runtime is None:
+        raise HTTPException(status_code=404, detail="Runtime not found")
+
+    await require_project_membership(str(runtime.project_id), current_user, db)
+    safe_body = body.model_copy(
+        update={"project": str(runtime.project_id), "runtime_id": str(runtime.id)}
+    )
+    return await invoke(safe_body, current_user, db)
 
 
 @router.post("/{runtime_id}/propagate", response_model=dict)
