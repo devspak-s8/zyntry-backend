@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Any
@@ -29,6 +30,7 @@ from app.services.integrations import IntegrationService
 from app.services.oauth.service import OAuthError, OAuthService, OAuthState
 
 router = APIRouter(prefix="/oauth", tags=["oauth"])
+logger = logging.getLogger(__name__)
 TOOLS_GUARD = [Depends(require_feature("tools_connectors"))]
 
 
@@ -239,7 +241,17 @@ async def provider_callback(
         )
         await _emit_integration_result(str(user_id), integration)
     except (OAuthError, ValueError) as exc:
+        await db.rollback()
         query = urlencode({"status": "error", "provider": provider.lower(), "error": str(exc)})
+        return RedirectResponse(f"{frontend_callback}?{query}", status_code=302)
+    except Exception:
+        await db.rollback()
+        logger.exception("OAuth callback failed for provider %s", provider)
+        query = urlencode({
+            "status": "error",
+            "provider": provider.lower(),
+            "error": "Unable to complete the connection. Please try again.",
+        })
         return RedirectResponse(f"{frontend_callback}?{query}", status_code=302)
 
     query = urlencode({
