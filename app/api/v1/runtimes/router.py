@@ -12,6 +12,7 @@ from app.api.v1.dependencies_tenant import require_project_membership
 from app.api.v1.features.dependencies import require_feature
 from app.api.v1.invoke.router import InvokeRequest, InvokeResponse, invoke
 from app.core.database import get_session
+from app.models.runtimes import RuntimeBuildLog
 from app.models.users import User
 from app.repositories import UnitOfWork
 from app.schemas.runtimes import (
@@ -202,8 +203,15 @@ async def list_runtime_logs(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> list[RuntimeBuildLogRead]:
-    import uuid
-    rid = uuid.UUID(runtime_id)
+    try:
+        rid = uuid.UUID(runtime_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid runtime_id format") from None
+    uow = UnitOfWork(db)
+    runtime = await uow.runtimes.get(rid)
+    if runtime is None:
+        raise HTTPException(status_code=404, detail="Runtime not found")
+    await require_project_membership(str(runtime.project_id), current_user, db)
     result = await db.execute(
         select(RuntimeBuildLog).where(RuntimeBuildLog.runtime_id == rid).order_by(RuntimeBuildLog.created_at.asc())
     )
@@ -231,9 +239,16 @@ async def list_runtime_chunks(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> list[RuntimeBuildChunkRead]:
-    import uuid
     from app.models.runtimes import RuntimeBuildChunk
-    rid = uuid.UUID(runtime_id)
+    try:
+        rid = uuid.UUID(runtime_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid runtime_id format") from None
+    uow = UnitOfWork(db)
+    runtime = await uow.runtimes.get(rid)
+    if runtime is None:
+        raise HTTPException(status_code=404, detail="Runtime not found")
+    await require_project_membership(str(runtime.project_id), current_user, db)
     result = await db.execute(
         select(RuntimeBuildChunk).where(RuntimeBuildChunk.runtime_id == rid)
     )
