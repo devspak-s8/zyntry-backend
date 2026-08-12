@@ -6,6 +6,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from app.repositories import UnitOfWork
 from app.schemas.knowledge import (
@@ -152,14 +153,32 @@ class KnowledgeService:
         ]
 
     async def create_source(self, data: KnowledgeSourceCreate) -> dict:
+        config = dict(data.config)
+        source_type = data.source_type.lower().strip()
+        if source_type in {"website", "crawler"}:
+            raw_url = config.get("url") or config.get("input")
+            if not isinstance(raw_url, str) or not raw_url.strip():
+                raise ValueError("Website URL is required")
+            normalized_url = self._normalize_website_url(raw_url)
+            config["url"] = normalized_url
+            config.pop("input", None)
+            existing_sources = await self.uow.knowledge_sources.get_by_project(data.project_id)
+            for existing in existing_sources:
+                if existing.source_type not in {"website", "crawler"}:
+                    continue
+                existing_config = existing.config or {}
+                existing_url = existing_config.get("url") or existing_config.get("input")
+                if isinstance(existing_url, str) and self._normalize_website_url(existing_url) == normalized_url:
+                    raise ValueError("This website source is already connected to the project")
+
         credentials_encrypted = None
         if data.credentials is not None:
             credentials_encrypted = encrypt_value(json.dumps(data.credentials))
         source = await self.uow.knowledge_sources.create(
             project_id=data.project_id,
-            source_type=data.source_type,
+            source_type=source_type,
             display_name=data.display_name,
-            config=data.config,
+            config=config,
             sync_frequency=data.sync_frequency,
             status="pending",
             connection_status=data.connection_status,
@@ -185,6 +204,22 @@ class KnowledgeService:
         }
         await self._maybe_trigger_runtime(str(source.project_id), trigger="source_created")
         return result
+
+    @staticmethod
+    def _normalize_website_url(value: str) -> str:
+        parsed = urlsplit(value.strip())
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("Website URL must use http or https")
+        scheme = parsed.scheme.lower()
+        hostname = parsed.hostname.lower()
+        port = parsed.port
+        netloc = hostname
+        if port and not ((scheme == "http" and port == 80) or (scheme == "https" and port == 443)):
+            netloc = f"{hostname}:{port}"
+        path = parsed.path or "/"
+        if path != "/":
+            path = path.rstrip("/")
+        return urlunsplit((scheme, netloc, path, parsed.query, ""))
 
     async def update_source(self, source_id: str, data: KnowledgeSourceUpdate) -> dict:
         source = await self.uow.knowledge_sources.get(source_id)

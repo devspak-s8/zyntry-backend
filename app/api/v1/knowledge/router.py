@@ -195,7 +195,16 @@ async def create_knowledge_source(
 ) -> KnowledgeSourceRead:
     uow = UnitOfWork(db)
     service = KnowledgeService(uow)
-    source = await service.create_source(body)
+    try:
+        source = await service.create_source(body)
+    except ValueError as exc:
+        detail = str(exc)
+        code = (
+            status.HTTP_409_CONFLICT
+            if "already connected" in detail
+            else status.HTTP_400_BAD_REQUEST
+        )
+        raise HTTPException(status_code=code, detail=detail) from None
     return KnowledgeSourceRead(
         id=source["id"],
         project_id=source["project_id"],

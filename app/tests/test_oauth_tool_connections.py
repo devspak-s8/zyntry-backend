@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.services.oauth.service import OAuthService
+from app.services.oauth.service import OAuthError, OAuthService
 from app.services.integrations import IntegrationService
 from app.services.tools import ToolService
 
@@ -26,6 +26,19 @@ async def test_oauth_provider_lookup_uses_database_without_recursing() -> None:
 
     assert result is provider
     session.execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_missing_oauth_provider_reports_environment_configuration() -> None:
+    scalar_result = SimpleNamespace(first=lambda: None)
+    session = SimpleNamespace(
+        execute=AsyncMock(return_value=SimpleNamespace(scalars=lambda: scalar_result))
+    )
+    service = OAuthService(SimpleNamespace(session=session))
+    service._provider_cache.clear()
+
+    with pytest.raises(OAuthError, match="not configured on this environment"):
+        await service.authorize("github", uuid4(), uuid4())
 
 
 @pytest.mark.asyncio

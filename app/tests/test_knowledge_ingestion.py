@@ -10,6 +10,7 @@ import pytest
 from fastapi import UploadFile
 
 from app.api.v1.knowledge import router as knowledge_router
+from app.schemas.knowledge import KnowledgeSourceCreate
 from app.services.connectors.website import WebsiteConnector
 from app.services.knowledge import KnowledgeService
 
@@ -121,6 +122,40 @@ async def test_oauth_source_resolves_shared_encrypted_connection(monkeypatch) ->
 
     assert credentials == {"bot_token": "shared-oauth-token"}
     uow.oauth_connections.get.assert_awaited_once_with(connection_id)
+
+
+def test_website_url_normalization_removes_cosmetic_duplicates() -> None:
+    normalize = KnowledgeService._normalize_website_url
+
+    assert normalize("HTTPS://Example.COM:443/docs/#intro") == "https://example.com/docs"
+    assert normalize("https://example.com/docs") == "https://example.com/docs"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_website_source_is_rejected_within_project() -> None:
+    project_id = uuid4()
+    existing = SimpleNamespace(
+        source_type="website",
+        config={"url": "https://example.com/docs/"},
+    )
+    knowledge_sources = SimpleNamespace(
+        get_by_project=AsyncMock(return_value=[existing]),
+        create=AsyncMock(),
+    )
+    uow = SimpleNamespace(knowledge_sources=knowledge_sources)
+    service = KnowledgeService(uow)
+
+    with pytest.raises(ValueError, match="already connected"):
+        await service.create_source(
+            KnowledgeSourceCreate(
+                project_id=str(project_id),
+                source_type="crawler",
+                display_name="Duplicate docs",
+                config={"url": "https://EXAMPLE.com:443/docs#top"},
+            )
+        )
+
+    knowledge_sources.create.assert_not_awaited()
 
 
 @pytest.mark.asyncio

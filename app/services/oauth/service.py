@@ -79,7 +79,9 @@ class OAuthService:
     ) -> dict[str, Any]:
         provider = await self._get_provider_cached(provider_name)
         if provider is None:
-            raise OAuthError(f"Provider '{provider_name}' not found")
+            raise OAuthError(
+                f"OAuth provider '{provider_name}' is not configured on this environment"
+            )
 
         state = secrets.token_urlsafe(32)
         code_verifier = secrets.token_urlsafe(64)
