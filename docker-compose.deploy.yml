@@ -6,6 +6,12 @@ services:
     pull_policy: always
     environment:
       - EMAIL_ASSET_BASE_URL=${EMAIL_ASSET_BASE_URL:-http://localhost:8000/static/email}
+      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
+      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET:-}
+      - NOTION_CLIENT_ID=${NOTION_CLIENT_ID:-}
+      - NOTION_CLIENT_SECRET=${NOTION_CLIENT_SECRET:-}
+      - SLACK_CLIENT_ID=${SLACK_CLIENT_ID:-}
+      - SLACK_CLIENT_SECRET=${SLACK_CLIENT_SECRET:-}
 
   worker:
     image: ${API_IMAGE:?API_IMAGE must be a SHA-pinned GHCR image}
