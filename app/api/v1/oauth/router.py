@@ -256,6 +256,7 @@ async def provider_callback(
 
     query = urlencode({
         "status": "success", "provider": provider.lower(),
+        "project_id": str(project_id),
         "purpose": integration["purpose"],
         "tool_id": integration.get("tool_id") or "",
         "source_id": integration.get("source_id") or "",
