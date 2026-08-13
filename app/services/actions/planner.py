@@ -6,7 +6,7 @@ from typing import Any
 
 class ActionPlanner:
     @staticmethod
-    def plan(prompt: str, available_actions: list[dict[str, Any]]) -> dict[str, Any]:
+    async def plan(prompt: str, available_actions: list[dict[str, Any]]) -> dict[str, Any]:
         action_descriptions = "\n".join([
             f"- {a['provider']}.{a['name']}: {a.get('description', '')}" for a in available_actions
         ])
@@ -44,6 +44,12 @@ If no actions are needed, respond with:
                 ],
                 response_format={"type": "json_object"},
             )
-            return json.loads(response.choices[0].message.content)
+            content = response.choices[0].message.content
+            if not content:
+                raise ValueError("Action planner returned an empty response")
+            result = json.loads(content)
+            if not isinstance(result, dict):
+                raise ValueError("Action planner response must be a JSON object")
+            return result
         except Exception:
             return {"use_tools": False, "actions": [], "reasoning": "Planning failed"}
