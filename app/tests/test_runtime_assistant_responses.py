@@ -45,3 +45,15 @@ def test_three_bullet_summary_is_distinct() -> None:
     )
     assert len(response.message.splitlines()) == 3
     assert "2 sources" in response.message
+
+
+def test_routing_change_is_proposed_not_executed() -> None:
+    response = _executor().build_response(
+        "Enable dynamic routing",
+        [_result("get_runtime_config", {
+            "provider": "openai", "model": "gpt-4o-mini", "config": {},
+            "chunk_size": 800, "chunk_overlap": 100,
+        })],
+    )
+    assert "Proposed change (not applied)" in response.message
+    assert "explicitly approve" in response.message

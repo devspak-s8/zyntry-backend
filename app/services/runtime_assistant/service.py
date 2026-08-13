@@ -75,6 +75,26 @@ class RuntimeAssistantService:
 
         response = executor.build_response(message, tool_results)
         response.context = context
+        response.metadata.update(
+            {
+                "assistant": "runtime_assistant",
+                "mode": _infer_mode(message),
+                "evidence": [
+                    {
+                        "tool": result.tool_call.name,
+                        "status": result.tool_call.status,
+                        "duration_ms": result.tool_call.duration_ms,
+                    }
+                    for result in tool_results
+                ],
+                "confidence": _evidence_confidence(tool_results),
+                "changes_applied": False,
+                "approval_required": any(
+                    term in message.lower()
+                    for term in ("enable", "disable", "change", "apply", "restart", "delete")
+                ),
+            }
+        )
 
         # Persist the answer before optional enrichment so transient optimizer
         # failures never erase an otherwise successful conversation turn.
@@ -180,6 +200,26 @@ def _parse_user_role(user_role: str) -> UserRole:
         return UserRole(user_role.lower())
     except (ValueError, AttributeError):
         return UserRole.VIEWER
+
+
+def _infer_mode(message: str) -> str:
+    lowered = message.lower()
+    if any(term in lowered for term in ("apply", "change", "enable", "disable", "restart")):
+        return "configure"
+    if any(term in lowered for term in ("simulate", "what if")):
+        return "simulate"
+    if any(term in lowered for term in ("optimize", "cheaper", "faster", "recommend")):
+        return "optimize"
+    if any(term in lowered for term in ("why", "failed", "cause", "investigate", "wrong")):
+        return "investigate"
+    return "observe"
+
+
+def _evidence_confidence(tool_results: list[Any]) -> float:
+    if not tool_results:
+        return 0.0
+    successful = sum(1 for result in tool_results if result.success)
+    return round(successful / len(tool_results), 2)
 
 
 async def get_runtime_assistant_service(

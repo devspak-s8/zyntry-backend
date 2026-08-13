@@ -220,7 +220,7 @@ class RuntimeAssistantExecutor:
             config_result = result_map["get_runtime_config"]
             config = config_result.get("config") or {}
             routing = "enabled" if config.get("dynamic_routing_enabled") else "disabled"
-            return "\n".join([
+            lines = [
                 "Current runtime configuration:",
                 f"- Provider: {config_result.get('provider') or 'automatic'}",
                 f"- Model: {config_result.get('model') or 'automatic'}",
@@ -230,7 +230,24 @@ class RuntimeAssistantExecutor:
                 f"- Embedding model: {config_result.get('embedding_model') or 'default'}",
                 f"- Vector store: {config_result.get('vector_store') or 'default'}",
                 f"- Chunk size/overlap: {config_result.get('chunk_size')}/{config_result.get('chunk_overlap')}",
-            ])
+            ]
+            if "enable" in message_lower and "routing" in message_lower:
+                lines.extend([
+                    "",
+                    "Proposed change (not applied):",
+                    "- Enable dynamic model routing.",
+                    "- Risk: model selection, cost, and latency may change.",
+                    "- Review and explicitly approve this proposal before deployment.",
+                ])
+            elif "disable" in message_lower and "routing" in message_lower:
+                lines.extend([
+                    "",
+                    "Proposed change (not applied):",
+                    "- Disable dynamic model routing.",
+                    "- Risk: all requests may use the configured default model.",
+                    "- Review and explicitly approve this proposal before deployment.",
+                ])
+            return "\n".join(lines)
 
         summary_data = result_map.get("get_runtime_summary")
         if summary_data and any(term in message_lower for term in ("three bullet", "3 bullet", "summarize")):

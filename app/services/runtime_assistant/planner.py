@@ -124,10 +124,8 @@ class RuntimeAssistantPlanner:
         calls = []
         if "get_runtime_config" in self.tool_map:
             calls.append(ToolCall(id=self._generate_id(), name="get_runtime_config", arguments={}))
-        if "disable" in message and "disable_dynamic_routing" in self.tool_map:
-            calls.append(ToolCall(id=self._generate_id(), name="disable_dynamic_routing", arguments={}))
-        elif "enable" in message and "enable_dynamic_routing" in self.tool_map:
-            calls.append(ToolCall(id=self._generate_id(), name="enable_dynamic_routing", arguments={}))
+        # Chat produces a reviewable proposal only. Mutations are applied by a
+        # separate confirmed action endpoint, never directly from prose.
         return calls
 
     def _plan_summary(self, message: str) -> list[ToolCall]:
