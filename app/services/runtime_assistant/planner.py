@@ -50,6 +50,15 @@ class RuntimeAssistantPlanner:
             reasoning_parts.append("User is asking about dynamic routing.")
             tool_calls.extend(self._plan_dynamic_routing(message_lower))
 
+        elif any(k in message_lower for k in ["configuration", "configurationof", "configured", "settings", "temperature", "system prompt"]):
+            reasoning_parts.append("User is asking about runtime configuration.")
+            if "get_runtime_config" in self.tool_map:
+                tool_calls.append(ToolCall(id=self._generate_id(), name="get_runtime_config", arguments={}))
+
+        elif "json" in message_lower:
+            reasoning_parts.append("User requested a JSON runtime report.")
+            tool_calls.extend(self._plan_report("json"))
+
         elif any(k in message_lower for k in ["summary", "overview", "status", "health"]):
             reasoning_parts.append("User is asking for runtime overview.")
             tool_calls.extend(self._plan_summary(message_lower))

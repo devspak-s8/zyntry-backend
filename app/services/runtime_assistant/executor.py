@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -200,11 +201,46 @@ class RuntimeAssistantExecutor:
         diagnostics: list[DiagnosticResult],
         optimizations: list[OptimizationResult],
     ) -> str:
-        parts: list[str] = []
-        parts.append("I analyzed your runtime.\n")
-
         successful = [r for r in results if r.success]
         failed = [r for r in results if not r.success]
+        result_map = {
+            result.tool_call.name: result.tool_call.result
+            for result in successful
+            if result.tool_call.result is not None
+        }
+        message_lower = user_message.lower()
+
+        if "generate_report" in result_map:
+            report = result_map["generate_report"]
+            if report.get("format") == "json":
+                return json.dumps(report.get("data", report), indent=2, default=str)
+            return str(report.get("report", report))
+
+        if "get_runtime_config" in result_map:
+            config_result = result_map["get_runtime_config"]
+            config = config_result.get("config") or {}
+            routing = "enabled" if config.get("dynamic_routing_enabled") else "disabled"
+            return "\n".join([
+                "Current runtime configuration:",
+                f"- Provider: {config_result.get('provider') or 'automatic'}",
+                f"- Model: {config_result.get('model') or 'automatic'}",
+                f"- Dynamic routing: {routing}",
+                f"- Temperature: {config.get('temperature', 'default')}",
+                f"- Maximum tokens: {config.get('max_tokens', 'default')}",
+                f"- Embedding model: {config_result.get('embedding_model') or 'default'}",
+                f"- Vector store: {config_result.get('vector_store') or 'default'}",
+                f"- Chunk size/overlap: {config_result.get('chunk_size')}/{config_result.get('chunk_overlap')}",
+            ])
+
+        summary_data = result_map.get("get_runtime_summary")
+        if summary_data and any(term in message_lower for term in ("three bullet", "3 bullet", "summarize")):
+            return "\n".join([
+                f"- Runtime is {summary_data.get('status', 'unknown')} with health {summary_data.get('health_score', 'N/A')}%.",
+                f"- Requests route through {summary_data.get('provider', 'automatic')} using {summary_data.get('model', 'automatic')}.",
+                f"- Knowledge contains {summary_data.get('knowledge_sources_count', 0)} sources and {summary_data.get('tools_count', 0)} connected tools.",
+            ])
+
+        parts: list[str] = []
 
         if diagnostics:
             parts.append(f"I found {len(diagnostics)} issue(s).\n")
@@ -234,7 +270,16 @@ class RuntimeAssistantExecutor:
                     parts.append(f"Monthly Cost: ${data.get('monthly_cost'):.2f}")
                 parts.append("")
 
+        if any(term in message_lower for term in ("optimize", "improve")) and not optimizations:
+            parts.extend([
+                "Your runtime has no urgent optimization finding right now.",
+                "Recommended next checks:",
+                "- Review latency and error trends in Analytics.",
+                "- Keep knowledge sources synchronized.",
+                "- Use dynamic routing to balance quality, latency, and cost.",
+            ])
+
         if not successful and not diagnostics:
             parts.append("I was unable to retrieve runtime data. Please try again.")
 
-        return "\n".join(parts)
+        return "\n".join(parts).strip()

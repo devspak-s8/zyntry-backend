@@ -76,12 +76,17 @@ class RuntimeAssistantService:
         response = executor.build_response(message, tool_results)
         response.context = context
 
-        recommendations = await RuntimeRecommendations(
-            self.uow, runtime_id, user_id
-        ).generate()
-        response.optimizations.extend(recommendations)
-
+        # Persist the answer before optional enrichment so transient optimizer
+        # failures never erase an otherwise successful conversation turn.
         await memory.save_chat_message("assistant", response.message)
+
+        try:
+            recommendations = await RuntimeRecommendations(
+                self.uow, runtime_id, user_id
+            ).generate()
+            response.optimizations.extend(recommendations)
+        except Exception:
+            logger.exception("Runtime Assistant recommendation enrichment failed")
 
         logger.info(
             "RuntimeAssistant chat completed",
