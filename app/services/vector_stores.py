@@ -69,10 +69,10 @@ class PgVectorStore(BaseVectorStore):
         if not vectors:
             return
         batches = [vectors[i : i + batch_size] for i in range(0, len(vectors), batch_size)]
-        await asyncio.gather(
-            *[self._upsert_batch(batch) for batch in batches],
-            return_exceptions=True,
-        )
+        # AsyncSession cannot execute concurrent statements safely. Sequential
+        # batches also ensure the original database error is never swallowed.
+        for batch in batches:
+            await self._upsert_batch(batch)
 
     async def _upsert_batch(self, vectors: list[dict[str, Any]]) -> None:
         if not vectors:

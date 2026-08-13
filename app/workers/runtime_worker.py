@@ -107,10 +107,16 @@ class RuntimeWorker:
                 await manager.broadcast({"type": "RuntimeReady", "runtime_id": str(self._runtime.id)})
         except Exception as e:
             if self._runtime:
-                await uow.runtimes.update(self._runtime, status="failed", error_message=str(e))
+                # A failed flush leaves the transaction unusable until rollback.
+                # Reload the runtime, then preserve the original build error.
+                runtime_id = self._runtime.id
+                await uow.session.rollback()
+                self._runtime = await uow.runtimes.get(runtime_id)
+                if self._runtime is not None:
+                    await uow.runtimes.update(self._runtime, status="failed", error_message=str(e))
                 await uow.session.commit()
                 from app.main import manager
-                await manager.broadcast({"type": "RuntimeFailed", "runtime_id": str(self._runtime.id), "error": str(e)})
+                await manager.broadcast({"type": "RuntimeFailed", "runtime_id": str(runtime_id), "error": str(e)})
             raise
         finally:
             if self._embedding_provider:
