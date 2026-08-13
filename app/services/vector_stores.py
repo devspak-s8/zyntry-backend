@@ -45,7 +45,7 @@ class PgVectorStore(BaseVectorStore):
                 text(
                     f"""
                     INSERT INTO {self._table_name} (id, project_id, document_id, vector, model, dimensions, metadata, external_id)
-                    VALUES (:id, :project_id, :document_id, :vector::vector, :model, :dimensions, :metadata, :external_id)
+                    VALUES (:id, :project_id, :document_id, CAST(:vector AS vector), :model, :dimensions, CAST(:metadata AS jsonb), :external_id)
                     ON CONFLICT (id) DO UPDATE SET
                         vector = EXCLUDED.vector::vector,
                         metadata = EXCLUDED.metadata,
@@ -60,7 +60,7 @@ class PgVectorStore(BaseVectorStore):
                     "vector": str(vec["vector"]),
                     "model": vec.get("model", ""),
                     "dimensions": vec.get("dimensions", len(vec["vector"])),
-                    "metadata": vec.get("metadata", {}),
+                    "metadata": json.dumps(vec.get("metadata", {})),
                     "external_id": vec.get("external_id"),
                 },
             )
@@ -81,7 +81,7 @@ class PgVectorStore(BaseVectorStore):
             text(
                 f"""
                 INSERT INTO {self._table_name} (id, project_id, document_id, vector, model, dimensions, metadata, external_id)
-                VALUES (:id, :project_id, :document_id, :vector::vector, :model, :dimensions, :metadata, :external_id)
+                VALUES (:id, :project_id, :document_id, CAST(:vector AS vector), :model, :dimensions, CAST(:metadata AS jsonb), :external_id)
                 ON CONFLICT (id) DO UPDATE SET
                     vector = EXCLUDED.vector::vector,
                     metadata = EXCLUDED.metadata,
@@ -97,7 +97,7 @@ class PgVectorStore(BaseVectorStore):
                     "vector": str(vec["vector"]),
                     "model": vec.get("model", ""),
                     "dimensions": vec.get("dimensions", len(vec["vector"])),
-                    "metadata": vec.get("metadata", {}),
+                    "metadata": json.dumps(vec.get("metadata", {})),
                     "external_id": vec.get("external_id"),
                 }
                 for vec in vectors
@@ -132,12 +132,12 @@ class PgVectorStore(BaseVectorStore):
             fulltext_where = f"AND content_tsv @@ to_tsquery('english', :ts_query)"
             sql = text(
                 f"""
-                SELECT id, project_id, document_id, 1 - (vector <=> :query::vector) AS similarity, metadata
+                SELECT id, project_id, document_id, 1 - (vector <=> CAST(:query AS vector)) AS similarity, metadata
                 {fulltext_clause}
                 FROM {self._table_name}
                 {filter_clause}
                 {fulltext_where}
-                ORDER BY vector <=> :query::vector
+                ORDER BY vector <=> CAST(:query AS vector)
                 LIMIT :limit
                 """
             )
@@ -147,10 +147,10 @@ class PgVectorStore(BaseVectorStore):
             result = await self._session.execute(
                 text(
                     f"""
-                    SELECT id, project_id, document_id, 1 - (vector <=> :query::vector) AS similarity, metadata
+                    SELECT id, project_id, document_id, 1 - (vector <=> CAST(:query AS vector)) AS similarity, metadata
                     FROM {self._table_name}
                     {filter_clause}
-                    ORDER BY vector <=> :query::vector
+                    ORDER BY vector <=> CAST(:query AS vector)
                     LIMIT :limit
                     """
                 ),

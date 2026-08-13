@@ -82,8 +82,9 @@ class RuntimeWorker:
 
     async def run(self) -> None:
         session, uow = await self._ensure_session()
+        runtime_id = uuid.UUID(self.runtime_id)
         try:
-            self._runtime = await uow.runtimes.get(uuid.UUID(self.runtime_id))
+            self._runtime = await uow.runtimes.get(runtime_id)
             if not self._runtime:
                 return
             await uow.runtime_build_chunks.delete_by_runtime(uuid.UUID(self.runtime_id))
@@ -109,7 +110,6 @@ class RuntimeWorker:
             if self._runtime:
                 # A failed flush leaves the transaction unusable until rollback.
                 # Reload the runtime, then preserve the original build error.
-                runtime_id = self._runtime.id
                 await uow.session.rollback()
                 self._runtime = await uow.runtimes.get(runtime_id)
                 if self._runtime is not None:
@@ -146,15 +146,20 @@ class RuntimeWorker:
                 log.completed_at = datetime.now(UTC)
                 await self._uow.runtime_build_logs.update(log, status="completed", completed_at=datetime.now(UTC))
             except Exception as e:
-                log.status = "failed"
-                log.error_message = str(e)
-                log.completed_at = datetime.now(UTC)
-                await self._uow.runtime_build_logs.update(
-                    log, status="failed", error_message=str(e), completed_at=datetime.now(UTC)
-                )
-                self._runtime.status = "failed"
-                self._runtime.error_message = str(e)
-                await self._uow.runtimes.update(self._runtime, status="failed", error_message=str(e))
+                # The stage may have failed during a flush, so rollback before
+                # attempting to persist its failure details.
+                log_id = log.id
+                runtime_id = self._runtime.id
+                await self._uow.session.rollback()
+                log = await self._uow.runtime_build_logs.get(log_id)
+                self._runtime = await self._uow.runtimes.get(runtime_id)
+                if log is not None:
+                    await self._uow.runtime_build_logs.update(
+                        log, status="failed", error_message=str(e), completed_at=datetime.now(UTC)
+                    )
+                if self._runtime is not None:
+                    await self._uow.runtimes.update(self._runtime, status="failed", error_message=str(e))
+                await self._uow.session.commit()
                 raise
         else:
             await asyncio.sleep(random.uniform(0.1, 0.5))
