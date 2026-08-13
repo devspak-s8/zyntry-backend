@@ -4,6 +4,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from fastapi.encoders import jsonable_encoder
+
 from app.repositories import UnitOfWork
 from app.schemas.runtime_assistant import (
     AssistantMessage,
@@ -76,9 +78,10 @@ class RuntimeAssistantMemory:
         await self.uow.commit()
 
     async def save_action(self, action_name: str, result: dict[str, Any]) -> None:
+        serialized_result = jsonable_encoder(result)
         action_record = {
             "action": action_name,
-            "result": result,
+            "result": serialized_result,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         self._previous_actions.append(action_record)
@@ -89,7 +92,7 @@ class RuntimeAssistantMemory:
             project_id=await self._project_id(),
             memory_type="action",
             key=action_name,
-            value={"runtime_id": self.runtime_id, "result": result, "timestamp": action_record["timestamp"]},
+            value={"runtime_id": self.runtime_id, "result": serialized_result, "timestamp": action_record["timestamp"]},
         )
         await self.uow.commit()
 

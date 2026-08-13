@@ -45,6 +45,14 @@ class RuntimeOptimizer:
             )
 
         by_model = summary.get("by_model", [])
+        if isinstance(by_model, dict):
+            by_model = [
+                {"model": model, "cost": cost}
+                for model, cost in by_model.items()
+            ]
+        elif not isinstance(by_model, list):
+            by_model = []
+        by_model = [entry for entry in by_model if isinstance(entry, dict)]
         if by_model:
             top_model = max(by_model, key=lambda x: x.get("cost", 0) or 0)
             if top_model and (top_model.get("cost", 0) or 0) > 30:
