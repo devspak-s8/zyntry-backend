@@ -153,7 +153,26 @@ jobs:
             echo "$GHCR_READ_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
             export API_IMAGE
             services="api worker beat runtime-assistant realtime"
+            mkdir -p deployment-backups
+            backup_file="deployment-backups/pre-pgvector-$(date -u +%Y%m%dT%H%M%SZ).sql.gz"
+            $compose exec -T postgres sh -lc 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB"' | gzip > "$backup_file"
+            test -s "$backup_file"
+            find deployment-backups -type f -name 'pre-pgvector-*.sql.gz' -mtime +14 -delete
+            $compose pull postgres
             $compose pull $services
+            $compose up -d --no-build postgres
+            postgres_healthy=false
+            for attempt in $(seq 1 30); do
+              if $compose exec -T postgres sh -lc 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"'; then
+                postgres_healthy=true
+                break
+              fi
+              sleep 2
+            done
+            if [ "$postgres_healthy" != "true" ]; then
+              $compose logs --tail=150 postgres
+              exit 1
+            fi
             $compose up -d --no-build $services
 
             $compose exec -T api python -c "from app.core.config import settings; assert all((settings.GITHUB_CLIENT_ID, settings.GITHUB_CLIENT_SECRET, settings.NOTION_CLIENT_ID, settings.NOTION_CLIENT_SECRET, settings.SLACK_CLIENT_ID, settings.SLACK_CLIENT_SECRET)), 'OAuth credentials were not injected into the API container'"
