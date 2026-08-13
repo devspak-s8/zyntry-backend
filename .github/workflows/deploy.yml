@@ -85,13 +85,13 @@ jobs:
       - name: Check out deployment configuration
         uses: actions/checkout@v4
 
-      - name: Upload deployment override
+      - name: Upload deployment configuration
         uses: appleboy/scp-action@v1
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          source: docker-compose.deploy.yml
+          source: docker-compose.yml,docker-compose.deploy.yml
           target: ${{ secrets.DEPLOY_PATH }}
           overwrite: true
 
@@ -173,10 +173,9 @@ jobs:
               $compose logs --tail=150 postgres
               exit 1
             fi
-            $compose up -d --no-build $services
-
-            $compose exec -T api python -c "from app.core.config import settings; assert all((settings.GITHUB_CLIENT_ID, settings.GITHUB_CLIENT_SECRET, settings.NOTION_CLIENT_ID, settings.NOTION_CLIENT_SECRET, settings.SLACK_CLIENT_ID, settings.SLACK_CLIENT_SECRET)), 'OAuth credentials were not injected into the API container'"
-            $compose exec -T api python -c "from app.core.config import settings; assert settings.APP_URL == '$DEPLOY_PUBLIC_API_URL' and settings.FRONTEND_URL == '$DEPLOY_PUBLIC_FRONTEND_URL', 'Public OAuth URLs were not injected into the API container'"
+            # Start the API first so migrations finish without every Python
+            # service competing for memory on a small EC2 instance.
+            $compose up -d --no-build api
 
             healthy=false
             for attempt in $(seq 1 30); do
@@ -204,5 +203,14 @@ jobs:
               fi
               exit 1
             fi
+
+            $compose exec -T api python -c "from app.core.config import settings; assert all((settings.GITHUB_CLIENT_ID, settings.GITHUB_CLIENT_SECRET, settings.NOTION_CLIENT_ID, settings.NOTION_CLIENT_SECRET, settings.SLACK_CLIENT_ID, settings.SLACK_CLIENT_SECRET)), 'OAuth credentials were not injected into the API container'"
+            $compose exec -T api python -c "from app.core.config import settings; assert settings.APP_URL == '$DEPLOY_PUBLIC_API_URL' and settings.FRONTEND_URL == '$DEPLOY_PUBLIC_FRONTEND_URL', 'Public OAuth URLs were not injected into the API container'"
+
+            # Roll out background services sequentially to avoid OOM kills.
+            for service in worker beat runtime-assistant realtime; do
+              $compose up -d --no-build "$service"
+              sleep 3
+            done
 
             docker image prune -f
