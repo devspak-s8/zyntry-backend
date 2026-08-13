@@ -7,6 +7,7 @@ from typing import Any
 
 from app.repositories import UnitOfWork
 from app.services.runtime_assistant.permissions import PermissionDeniedError, check_tool_permission
+from app.services.runtime_assistant.redaction import redact_sensitive
 from app.services.runtime_assistant.schemas import (
     ActionType,
     AssistantResponse,
@@ -63,6 +64,9 @@ class RuntimeAssistantExecutor:
                 continue
 
             executed = await self.tools_client.execute(call)
+            executed.arguments = redact_sensitive(executed.arguments)
+            executed.result = redact_sensitive(executed.result)
+            executed.error = redact_sensitive(executed.error)
             results.append(ToolExecutionResult(tool_call=executed, success=executed.status == "success"))
         return results
 

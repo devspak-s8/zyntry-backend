@@ -7,6 +7,7 @@ from typing import Any
 from fastapi.encoders import jsonable_encoder
 
 from app.repositories import UnitOfWork
+from app.services.runtime_assistant.redaction import redact_sensitive
 from app.schemas.runtime_assistant import (
     AssistantMessage,
     DiagnosticResult,
@@ -15,9 +16,20 @@ from app.schemas.runtime_assistant import (
 
 
 class RuntimeAssistantMemory:
-    def __init__(self, uow: UnitOfWork, runtime_id: str) -> None:
+    def __init__(
+        self,
+        uow: UnitOfWork,
+        runtime_id: str,
+        user_id: str = "system",
+        conversation_id: str | None = None,
+        create_new: bool = True,
+    ) -> None:
         self.uow = uow
         self.runtime_id = runtime_id
+        self.user_id = user_id
+        self.conversation_id = conversation_id or (
+            str(uuid.uuid4()) if create_new else None
+        )
         self._chat_history: list[AssistantMessage] = []
         self._previous_actions: list[dict[str, Any]] = []
         self._recommendations: list[dict[str, Any]] = []
@@ -36,9 +48,29 @@ class RuntimeAssistantMemory:
             memory_type=None,
             limit=self._max_history + 50,
         )
+        if self.conversation_id is None:
+            latest = next(
+                (
+                    record
+                    for record in memory_records
+                    if (record.value or {}).get("runtime_id") == self.runtime_id
+                    and (record.value or {}).get("user_id") == self.user_id
+                    and (record.value or {}).get("conversation_id")
+                ),
+                None,
+            )
+            if latest is None:
+                return
+            self.conversation_id = (latest.value or {}).get("conversation_id")
         memory_records = [
-            record for record in reversed(memory_records)
+            record
+            for record in reversed(memory_records)
             if (record.value or {}).get("runtime_id") == self.runtime_id
+            and (record.value or {}).get("user_id") == self.user_id
+            and (
+                self.conversation_id is None
+                or (record.value or {}).get("conversation_id") == self.conversation_id
+            )
         ]
         for record in memory_records:
             if record.memory_type == "chat":
@@ -63,7 +95,8 @@ class RuntimeAssistantMemory:
         self._recommendations = self._recommendations[-50:]
 
     async def save_chat_message(self, role: str, content: str) -> None:
-        message = AssistantMessage(role=role, content=content)
+        safe_content = redact_sensitive(content)
+        message = AssistantMessage(role=role, content=safe_content)
         self._chat_history.append(message)
         if len(self._chat_history) > self._max_history:
             self._chat_history = self._chat_history[-self._max_history :]
@@ -72,13 +105,18 @@ class RuntimeAssistantMemory:
             project_id=await self._project_id(),
             memory_type="chat",
             key=role,
-            content=content,
-            value={"runtime_id": self.runtime_id, "timestamp": message.timestamp.isoformat()},
+            content=safe_content,
+            value={
+                "runtime_id": self.runtime_id,
+                "user_id": self.user_id,
+                "conversation_id": self.conversation_id,
+                "timestamp": message.timestamp.isoformat(),
+            },
         )
         await self.uow.commit()
 
     async def save_action(self, action_name: str, result: dict[str, Any]) -> None:
-        serialized_result = jsonable_encoder(result)
+        serialized_result = redact_sensitive(jsonable_encoder(result))
         action_record = {
             "action": action_name,
             "result": serialized_result,
@@ -92,7 +130,13 @@ class RuntimeAssistantMemory:
             project_id=await self._project_id(),
             memory_type="action",
             key=action_name,
-            value={"runtime_id": self.runtime_id, "result": serialized_result, "timestamp": action_record["timestamp"]},
+            value={
+                "runtime_id": self.runtime_id,
+                "user_id": self.user_id,
+                "conversation_id": self.conversation_id,
+                "result": serialized_result,
+                "timestamp": action_record["timestamp"],
+            },
         )
         await self.uow.commit()
 
@@ -122,6 +166,8 @@ class RuntimeAssistantMemory:
             content=title,
             value={
                 "runtime_id": self.runtime_id,
+                "user_id": self.user_id,
+                "conversation_id": self.conversation_id,
                 "description": description,
                 "actions": actions,
                 "timestamp": recommendation["timestamp"],

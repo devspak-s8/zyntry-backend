@@ -18,6 +18,11 @@ from app.models.projects import Project
 from app.models.onboarding import ProviderConnection, OnboardingState
 from app.models.request_logs import RequestLog
 from app.models.runtimes import Runtime, RuntimeBuildChunk, RuntimeBuildLog
+from app.models.runtime_assistant import (
+    RuntimeAssistantConversation,
+    RuntimeAssistantEvidence,
+    RuntimeAssistantMessage,
+)
 from app.models.sessions import Session
 from app.models.tools import Tool
 from app.models.actions import ActionExecution, ActionConfirmation, ActionAuditLog
@@ -59,6 +64,9 @@ __all__ = [
     "Runtime",
     "RuntimeBuildLog",
     "RuntimeBuildChunk",
+    "RuntimeAssistantConversation",
+    "RuntimeAssistantMessage",
+    "RuntimeAssistantEvidence",
     "Notification",
     "HealthMetric",
     "RuntimeHealthCheck",

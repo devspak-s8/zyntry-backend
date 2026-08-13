@@ -17,6 +17,7 @@ from app.services.runtime_assistant.memory import RuntimeAssistantMemory
 from app.services.runtime_assistant.optimizer import RuntimeOptimizer
 from app.services.runtime_assistant.planner import RuntimeAssistantPlanner
 from app.services.runtime_assistant.recommendations import RuntimeRecommendations
+from app.services.runtime_assistant.records import RuntimeAssistantRecords, evidence_from_tool_results
 from app.services.runtime_assistant.schemas import (
     AssistantMessage,
     AssistantResponse,
@@ -43,6 +44,7 @@ class RuntimeAssistantService:
         user_role: str,
         message: str,
         stream: bool = False,
+        conversation_id: str | None = None,
     ) -> AssistantResponse | AsyncGenerator[str, None]:
         role = _parse_user_role(user_role)
         context_builder = RuntimeContextBuilder(
@@ -52,10 +54,28 @@ class RuntimeAssistantService:
             user_role=role.value,
         )
         context = await context_builder.build()
-        memory = RuntimeAssistantMemory(self.uow, runtime_id)
+        records = RuntimeAssistantRecords(self.session)
+        conversation = await records.resolve_conversation(
+            organization_id=uuid.UUID(context.organization_id),
+            project_id=uuid.UUID(context.project_id),
+            runtime_id=uuid.UUID(runtime_id),
+            user_id=uuid.UUID(user_id),
+            conversation_id=conversation_id,
+            title=message[:120],
+            environment=str(context.runtime.get("environment") or "production"),
+        )
+        memory = RuntimeAssistantMemory(
+            self.uow,
+            runtime_id,
+            user_id,
+            conversation_id=str(conversation.id),
+            create_new=False,
+        )
         await memory.load()
 
-        await memory.save_chat_message("user", message)
+        await records.add_message(
+            conversation, role="user", content=message, mode=_infer_mode(message)
+        )
 
         planner = RuntimeAssistantPlanner(
             context=context,
@@ -75,30 +95,40 @@ class RuntimeAssistantService:
 
         response = executor.build_response(message, tool_results)
         response.context = context
+        evidence = evidence_from_tool_results(tool_results)
         response.metadata.update(
             {
                 "assistant": "runtime_assistant",
                 "mode": _infer_mode(message),
-                "evidence": [
-                    {
-                        "tool": result.tool_call.name,
-                        "status": result.tool_call.status,
-                        "duration_ms": result.tool_call.duration_ms,
-                    }
-                    for result in tool_results
-                ],
+                "evidence": evidence,
                 "confidence": _evidence_confidence(tool_results),
                 "changes_applied": False,
                 "approval_required": any(
                     term in message.lower()
                     for term in ("enable", "disable", "change", "apply", "restart", "delete")
                 ),
+                "conversation_id": str(conversation.id),
             }
         )
 
         # Persist the answer before optional enrichment so transient optimizer
         # failures never erase an otherwise successful conversation turn.
-        await memory.save_chat_message("assistant", response.message)
+        assistant_record = await records.add_message(
+            conversation,
+            role="assistant",
+            content=response.message,
+            mode=_infer_mode(message),
+            confidence=response.metadata["confidence"],
+            metadata=response.metadata,
+        )
+        evidence_records = await records.add_evidence(
+            conversation, assistant_record, evidence
+        )
+        response.metadata["evidence"] = [
+            {**item, "id": str(record.id)}
+            for item, record in zip(evidence, evidence_records, strict=True)
+        ]
+        await self.session.commit()
 
         try:
             recommendations = await RuntimeRecommendations(
@@ -158,13 +188,40 @@ class RuntimeAssistantService:
             "error_count": health.error_count if health else 0,
         }
 
-    async def get_chat_history(self, runtime_id: str, limit: int = 20) -> list[AssistantMessage]:
-        memory = RuntimeAssistantMemory(self.uow, runtime_id)
+    async def get_chat_history(
+        self,
+        runtime_id: str,
+        user_id: str,
+        limit: int = 20,
+        conversation_id: str | None = None,
+    ) -> list[AssistantMessage]:
+        records = RuntimeAssistantRecords(self.session)
+        parsed_conversation = uuid.UUID(conversation_id) if conversation_id else None
+        messages = await records.history(
+            uuid.UUID(runtime_id), uuid.UUID(user_id), limit, parsed_conversation
+        )
+        if messages:
+            return [
+                AssistantMessage(
+                    role=item.role,
+                    content=item.content,
+                    timestamp=item.created_at,
+                    metadata={
+                        **(item.metadata_ or {}),
+                        "conversation_id": str(item.conversation_id),
+                        "message_id": str(item.id),
+                        "mode": item.mode,
+                        "confidence": item.confidence,
+                    },
+                )
+                for item in messages
+            ]
+        memory = RuntimeAssistantMemory(self.uow, runtime_id, user_id, create_new=False)
         await memory.load()
         return memory.get_chat_history(limit=limit)
 
     async def get_previous_actions(self, runtime_id: str, limit: int = 10) -> list[dict[str, Any]]:
-        memory = RuntimeAssistantMemory(self.uow, runtime_id)
+        memory = RuntimeAssistantMemory(self.uow, runtime_id, "system")
         await memory.load()
         return memory.get_previous_actions(limit=limit)
 

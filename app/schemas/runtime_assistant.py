@@ -157,6 +157,7 @@ class AssistantChatRequest(BaseModel):
     message: str
     runtime_id: str
     stream: bool = False
+    conversation_id: str | None = None
 
 
 class AssistantChatResponse(BaseModel):
@@ -166,3 +167,15 @@ class AssistantChatResponse(BaseModel):
     optimizations: list[OptimizationResult] = Field(default_factory=list)
     summary: RuntimeSummary | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    conversation_id: str | None = None
+
+
+class AssistantActionProposalRequest(BaseModel):
+    runtime_id: str
+    action: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+class AssistantActionConfirmationRequest(BaseModel):
+    runtime_id: str
+    confirm: bool
