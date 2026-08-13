@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.services.runtime_assistant.memory import RuntimeAssistantMemory
+from app.services.runtime_assistant.schemas import UserRole
+from app.services.runtime_assistant.service import _parse_user_role
 
 
 @pytest.mark.asyncio
@@ -26,3 +28,9 @@ async def test_chat_memory_uses_project_scope_and_text_content() -> None:
     assert kwargs["content"] == "What failed?"
     assert kwargs["value"]["runtime_id"] == str(runtime_id)
     assert "runtime_id" not in {key for key in kwargs if key != "value"}
+
+
+def test_runtime_assistant_accepts_role_values() -> None:
+    assert _parse_user_role("developer") is UserRole.DEVELOPER
+    assert _parse_user_role("owner") is UserRole.OWNER
+    assert _parse_user_role("unknown") is UserRole.VIEWER

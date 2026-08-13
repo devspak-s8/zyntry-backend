@@ -36,7 +36,7 @@ class AnalyticsService:
             metadata=data.metadata,
         )
         await self.uow.commit()
-        return {
+        result = {
             "id": str(event.id),
             "metric": event.metric,
             "quantity": event.quantity,
@@ -44,7 +44,12 @@ class AnalyticsService:
             "provider": event.provider,
             "project_id": str(event.project_id) if event.project_id else None,
             "created_at": event.created_at.isoformat() if event.created_at else None,
+            "metadata": event.metadata_ or {},
         }
+        from app.core.runtime_events import publish_runtime_event
+
+        await publish_runtime_event({"type": "analytics.usage.updated", **result})
+        return result
 
     async def get_summary(self, project_id: str) -> dict:
         return await self.uow.analytics.get_summary(project_id)

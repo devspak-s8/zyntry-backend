@@ -277,7 +277,47 @@ class BillingService:
             cost=cost,
             metadata=metadata or {},
         )
+        analytics_event = None
+        if project_id is not None:
+            analytics_event = await self.uow.analytics.create(
+                metric="runtime_invocation",
+                quantity=input_tokens + output_tokens + embedding_tokens,
+                model=model,
+                provider=provider,
+                project_id=project_id,
+                metadata={
+                    **(metadata or {}),
+                    "runtime_id": str(runtime_id) if runtime_id else None,
+                    "operation": operation,
+                    "requests": requests,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "embedding_tokens": embedding_tokens,
+                    "latency_ms": latency_ms,
+                    "cost": str(cost),
+                },
+            )
         await self.uow.commit()
+        if analytics_event is not None:
+            from app.core.runtime_events import publish_runtime_event
+
+            await publish_runtime_event(
+                {
+                    "type": "analytics.usage.updated",
+                    "id": str(analytics_event.id),
+                    "project_id": str(project_id),
+                    "runtime_id": str(runtime_id) if runtime_id else None,
+                    "metric": analytics_event.metric,
+                    "quantity": analytics_event.quantity,
+                    "provider": provider,
+                    "model": model,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "latency_ms": latency_ms,
+                    "cost": str(cost),
+                    "created_at": analytics_event.created_at.isoformat(),
+                }
+            )
         return log
 
     async def check_budget(self, user_id: uuid.UUID, estimated_cost: Decimal) -> bool:

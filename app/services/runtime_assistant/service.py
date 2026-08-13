@@ -43,7 +43,7 @@ class RuntimeAssistantService:
         message: str,
         stream: bool = False,
     ) -> AssistantResponse | AsyncGenerator[str, None]:
-        role = UserRole(user_role) if user_role in UserRole.__members__ else UserRole.VIEWER
+        role = _parse_user_role(user_role)
         context_builder = RuntimeContextBuilder(
             uow=self.uow,
             runtime_id=runtime_id,
@@ -145,7 +145,7 @@ class RuntimeAssistantService:
     async def run_diagnostics(
         self, runtime_id: str, user_id: str, user_role: str
     ) -> list[DiagnosticResult]:
-        role = UserRole(user_role) if user_role in UserRole.__members__ else UserRole.VIEWER
+        role = _parse_user_role(user_role)
         diagnostics = RuntimeDiagnostics(self.uow, runtime_id, user_id)
         return await diagnostics.run_full_diagnostics()
 
@@ -165,6 +165,13 @@ def _get_available_tools(user_role: UserRole) -> list[dict[str, Any]]:
 
     all_tools = [t.model_dump() for t in build_tool_definitions()]
     return filter_available_tools(user_role, all_tools)
+
+
+def _parse_user_role(user_role: str) -> UserRole:
+    try:
+        return UserRole(user_role.lower())
+    except (ValueError, AttributeError):
+        return UserRole.VIEWER
 
 
 async def get_runtime_assistant_service(

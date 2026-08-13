@@ -5,6 +5,7 @@ import pytest
 from unittest.mock import AsyncMock
 
 from app.services.runtimes import RuntimeService
+from app.services.health import HealthService
 
 
 class FakeRuntimeRepo:
@@ -50,3 +51,20 @@ async def test_enqueue_build_falls_back_to_active_when_celery_is_unavailable(mon
 
     assert result["status"] == "active"
     assert runtime.status == "active"
+
+
+@pytest.mark.asyncio
+async def test_runtime_health_contains_response_contract_fields():
+    runtime = SimpleNamespace(
+        id=uuid.uuid4(), status="active", health=100.0, version="1",
+        last_build_completed=None, last_propagated=None, documents=2,
+        chunks=4, embeddings=4, index_size=4,
+    )
+    uow = SimpleNamespace(
+        runtimes=SimpleNamespace(get=AsyncMock(return_value=runtime)),
+        session=SimpleNamespace(execute=AsyncMock(return_value=SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [])))),
+    )
+    health = await HealthService(uow).get_runtime_health(str(runtime.id))
+    assert health["version"] == "1"
+    assert health["documents"] == 2
+    assert health["errors"] == 0
