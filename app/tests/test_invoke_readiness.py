@@ -5,7 +5,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.api.v1.invoke.router import _charge_invoke_if_billable, _is_runtime_ready
+from app.api.v1.invoke.router import (
+    _catalog_token_cost,
+    _charge_invoke_if_billable,
+    _is_runtime_ready,
+)
 
 
 @pytest.mark.parametrize(
@@ -54,3 +58,14 @@ async def test_positive_cost_invoke_creates_wallet_debit():
     )
 
     billing.deduct_credit.assert_awaited_once()
+
+
+def test_catalog_cost_uses_routed_model_prices_and_wallet_precision():
+    candidate = SimpleNamespace(
+        model_info=SimpleNamespace(
+            input_price_per_1k=0.00015,
+            output_price_per_1k=0.0006,
+        )
+    )
+
+    assert _catalog_token_cost(candidate, input_tokens=10, output_tokens=20) == Decimal("0.0001")

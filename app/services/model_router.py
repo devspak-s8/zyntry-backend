@@ -58,6 +58,7 @@ class ModelRouter:
     def __init__(self, uow: Any) -> None:
         self.uow = uow
         self._latency_tracker: dict[str, list[float]] = {}
+        self.last_invoked_candidate: ModelCandidate | None = None
 
     async def route(self, preference: RoutingPreference, available_providers: dict[str, str]) -> ModelCandidate | None:
         candidates = await self._build_candidates(preference, available_providers)
@@ -105,6 +106,7 @@ class ModelRouter:
                 )
                 latency = (time.perf_counter() - start) * 1000
                 self.record_latency(candidate.provider_name, candidate.model_info.id, latency)
+                self.last_invoked_candidate = candidate
                 return result, candidate.model_info.id, candidate.provider_name, ""
             except Exception as exc:
                 last_error = str(exc)

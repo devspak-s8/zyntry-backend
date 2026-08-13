@@ -67,6 +67,26 @@ async def _charge_invoke_if_billable(
     )
 
 
+def _catalog_token_cost(
+    candidate: Any,
+    *,
+    input_tokens: int,
+    output_tokens: int,
+) -> Decimal:
+    if candidate is None:
+        return Decimal("0")
+    info = candidate.model_info
+    input_rate = Decimal(str(info.input_price_per_1k or 0))
+    output_rate = Decimal(str(info.output_price_per_1k or 0))
+    cost = (
+        input_rate * Decimal(input_tokens) / Decimal(1000)
+        + output_rate * Decimal(output_tokens) / Decimal(1000)
+    )
+    if cost > 0:
+        return max(cost, Decimal("0.0001"))
+    return Decimal("0")
+
+
 class InvokeRequest(BaseModel):
     project: str
     input: str
@@ -300,6 +320,12 @@ async def invoke(
         output_tokens=len(response_text.split()),
         requests=1,
     )
+    if actual_cost <= 0:
+        actual_cost = _catalog_token_cost(
+            router_service.last_invoked_candidate,
+            input_tokens=len(body.input.split()),
+            output_tokens=len(response_text.split()),
+        )
 
     try:
         await _charge_invoke_if_billable(
