@@ -21,14 +21,29 @@ class RuntimeAssistantMemory:
         self._recommendations: list[dict[str, Any]] = []
         self._max_history = 100
 
+    async def _project_id(self) -> uuid.UUID:
+        runtime = await self.uow.runtimes.get(uuid.UUID(self.runtime_id))
+        if runtime is None:
+            raise ValueError("Runtime not found")
+        return runtime.project_id
+
     async def load(self) -> None:
-        memory_records = await self.uow.memory_records.get_by_runtime(self.runtime_id)
+        project_id = await self._project_id()
+        memory_records = await self.uow.memory_records.list_by_scope(
+            project_id=project_id,
+            memory_type=None,
+            limit=self._max_history + 50,
+        )
+        memory_records = [
+            record for record in reversed(memory_records)
+            if (record.value or {}).get("runtime_id") == self.runtime_id
+        ]
         for record in memory_records:
             if record.memory_type == "chat":
                 self._chat_history.append(
                     AssistantMessage(
                         role=record.key or "user",
-                        content=record.value or "",
+                        content=record.content or "",
                         timestamp=record.created_at or datetime.now(timezone.utc),
                     )
                 )
@@ -52,11 +67,11 @@ class RuntimeAssistantMemory:
             self._chat_history = self._chat_history[-self._max_history :]
 
         await self.uow.memory_records.create(
-            runtime_id=uuid.UUID(self.runtime_id),
+            project_id=await self._project_id(),
             memory_type="chat",
             key=role,
-            value=content,
-            metadata={"timestamp": message.timestamp.isoformat()},
+            content=content,
+            value={"runtime_id": self.runtime_id, "timestamp": message.timestamp.isoformat()},
         )
         await self.uow.commit()
 
@@ -71,11 +86,10 @@ class RuntimeAssistantMemory:
             self._previous_actions = self._previous_actions[-50:]
 
         await self.uow.memory_records.create(
-            runtime_id=uuid.UUID(self.runtime_id),
+            project_id=await self._project_id(),
             memory_type="action",
             key=action_name,
-            value=str(result),
-            metadata={"timestamp": action_record["timestamp"]},
+            value={"runtime_id": self.runtime_id, "result": result, "timestamp": action_record["timestamp"]},
         )
         await self.uow.commit()
 
@@ -99,11 +113,12 @@ class RuntimeAssistantMemory:
             self._recommendations = self._recommendations[-50:]
 
         await self.uow.memory_records.create(
-            runtime_id=uuid.UUID(self.runtime_id),
+            project_id=await self._project_id(),
             memory_type="recommendation",
             key=category,
-            value=title,
-            metadata={
+            content=title,
+            value={
+                "runtime_id": self.runtime_id,
                 "description": description,
                 "actions": actions,
                 "timestamp": recommendation["timestamp"],
