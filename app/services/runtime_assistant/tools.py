@@ -282,6 +282,52 @@ async def _get_deployment_status(self: RuntimeAssistantTools) -> dict[str, Any]:
     }
 
 
+async def _get_change_history(
+    self: RuntimeAssistantTools, limit: int = 20
+) -> dict[str, Any]:
+    from sqlalchemy import select
+    from app.models.actions import ActionAuditLog
+    from app.models.runtimes import RuntimeBuildLog
+
+    runtime = await self.uow.runtimes.get(uuid.UUID(self.runtime_id))
+    if not runtime:
+        raise ValueError("Runtime not found")
+    actions_result = await self.uow.session.execute(
+        select(ActionAuditLog)
+        .where(ActionAuditLog.project_id == runtime.project_id)
+        .order_by(ActionAuditLog.created_at.desc())
+        .limit(limit)
+    )
+    builds_result = await self.uow.session.execute(
+        select(RuntimeBuildLog)
+        .where(RuntimeBuildLog.runtime_id == runtime.id)
+        .order_by(RuntimeBuildLog.created_at.desc())
+        .limit(limit)
+    )
+    actions = [
+        {
+            "action": item.action,
+            "status": item.status,
+            "arguments": item.arguments or {},
+            "result": item.result,
+            "user_id": str(item.user_id),
+            "created_at": item.created_at.isoformat(),
+        }
+        for item in actions_result.scalars().all()
+    ]
+    builds = [
+        {
+            "stage": item.stage,
+            "status": item.status,
+            "started_at": item.started_at.isoformat(),
+            "completed_at": item.completed_at.isoformat() if item.completed_at else None,
+            "metadata": item.metadata_ or {},
+        }
+        for item in builds_result.scalars().all()
+    ]
+    return {"actions": actions, "deployments": builds}
+
+
 async def _enable_dynamic_routing(self: RuntimeAssistantTools) -> dict[str, Any]:
     from app.schemas.runtimes import RuntimeUpdate
 
@@ -555,6 +601,7 @@ _TOOL_MAP: dict[str, Any] = {
     "get_billing": _get_billing,
     "get_security_settings": _get_security_settings,
     "get_deployment_status": _get_deployment_status,
+    "get_change_history": _get_change_history,
     "enable_dynamic_routing": _enable_dynamic_routing,
     "disable_dynamic_routing": _disable_dynamic_routing,
     "change_default_provider": _change_default_provider,

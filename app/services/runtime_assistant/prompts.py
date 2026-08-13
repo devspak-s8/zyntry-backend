@@ -344,6 +344,13 @@ def build_tool_definitions() -> list[ToolDefinition]:
             action_type=ActionType.READ,
         ),
         ToolDefinition(
+            name="get_change_history",
+            description="Get recent audited project changes and runtime deployments",
+            parameters={"limit": {"type": "integer", "default": 20}},
+            required_permission=UserRole.VIEWER,
+            action_type=ActionType.READ,
+        ),
+        ToolDefinition(
             name="enable_dynamic_routing",
             description="Enable dynamic model routing",
             parameters={},

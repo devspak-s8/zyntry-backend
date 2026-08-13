@@ -55,9 +55,12 @@ class RuntimeAssistantPlanner:
             if "get_runtime_config" in self.tool_map:
                 tool_calls.append(ToolCall(id=self._generate_id(), name="get_runtime_config", arguments={}))
 
-        elif "json" in message_lower:
-            reasoning_parts.append("User requested a JSON runtime report.")
-            tool_calls.extend(self._plan_report("json"))
+        elif any(k in message_lower for k in ["what changed", "changed before", "recent change", "who changed", "configuration history", "deployment history"]):
+            reasoning_parts.append("User is investigating runtime change history.")
+            if "get_change_history" in self.tool_map:
+                tool_calls.append(ToolCall(id=self._generate_id(), name="get_change_history", arguments={"limit": 20}))
+            if "get_runtime_health" in self.tool_map:
+                tool_calls.append(ToolCall(id=self._generate_id(), name="get_runtime_health", arguments={}))
 
         elif any(k in message_lower for k in ["summary", "overview", "status", "health"]):
             reasoning_parts.append("User is asking for runtime overview.")

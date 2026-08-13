@@ -210,6 +210,31 @@ class RuntimeAssistantExecutor:
         }
         message_lower = user_message.lower()
 
+        if "get_change_history" in result_map:
+            history = result_map["get_change_history"]
+            actions = history.get("actions") or []
+            deployments = history.get("deployments") or []
+            if not actions and not deployments:
+                return (
+                    "I found no recorded configuration changes or deployments for this runtime. "
+                    "I cannot truthfully identify what changed before latency increased without historical evidence."
+                )
+            lines = ["Recent evidence before the latency change:"]
+            for action in actions[:5]:
+                lines.append(
+                    f"- {action.get('created_at')}: {action.get('action')} "
+                    f"({action.get('status')}) by user {action.get('user_id')}."
+                )
+            for deployment in deployments[:5]:
+                lines.append(
+                    f"- {deployment.get('started_at')}: runtime stage "
+                    f"{deployment.get('stage')} ({deployment.get('status')})."
+                )
+            lines.append(
+                "This is chronological evidence; correlation with latency requires matching telemetry timestamps."
+            )
+            return "\n".join(lines)
+
         if "generate_report" in result_map:
             report = result_map["generate_report"]
             if report.get("format") == "json":
