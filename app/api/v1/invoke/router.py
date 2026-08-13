@@ -46,6 +46,27 @@ def _is_runtime_ready(status_val: Any) -> bool:
     return norm_status not in {"failed", "cancelled"}
 
 
+async def _charge_invoke_if_billable(
+    billing_service: BillingService,
+    *,
+    user_id: uuid.UUID,
+    amount: Decimal,
+    reason: str,
+    reference_id: str,
+    metadata: dict[str, Any],
+) -> None:
+    """Do not create an invalid zero-value debit when pricing is not configured."""
+    if amount <= Decimal("0"):
+        return
+    await billing_service.deduct_credit(
+        user_id=user_id,
+        amount=amount,
+        reason=reason,
+        reference_id=reference_id,
+        metadata=metadata,
+    )
+
+
 class InvokeRequest(BaseModel):
     project: str
     input: str
@@ -281,7 +302,8 @@ async def invoke(
     )
 
     try:
-        await billing_service.deduct_credit(
+        await _charge_invoke_if_billable(
+            billing_service,
             user_id=current_user.id,
             amount=actual_cost,
             reason=f"Invoke: {model_name}",
