@@ -49,19 +49,12 @@ async def list_logs(
         RequestLogRead(
             id=l.id,
             project_id=l.project_id,
-            request_id=l.request_id,
             method=l.method,
-            endpoint=l.endpoint,
-            status=l.status,
+            path=l.endpoint,
+            status_code=l.status,
             latency_ms=l.latency_ms,
-            tokens=l.tokens,
-            provider=l.provider,
+            tokens_used=l.tokens or 0,
             model=l.model,
-            cost=l.cost,
-            started_at=l.started_at,
-            completed_at=l.completed_at,
-            user_id=l.user_id,
-            ip=l.ip,
             created_at=l.created_at.isoformat() if l.created_at else "",
         )
         for l in logs

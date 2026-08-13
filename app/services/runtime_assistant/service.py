@@ -24,6 +24,7 @@ from app.services.runtime_assistant.schemas import (
     OptimizationResult,
     RuntimeContext,
     ToolCall,
+    ToolDefinition,
     UserRole,
 )
 
@@ -159,12 +160,14 @@ class RuntimeAssistantService:
         yield response.message
 
 
-def _get_available_tools(user_role: UserRole) -> list[dict[str, Any]]:
+def _get_available_tools(user_role: UserRole) -> list[ToolDefinition]:
     from app.services.runtime_assistant.prompts import build_tool_definitions
     from app.services.runtime_assistant.permissions import filter_available_tools
 
-    all_tools = [t.model_dump() for t in build_tool_definitions()]
-    return filter_available_tools(user_role, all_tools)
+    all_tools = build_tool_definitions()
+    allowed = filter_available_tools(user_role, [tool.model_dump() for tool in all_tools])
+    allowed_names = {tool["name"] for tool in allowed}
+    return [tool for tool in all_tools if tool.name in allowed_names]
 
 
 def _parse_user_role(user_role: str) -> UserRole:
