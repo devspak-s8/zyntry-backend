@@ -45,7 +45,7 @@ class PgVectorStore(BaseVectorStore):
                 text(
                     f"""
                     INSERT INTO {self._table_name} (id, project_id, document_id, vector, vector_native, model, dimensions, metadata, external_id)
-                    VALUES (:id, :project_id, :document_id, CAST(:vector AS jsonb), CAST(:vector AS vector), :model, :dimensions, CAST(:metadata AS jsonb), :external_id)
+                    VALUES (:id, :project_id, :document_id, CAST(:vector_json AS jsonb), CAST(:vector_text AS vector), :model, :dimensions, CAST(:metadata AS jsonb), :external_id)
                     ON CONFLICT (id) DO UPDATE SET
                         vector = EXCLUDED.vector,
                         vector_native = EXCLUDED.vector_native,
@@ -58,7 +58,8 @@ class PgVectorStore(BaseVectorStore):
                     "id": vec["id"],
                     "project_id": vec["project_id"],
                     "document_id": vec.get("document_id"),
-                    "vector": json.dumps(vec["vector"]),
+                    "vector_json": json.dumps(vec["vector"]),
+                    "vector_text": str(vec["vector"]),
                     "model": vec.get("model", ""),
                     "dimensions": vec.get("dimensions", len(vec["vector"])),
                     "metadata": json.dumps(vec.get("metadata", {})),
@@ -82,7 +83,7 @@ class PgVectorStore(BaseVectorStore):
             text(
                 f"""
                 INSERT INTO {self._table_name} (id, project_id, document_id, vector, vector_native, model, dimensions, metadata, external_id)
-                VALUES (:id, :project_id, :document_id, CAST(:vector AS jsonb), CAST(:vector AS vector), :model, :dimensions, CAST(:metadata AS jsonb), :external_id)
+                VALUES (:id, :project_id, :document_id, CAST(:vector_json AS jsonb), CAST(:vector_text AS vector), :model, :dimensions, CAST(:metadata AS jsonb), :external_id)
                 ON CONFLICT (id) DO UPDATE SET
                     vector = EXCLUDED.vector,
                     vector_native = EXCLUDED.vector_native,
@@ -96,7 +97,8 @@ class PgVectorStore(BaseVectorStore):
                     "id": vec["id"],
                     "project_id": vec["project_id"],
                     "document_id": vec.get("document_id"),
-                    "vector": json.dumps(vec["vector"]),
+                    "vector_json": json.dumps(vec["vector"]),
+                    "vector_text": str(vec["vector"]),
                     "model": vec.get("model", ""),
                     "dimensions": vec.get("dimensions", len(vec["vector"])),
                     "metadata": json.dumps(vec.get("metadata", {})),
