@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -55,7 +56,17 @@ async def lifespan(app: FastAPI):
                 f"for production: {', '.join(missing)}"
             )
             raise RuntimeError(msg)
-    yield
+    from app.core.runtime_events import consume_runtime_events
+
+    runtime_event_task = asyncio.create_task(consume_runtime_events(manager.broadcast))
+    try:
+        yield
+    finally:
+        runtime_event_task.cancel()
+        try:
+            await runtime_event_task
+        except asyncio.CancelledError:
+            pass
 
 
 class ConnectionManager:

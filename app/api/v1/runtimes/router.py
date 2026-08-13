@@ -213,7 +213,10 @@ async def list_runtime_logs(
         raise HTTPException(status_code=404, detail="Runtime not found")
     await require_project_membership(str(runtime.project_id), current_user, db)
     result = await db.execute(
-        select(RuntimeBuildLog).where(RuntimeBuildLog.runtime_id == rid).order_by(RuntimeBuildLog.created_at.asc())
+        select(RuntimeBuildLog)
+        .where(RuntimeBuildLog.runtime_id == rid)
+        .order_by(RuntimeBuildLog.created_at.desc())
+        .limit(250)
     )
     logs = result.scalars().all()
     return [

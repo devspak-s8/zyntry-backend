@@ -46,6 +46,7 @@ class RuntimeWorker:
     def __init__(self, runtime_id: str, trigger: str = "manual") -> None:
         self.runtime_id = runtime_id
         self.trigger = trigger
+        self.build_id = str(uuid.uuid4())
         self._session: AsyncSession | None = None
         self._session_gen: Any = None
         self._uow: UnitOfWork | None = None
@@ -88,10 +89,9 @@ class RuntimeWorker:
             if not self._runtime:
                 return
             await uow.runtime_build_chunks.delete_by_runtime(uuid.UUID(self.runtime_id))
-            await uow.runtime_build_logs.delete_by_runtime(uuid.UUID(self.runtime_id))
             await uow.session.commit()
-            from app.main import manager
-            await manager.broadcast({"type": "RuntimeStarted", "runtime_id": str(self._runtime.id)})
+            from app.core.runtime_events import publish_runtime_event
+            await publish_runtime_event({"type": "RuntimeStarted", "runtime_id": str(self._runtime.id)})
             for stage in RUNTIME_STAGES:
                 if self._runtime.status == "cancelled":
                     break
@@ -104,8 +104,8 @@ class RuntimeWorker:
                 if project:
                     await uow.projects.update(project, has_built_runtime=True)
                 await uow.session.commit()
-                from app.main import manager
-                await manager.broadcast({"type": "RuntimeReady", "runtime_id": str(self._runtime.id)})
+                await publish_runtime_event({"type": "RuntimeReady", "runtime_id": str(self._runtime.id)})
+                await self._notify_runtime_ready(project)
         except Exception as e:
             if self._runtime:
                 # A failed flush leaves the transaction unusable until rollback.
@@ -115,8 +115,8 @@ class RuntimeWorker:
                 if self._runtime is not None:
                     await uow.runtimes.update(self._runtime, status="failed", error_message=str(e))
                 await uow.session.commit()
-                from app.main import manager
-                await manager.broadcast({"type": "RuntimeFailed", "runtime_id": str(runtime_id), "error": str(e)})
+                from app.core.runtime_events import publish_runtime_event
+                await publish_runtime_event({"type": "RuntimeFailed", "runtime_id": str(runtime_id), "error": str(e)})
             raise
         finally:
             if self._embedding_provider:
@@ -133,18 +133,27 @@ class RuntimeWorker:
             stage=stage,
             status="started",
             started_at=start_time,
-            metadata_={"trigger": self.trigger},
+            metadata_={"trigger": self.trigger, "build_id": self.build_id},
         )
         await self._uow.session.commit()
-        from app.main import manager
-        await manager.broadcast({"type": _stage_event(stage), "runtime_id": str(self._runtime.id), "stage": stage})
+        from app.core.runtime_events import publish_runtime_event
+        await publish_runtime_event({"type": _stage_event(stage), "runtime_id": str(self._runtime.id), "stage": stage})
         stage_method = getattr(self, f"_stage_{stage}", None)
         if stage_method:
             try:
                 await stage_method()
                 log.status = "completed"
                 log.completed_at = datetime.now(UTC)
-                await self._uow.runtime_build_logs.update(log, status="completed", completed_at=datetime.now(UTC))
+                completed_at = datetime.now(UTC)
+                await self._uow.runtime_build_logs.update(
+                    log,
+                    status="completed",
+                    completed_at=completed_at,
+                    metadata_={
+                        **(log.metadata_ or {}),
+                        "duration_ms": int((completed_at - start_time).total_seconds() * 1000),
+                    },
+                )
             except Exception as e:
                 # The stage may have failed during a flush, so rollback before
                 # attempting to persist its failure details.
@@ -155,7 +164,14 @@ class RuntimeWorker:
                 self._runtime = await self._uow.runtimes.get(runtime_id)
                 if log is not None:
                     await self._uow.runtime_build_logs.update(
-                        log, status="failed", error_message=str(e), completed_at=datetime.now(UTC)
+                        log,
+                        status="failed",
+                        error_message=str(e),
+                        completed_at=datetime.now(UTC),
+                        metadata_={
+                            **(log.metadata_ or {}),
+                            "duration_ms": int((datetime.now(UTC) - start_time).total_seconds() * 1000),
+                        },
                     )
                 if self._runtime is not None:
                     await self._uow.runtimes.update(self._runtime, status="failed", error_message=str(e))
@@ -165,7 +181,16 @@ class RuntimeWorker:
             await asyncio.sleep(random.uniform(0.1, 0.5))
             log.status = "completed"
             log.completed_at = datetime.now(UTC)
-            await self._uow.runtime_build_logs.update(log, status="completed", completed_at=datetime.now(UTC))
+            completed_at = datetime.now(UTC)
+            await self._uow.runtime_build_logs.update(
+                log,
+                status="completed",
+                completed_at=completed_at,
+                metadata_={
+                    **(log.metadata_ or {}),
+                    "duration_ms": int((completed_at - start_time).total_seconds() * 1000),
+                },
+            )
         await self._uow.session.commit()
 
     async def _stage_collect_sources(self) -> None:
@@ -388,6 +413,24 @@ class RuntimeWorker:
         self._runtime.last_build_completed = datetime.now(UTC)
         await self._uow.runtimes.update(self._runtime, last_build_completed=datetime.now(UTC))
         await self._uow.commit()
+
+    async def _notify_runtime_ready(self, project: Any | None) -> None:
+        if not self._runtime:
+            return
+        from sqlalchemy import select
+
+        from app.models.users import User
+        from app.services.notifications.publishers import send_runtime_ready
+
+        result = await self._uow.session.execute(
+            select(User.email).where(
+                User.organization_id == self._runtime.organization_id,
+                User.is_active.is_(True),
+            )
+        )
+        runtime_name = project.name if project else f"Runtime {str(self._runtime.id)[:8]}"
+        for email in set(result.scalars().all()):
+            await send_runtime_ready(email, runtime_name)
 
     async def _update_runtime_status(self, status: str) -> None:
         if not self._runtime:
