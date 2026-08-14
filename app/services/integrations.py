@@ -82,6 +82,7 @@ class IntegrationService:
 
         return {
             "provider": provider,
+            "project_id": project_id,
             "purpose": purpose,
             "oauth_connection_id": oauth_connection_id,
             "tool_id": tool_id,

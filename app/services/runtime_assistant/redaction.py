@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import re
+import uuid
+from datetime import date, datetime
+from decimal import Decimal
+from enum import Enum
 from typing import Any
 
 
@@ -34,7 +38,15 @@ def redact_sensitive(value: Any) -> Any:
     if isinstance(value, list):
         return [redact_sensitive(item) for item in value]
     if isinstance(value, tuple):
-        return tuple(redact_sensitive(item) for item in value)
+        return [redact_sensitive(item) for item in value]
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, Enum):
+        return redact_sensitive(value.value)
     if isinstance(value, str):
         value = _BEARER.sub(r"\1[REDACTED]", value)
         return _ZYNTRY_KEY.sub("[REDACTED]", value)

@@ -5,6 +5,7 @@ import uuid
 import pytest
 
 from app.services.runtime_assistant.memory import RuntimeAssistantMemory
+from datetime import datetime, timezone
 
 
 def test_redacts_nested_credentials_and_bearer_tokens() -> None:
@@ -23,6 +24,13 @@ def test_redacts_nested_credentials_and_bearer_tokens() -> None:
     assert result["nested"]["client_secret"] == "[REDACTED]"
     assert "abc.def.ghi" not in result["nested"]["message"]
     assert result["items"][0]["api-key"] == "[REDACTED]"
+
+
+def test_redaction_normalizes_json_unsafe_runtime_values() -> None:
+    now = datetime.now(timezone.utc)
+    result = redact_sensitive({"observed_at": now, "id": uuid.uuid4()})
+    assert result["observed_at"] == now.isoformat()
+    assert isinstance(result["id"], str)
 
 
 @pytest.mark.asyncio

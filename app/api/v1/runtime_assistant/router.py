@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 import json
+import logging
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -26,6 +27,7 @@ from app.services.runtime_assistant.schemas import UserRole
 from app.services.runtime_assistant.service import RuntimeAssistantService
 
 router = APIRouter(prefix="/runtime-assistant", tags=["runtime-assistant"])
+logger = logging.getLogger(__name__)
 
 
 def _user_role(current_user: User) -> UserRole:
@@ -155,6 +157,10 @@ async def stream_assistant_chat(
             yield encode("result", payload)
             yield encode("done", {"conversation_id": payload.get("conversation_id")})
         except Exception:
+            logger.exception(
+                "Runtime Assistant streamed investigation failed",
+                extra={"runtime_id": body.runtime_id, "user_id": str(current_user.id)},
+            )
             yield encode(
                 "error",
                 {"message": "Runtime investigation failed. No changes were applied."},

@@ -153,6 +153,7 @@ async def test_both_purpose_reuses_one_oauth_connection_for_tool_and_source() ->
 
     assert result["tool_id"]
     assert result["source_id"]
+    assert result["project_id"] == project_id
     tool_schema = uow.tools.create.await_args.kwargs["schema"]
     source_config = uow.knowledge_sources.create.await_args.kwargs["config"]
     assert tool_schema["_zyntry_connection"]["oauth_connection_id"] == "oauth-shared"
