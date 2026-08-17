@@ -394,6 +394,39 @@ DEFINITIONS: dict[str, IntegrationDefinition] = {
         required_scopes=[],
         documentation_url="https://docs.zyntry.space/integrations/mcp",
     ),
+    "document_storage": IntegrationDefinition(
+        id="int_document_storage",
+        slug="document_storage",
+        name="Uploaded Documents",
+        description="Upload and index PDFs, Markdown, Word documents, and text files for RAG retrieval.",
+        category="knowledge",
+        icon="file-text",
+        enabled=True,
+        supported_connection_modes=["zyntry_managed"],
+        authentication_methods=["none"],
+        capabilities=[
+            IntegrationCapability(
+                slug="document_indexing",
+                name="Document Indexing",
+                description="Parse, chunk, and embed uploaded documents for vector search.",
+                is_write=False,
+            ),
+            IntegrationCapability(
+                slug="document_search",
+                name="Document Search",
+                description="Semantic search across indexed documents for RAG retrieval.",
+                is_write=False,
+            ),
+            IntegrationCapability(
+                slug="document_upload",
+                name="Document Upload",
+                description="Upload new documents (PDF, MD, DOCX, TXT) to the runtime knowledge base.",
+                is_write=True,
+            ),
+        ],
+        required_scopes=[],
+        documentation_url="https://docs.zyntry.space/integrations/document-storage",
+    ),
 }
 
 

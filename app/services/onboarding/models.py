@@ -127,8 +127,11 @@ class FastOnboardingModelProvider:
         # -------------------------------------------------------------
         if current_state in ("discovering_use_case", "discovering_application_type"):
             detected_integrations = self._detect_integrations(msg_lower)
-            if not detected_integrations and config.get("integrations"):
-                detected_integrations = config["integrations"]
+            # Merge with previously-detected integrations so nothing is lost
+            existing = list(config.get("integrations", []))
+            for slug in existing:
+                if slug not in detected_integrations:
+                    detected_integrations.append(slug)
 
             # Handle "Not sure yet" or unsure input gracefully without looping
             if "not sure" in msg_lower or "unsure" in msg_lower or "default" in msg_lower or "skip" in msg_lower:
@@ -155,7 +158,7 @@ class FastOnboardingModelProvider:
 
             if detected_integrations:
                 caps = {slug: self._default_capabilities(slug) for slug in detected_integrations}
-                integ_names = ", ".join(slug.title() for slug in detected_integrations)
+                integ_names = ", ".join(slug.replace('_', ' ').title() for slug in detected_integrations)
                 return OnboardingModelResponse(
                     text=(
                         f"{desc}\n\n"
@@ -188,8 +191,11 @@ class FastOnboardingModelProvider:
         # -------------------------------------------------------------
         if current_state in ("selecting_integrations", "selecting_capabilities"):
             detected_integrations = self._detect_integrations(msg_lower)
-            if not detected_integrations and config.get("integrations"):
-                detected_integrations = config["integrations"]
+            # Merge with previously-detected integrations so nothing is lost
+            existing = list(config.get("integrations", []))
+            for slug in existing:
+                if slug not in detected_integrations:
+                    detected_integrations.append(slug)
             if not detected_integrations:
                 detected_integrations = ["github", "slack"]
 
@@ -307,6 +313,10 @@ class FastOnboardingModelProvider:
         if "gmail" in msg or "mail" in msg:
             if "gmail" not in found:
                 found.append("gmail")
+        # Detect document upload / RAG as a document_storage capability
+        if any(k in msg for k in ["document", "documentation", "upload", "docs", "pdf", "rag"]):
+            if "document_storage" not in found:
+                found.append("document_storage")
         return list(dict.fromkeys(found))
 
     def _default_capabilities(self, slug: str) -> list[str]:

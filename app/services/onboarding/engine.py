@@ -284,24 +284,26 @@ class OnboardingEngine:
     def _validate_integrations_and_transition(
         self, config: dict[str, Any], proposed_data: dict[str, Any]
     ) -> tuple[dict[str, Any], str]:
+        # Merge NEW integrations with EXISTING ones (accumulate across steps)
+        existing_integrations = list(config.get("integrations", []))
+        existing_capabilities = dict(config.get("capabilities", {}))
         raw_integrations = proposed_data.get("integrations", [])
-        valid_integrations = []
-        valid_capabilities = {}
 
         for slug in raw_integrations:
             defn = integration_registry.get(slug)
             if defn:
-                valid_integrations.append(defn.slug)
+                if defn.slug not in existing_integrations:
+                    existing_integrations.append(defn.slug)
                 req_caps = proposed_data.get("capabilities", {}).get(defn.slug)
                 all_caps = [c.slug for c in defn.capabilities]
                 if req_caps:
                     valid_caps = [c for c in req_caps if c in all_caps]
                 else:
                     valid_caps = [c.slug for c in defn.capabilities if not c.is_write]
-                valid_capabilities[defn.slug] = valid_caps
+                existing_capabilities[defn.slug] = valid_caps
 
-        config["integrations"] = valid_integrations
-        config["capabilities"] = valid_capabilities
+        config["integrations"] = existing_integrations
+        config["capabilities"] = existing_capabilities
         return config, "configuring_runtime"
 
     def get_suggested_actions_for_state(self, state: str) -> list[str]:
