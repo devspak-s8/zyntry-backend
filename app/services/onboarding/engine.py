@@ -45,10 +45,14 @@ class OnboardingEngine:
         self.integration_service = IntegrationService(uow)
 
     async def get_or_create_session(
-        self, user_id: UUID, initial_prompt: str | None = None
+        self, user_id: UUID, initial_prompt: str | None = None, reset: bool = False
     ) -> OnboardingSession:
+        if reset:
+            await self.uow.onboarding_sessions.cancel_all_active_by_user(user_id)
+            await self.uow.commit()
+
         session = await self.uow.onboarding_sessions.get_latest_active_by_user(user_id)
-        if session:
+        if session and not reset:
             return session
 
         welcome_msg = {
@@ -115,6 +119,7 @@ class OnboardingEngine:
                 configuration=session.configuration,
                 is_complete=True,
                 suggested_actions=["Generate API Key", "Go to Runtime Console"],
+                proposed_runtime=session.configuration,
             )
 
         # Append user message
@@ -135,7 +140,56 @@ class OnboardingEngine:
             history=messages,
         )
 
-        # Step 2: Backend Authorizes & Validates LLM Proposals
+        # Step 2: Check for direct execution / confirmation
+        msg_lower = req.message.lower().strip()
+        is_confirmation = (
+            ai_resp.proposed_intent == "execute_provisioning"
+            or (session.state in ("confirming_configuration", "configuring_runtime") and any(
+                k in msg_lower for k in ["confirm", "create runtime", "create", "yes", "looks good", "let's do it", "provision"]
+            ))
+        )
+
+        if is_confirmation:
+            # Auto-provision the runtime directly and complete session
+            complete_res = await self.complete_onboarding(
+                user_id=user_id,
+                req=OnboardingCompleteRequest(session_id=str(session.id)),
+            )
+            integs_str = ", ".join(i.get("integration_slug", "").title() for i in complete_res.enabled_integrations) or "Standard"
+            completion_text = (
+                "**Your runtime is ready!**\n\n"
+                f"**Runtime:** {complete_res.runtime_name}\n"
+                f"**Status:** Active\n"
+                f"**Environment:** {complete_res.environment.capitalize()}\n"
+                f"**Enabled Integrations:** {integs_str}\n\n"
+                "**Next step:** Generate an API key to connect your application."
+            )
+            messages.append({
+                "role": "assistant",
+                "content": completion_text,
+                "timestamp": datetime.now(UTC).isoformat(),
+                "proposed_intent": "completed",
+            })
+            await self.uow.onboarding_sessions.update(session, messages=messages)
+            await self.uow.commit()
+
+            return OnboardingMessageResponse(
+                session_id=str(session.id),
+                response=completion_text,
+                state="completed",
+                configuration=session.configuration,
+                is_complete=True,
+                suggested_actions=["Generate API Key", "Go to Runtime Console"],
+                proposed_runtime={
+                    "runtime_id": complete_res.runtime_id,
+                    "runtime_name": complete_res.runtime_name,
+                    "status": complete_res.status,
+                    "environment": complete_res.environment,
+                    "enabled_integrations": complete_res.enabled_integrations,
+                },
+            )
+
+        # Step 3: Backend Authorizes & Validates LLM Proposals
         validated_config, next_state = self._authorize_and_transition(
             current_state=session.state,
             current_config=current_config,
@@ -167,7 +221,7 @@ class OnboardingEngine:
             state=next_state,
             configuration=validated_config,
             is_complete=(next_state == "completed"),
-            suggested_actions=ai_resp.suggested_actions,
+            suggested_actions=ai_resp.suggested_actions or self.get_suggested_actions_for_state(next_state),
             proposed_runtime=validated_config if is_ready_to_provision else None,
         )
 
@@ -183,6 +237,8 @@ class OnboardingEngine:
 
         if proposed_intent == "set_use_case":
             config["use_case"] = proposed_data.get("use_case", "general_ai_application")
+            if "integrations" in proposed_data and proposed_data["integrations"]:
+                config["integrations"] = proposed_data["integrations"]
             return config, "discovering_application_type"
 
         if proposed_intent == "set_use_case_and_mode":
@@ -256,6 +312,26 @@ class OnboardingEngine:
         config["capabilities"] = valid_capabilities
         return config, "configuring_runtime"
 
+    def get_suggested_actions_for_state(self, state: str) -> list[str]:
+        if state == "onboarding_started":
+            return [
+                "I'm building an AI customer support agent.",
+                "Search our company's GitHub and Slack.",
+                "Users connect their own GitHub accounts.",
+                "PostgreSQL & Document RAG.",
+            ]
+        if state in ("discovering_use_case", "discovering_application_type"):
+            return ["Company data", "My users' accounts", "Both", "Not sure yet"]
+        if state in ("selecting_integrations", "selecting_capabilities"):
+            return ["GitHub", "Slack", "Notion", "PostgreSQL", "MongoDB", "Gmail"]
+        if state == "configuring_runtime":
+            return ["Fast responses", "Balanced performance", "Maximum intelligence"]
+        if state == "confirming_configuration":
+            return ["Confirm & Create Runtime", "Change something"]
+        if state == "completed":
+            return ["Generate API Key", "Go to Runtime Console"]
+        return ["Continue"]
+
     async def complete_onboarding(
         self, user_id: UUID, req: OnboardingCompleteRequest
     ) -> OnboardingCompleteResponse:
@@ -263,6 +339,20 @@ class OnboardingEngine:
         session = await self.uow.onboarding_sessions.get(session_uuid)
         if session is None or session.user_id != user_id:
             raise ValueError("Onboarding session not found")
+
+        # If already provisioned, return existing
+        if session.state == "completed" and session.created_runtime_id:
+            existing_rt = await self.uow.runtimes.get(session.created_runtime_id)
+            if existing_rt:
+                return OnboardingCompleteResponse(
+                    session_id=str(session.id),
+                    runtime_id=str(existing_rt.id),
+                    runtime_name=existing_rt.name,
+                    environment=existing_rt.environment,
+                    status=existing_rt.status,
+                    enabled_integrations=[],
+                    message="Runtime already provisioned.",
+                )
 
         config = session.configuration or {}
         runtime_name = req.runtime_name or f"{config.get('use_case', 'AI App').replace('_', ' ').title()} Runtime"

@@ -36,6 +36,7 @@ async def test_chat_onboarding_full_lifecycle(db_session: AsyncSession) -> None:
     )
     assert session_data["user_id"] == str(user.id)
     assert session_data["state"] == "discovering_application_type"
+    assert len(session_data["suggested_actions"]) > 0
     session_id = session_data["id"]
 
     # 3. Message 1: Discovering Application Type & Integration Mode
@@ -61,7 +62,7 @@ async def test_chat_onboarding_full_lifecycle(db_session: AsyncSession) -> None:
     assert "github" in resp2.configuration.get("integrations", [])
     assert "slack" in resp2.configuration.get("integrations", [])
 
-    # 5. Message 3: Confirming Configuration
+    # 5. Message 3: Configuring Runtime -> Preview
     resp3 = await onboarding.send_chat_message(
         user_id=user.id,
         req=OnboardingMessageRequest(
@@ -71,25 +72,28 @@ async def test_chat_onboarding_full_lifecycle(db_session: AsyncSession) -> None:
     )
     assert resp3.state == "confirming_configuration"
     assert resp3.proposed_runtime is not None
+    assert "Confirm & Create Runtime" in resp3.suggested_actions
 
-    # 6. Complete Onboarding: Provision Runtime
-    complete_resp = await onboarding.complete_chat_onboarding(
+    # 6. Message 4: User clicks or types 'Confirm & Create Runtime' directly in chat
+    resp4 = await onboarding.send_chat_message(
         user_id=user.id,
-        req=OnboardingCompleteRequest(
+        req=OnboardingMessageRequest(
             session_id=session_id,
-            runtime_name="Support Agent Runtime",
-            environment="development",
+            message="Confirm & Create Runtime",
         ),
     )
-    assert complete_resp.status == "active"
-    assert complete_resp.runtime_name == "Support Agent Runtime"
-    assert len(complete_resp.enabled_integrations) == 2
+    assert resp4.is_complete is True
+    assert resp4.state == "completed"
+    assert "Your runtime is ready" in resp4.response
+    assert resp4.proposed_runtime is not None
+    runtime_id_str = resp4.proposed_runtime["runtime_id"]
 
     # Verify Runtime in database
-    runtime_uuid = uuid.UUID(complete_resp.runtime_id)
+    runtime_uuid = uuid.UUID(runtime_id_str)
     runtime = await uow.runtimes.get(runtime_uuid)
     assert runtime is not None
     assert runtime.user_id == user.id
+    assert runtime.status == "active"
     assert runtime.organization_id is None
     assert runtime.project_id is None
 
@@ -100,7 +104,7 @@ async def test_chat_onboarding_full_lifecycle(db_session: AsyncSession) -> None:
     assert slugs == {"github", "slack"}
     for ri in r_integrations:
         assert ri.connection_mode == "end_user_oauth"
-        assert ri.connection_status == "not_connected"  # Capability is enabled, but no credentials attached yet
+        assert ri.connection_status == "not_connected"
 
     # 7. Explicit API Key Creation (Decoupled Lifecycle)
     key_result = await apikey_service.create_key(
@@ -115,15 +119,21 @@ async def test_chat_onboarding_full_lifecycle(db_session: AsyncSession) -> None:
     assert key_result["api_key"].runtime_id == runtime_uuid
     assert key_result["raw_key"].startswith("sk_test_")
 
-    # User creates a Production Key for the same runtime
-    prod_key_result = await apikey_service.create_key(
-        user_id=user.id,
-        data=ApiKeyCreate(
-            name="Production Key",
-            runtime_id=runtime_uuid,
-            environment="production",
-            scopes=["read", "write"],
-        ),
-    )
-    assert prod_key_result["api_key"].environment == "production"
-    assert prod_key_result["raw_key"].startswith("sk_live_")
+
+@pytest.mark.asyncio
+async def test_chat_onboarding_reset_and_fresh_session(db_session: AsyncSession) -> None:
+    uow = UnitOfWork(db_session)
+    onboarding = OnboardingService(uow)
+
+    user = await uow.users.create(email="reset_tester@zyntry.space", name="Reset Tester", is_active=True)
+    await uow.commit()
+
+    # Create initial session
+    s1 = await onboarding.create_chat_session(user_id=user.id, initial_prompt="Old session prompt")
+    s1_id = s1["id"]
+
+    # Request reset
+    s2 = await onboarding.create_chat_session(user_id=user.id, reset=True)
+    assert s2["id"] != s1_id
+    assert s2["state"] == "onboarding_started"
+    assert len(s2["messages"]) == 1

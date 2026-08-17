@@ -19,10 +19,20 @@ class OnboardingSessionRepository:
         result = await self.session.execute(
             select(OnboardingSession)
             .where(OnboardingSession.user_id == user_id)
-            .where(OnboardingSession.state != "completed")
+            .where(~OnboardingSession.state.in_(["completed", "cancelled"]))
             .order_by(OnboardingSession.created_at.desc())
         )
         return result.scalars().first()
+
+    async def cancel_all_active_by_user(self, user_id: UUID) -> None:
+        result = await self.session.execute(
+            select(OnboardingSession)
+            .where(OnboardingSession.user_id == user_id)
+            .where(~OnboardingSession.state.in_(["completed", "cancelled"]))
+        )
+        for session in result.scalars().all():
+            session.state = "cancelled"
+        await self.session.flush()
 
     async def create(self, **kwargs: object) -> OnboardingSession:
         session = OnboardingSession(**kwargs)

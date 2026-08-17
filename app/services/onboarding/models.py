@@ -40,6 +40,16 @@ class FastOnboardingModelProvider:
         msg_lower = user_message.lower().strip()
         config = dict(current_config)
 
+        # Check for direct confirmation in any late state
+        if current_state in ("confirming_configuration", "configuring_runtime"):
+            if any(k in msg_lower for k in ["confirm", "create", "yes", "looks good", "let's do it", "provision", "proceed"]):
+                return OnboardingModelResponse(
+                    text="Provisioning your Zyntry runtime now...",
+                    proposed_intent="execute_provisioning",
+                    proposed_data={},
+                    suggested_actions=["Generate API Key", "Go to Runtime Console"],
+                )
+
         # -------------------------------------------------------------
         # 1. State: onboarding_started -> Extract Use Case & Purpose
         # -------------------------------------------------------------
@@ -101,6 +111,11 @@ class FastOnboardingModelProvider:
         if current_state in ("discovering_use_case", "discovering_application_type"):
             detected_integrations = self._detect_integrations(msg_lower)
 
+            # Check if user clarified their use case instead
+            if any(k in msg_lower for k in ["agent", "engineer", "triage", "support", "bot", "assistant", "saas"]):
+                refined_use_case = self._extract_use_case(msg_lower)
+                config["use_case"] = refined_use_case
+
             if "company" in msg_lower or "internal" in msg_lower or "mode a" in msg_lower:
                 mode = "zyntry_managed"
                 app_type = "internal_ai_agent"
@@ -109,10 +124,26 @@ class FastOnboardingModelProvider:
                 mode = "hybrid"
                 app_type = "hybrid_ai_app"
                 desc = "Your runtime will support both company-level data connections and individual end-user accounts."
-            else:
+            elif any(k in msg_lower for k in ["user", "users", "their own", "byo", "mode b"]):
                 mode = "end_user_oauth"
                 app_type = "customer_facing_ai_app"
                 desc = "Your runtime will allow each user of your application to connect their own services."
+            else:
+                # If they didn't specify architecture, prompt them again nicely
+                use_case_title = config.get("use_case", "AI Agent").replace("_", " ").title()
+                integ_hint = f" with **{', '.join(slug.title() for slug in detected_integrations)}**" if detected_integrations else ""
+                return OnboardingModelResponse(
+                    text=(
+                        f"Got it! Designing a **{use_case_title}**{integ_hint}.\n\n"
+                        "Should this runtime work with your **company's own internal data**, or will your **users connect their own accounts**?"
+                    ),
+                    proposed_intent="set_use_case",
+                    proposed_data={
+                        "use_case": config.get("use_case", "general_ai_application"),
+                        "integrations": detected_integrations,
+                    },
+                    suggested_actions=["Company data", "My users' accounts", "Both", "Not sure yet"],
+                )
 
             if detected_integrations:
                 caps = {slug: self._default_capabilities(slug) for slug in detected_integrations}
@@ -164,7 +195,7 @@ class FastOnboardingModelProvider:
                     selected.extend([c for c in available if "search" in c])
                 if "file" in msg_lower or "read" in msg_lower:
                     selected.extend([c for c in available if "file" in c or "read" in c or "retrieval" in c])
-                if "issue" in msg_lower:
+                if "issue" in msg_lower or "triage" in msg_lower:
                     selected.extend([c for c in available if "issue" in c])
                 if "pull" in msg_lower or "pr" in msg_lower:
                     selected.extend([c for c in available if "pull" in c or "pr" in c])
@@ -175,7 +206,7 @@ class FastOnboardingModelProvider:
             integ_names = ", ".join(slug.title() for slug in detected_integrations)
             return OnboardingModelResponse(
                 text=(
-                    f"Configured **{integ_names}** with capabilities.\n\n"
+                    f"Configured **{integ_names}** with standard search and retrieval capabilities.\n\n"
                     "What matters most for your AI runtime?\n"
                     "**Fast responses**, **balanced performance**, or **maximum intelligence**?"
                 ),
@@ -227,6 +258,8 @@ class FastOnboardingModelProvider:
     def _extract_use_case(self, msg: str) -> str:
         if "support" in msg or "customer" in msg:
             return "ai_customer_support"
+        if "triage" in msg or "engineer" in msg or "issue" in msg:
+            return "autonomous_issue_triage_agent"
         if "code" in msg or "developer" in msg:
             return "developer_ai_assistant"
         if "rag" in msg or "knowledge" in msg or "search" in msg:
@@ -270,7 +303,7 @@ class FastOnboardingModelProvider:
         return []
 
     def _extract_strategy(self, msg: str) -> str:
-        if "fast" in msg or "speed" in msg:
+        if "fast" in msg or "speed" in msg or "router" in msg:
             return "latency_optimized"
         if "intel" in msg or "max" in msg or "best" in msg:
             return "quality_optimized"

@@ -39,6 +39,22 @@ async def create_or_resume_session(
     session_data = await service.create_chat_session(
         user_id=current_user.id,
         initial_prompt=body.initial_prompt,
+        reset=body.reset,
+    )
+    return OnboardingSessionRead(**session_data)
+
+
+@router.post("/reset", response_model=OnboardingSessionRead, status_code=status.HTTP_200_OK)
+async def reset_onboarding_session(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_session),
+) -> OnboardingSessionRead:
+    uow = UnitOfWork(db)
+    service = OnboardingService(uow)
+    session_data = await service.create_chat_session(
+        user_id=current_user.id,
+        initial_prompt=None,
+        reset=True,
     )
     return OnboardingSessionRead(**session_data)
 

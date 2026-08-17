@@ -20,14 +20,19 @@ class OnboardingService:
         self.engine = OnboardingEngine(uow)
 
     # Chat-Based Onboarding Methods (Primary flow)
-    async def create_chat_session(self, user_id: UUID, initial_prompt: str | None = None) -> dict[str, Any]:
-        session = await self.engine.get_or_create_session(user_id, initial_prompt)
+    async def create_chat_session(
+        self, user_id: UUID, initial_prompt: str | None = None, reset: bool = False
+    ) -> dict[str, Any]:
+        session = await self.engine.get_or_create_session(user_id, initial_prompt, reset=reset)
+        suggested = self.engine.get_suggested_actions_for_state(session.state)
         return {
             "id": str(session.id),
             "user_id": str(session.user_id),
             "state": session.state,
             "messages": session.messages,
             "configuration": session.configuration,
+            "suggested_actions": suggested,
+            "is_complete": session.state == "completed",
             "created_runtime_id": str(session.created_runtime_id) if session.created_runtime_id else None,
             "created_api_key_id": str(session.created_api_key_id) if session.created_api_key_id else None,
             "completed_at": session.completed_at.isoformat() if session.completed_at else None,
@@ -45,12 +50,15 @@ class OnboardingService:
         session = await self.uow.onboarding_sessions.get(session_id)
         if not session:
             return None
+        suggested = self.engine.get_suggested_actions_for_state(session.state)
         return {
             "id": str(session.id),
             "user_id": str(session.user_id),
             "state": session.state,
             "messages": session.messages,
             "configuration": session.configuration,
+            "suggested_actions": suggested,
+            "is_complete": session.state == "completed",
             "created_runtime_id": str(session.created_runtime_id) if session.created_runtime_id else None,
             "created_api_key_id": str(session.created_api_key_id) if session.created_api_key_id else None,
             "completed_at": session.completed_at.isoformat() if session.completed_at else None,
