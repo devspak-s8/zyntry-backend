@@ -184,15 +184,14 @@ def create_app() -> FastAPI:
         except WebSocketDisconnect:
             await admin_ws_manager.disconnect(websocket)
 
-    @app.websocket("/api/v1/ws")
-    async def websocket_api(websocket: WebSocket):
+    async def _handle_client_websocket(websocket: WebSocket):
         origin = websocket.headers.get("origin", "")
         allowed_regex = re.compile(r"https?://(localhost|zyntry\.space|.*\.zyntry\.space|.*\.railway\.app|.*\.railway\.internal)(:\d+)?")
         if origin and not allowed_regex.match(origin):
             await websocket.close(code=4003, reason="Origin not allowed")
             return
 
-        session_token = websocket.cookies.get("zyntra_session")
+        session_token = websocket.cookies.get("zyntra_session") or websocket.query_params.get("token")
         if not session_token:
             await websocket.close(code=4001, reason="Not authenticated")
             return
@@ -227,6 +226,18 @@ def create_app() -> FastAPI:
                     pass
         except WebSocketDisconnect:
             manager.disconnect(websocket)
+
+    @app.websocket("/ws/realtime")
+    async def websocket_realtime(websocket: WebSocket):
+        await _handle_client_websocket(websocket)
+
+    @app.websocket("/api/v1/ws")
+    async def websocket_api(websocket: WebSocket):
+        await _handle_client_websocket(websocket)
+
+    @app.websocket("/ws")
+    async def websocket_default(websocket: WebSocket):
+        await _handle_client_websocket(websocket)
 
     return app
 
