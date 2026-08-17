@@ -54,8 +54,8 @@ class OnboardingEngine:
         welcome_msg = {
             "role": "assistant",
             "content": (
-                "Welcome to Zyntry! I'm your AI onboarding assistant. "
-                "What kind of AI application or system are you looking to build?"
+                "**Let's build your Zyntry runtime.**\n\n"
+                "Tell me what you're building, what you want it to do, or what you want Zyntry to handle for you."
             ),
             "timestamp": datetime.now(UTC).isoformat(),
         }
@@ -185,34 +185,36 @@ class OnboardingEngine:
             config["use_case"] = proposed_data.get("use_case", "general_ai_application")
             return config, "discovering_application_type"
 
+        if proposed_intent == "set_use_case_and_mode":
+            config["use_case"] = proposed_data.get("use_case", "general_ai_application")
+            config["application_type"] = proposed_data.get("application_type", "customer_facing_ai_app")
+            config["integration_mode"] = proposed_data.get("integration_mode", "end_user_oauth")
+            if "integrations" in proposed_data and proposed_data["integrations"]:
+                config["integrations"] = proposed_data["integrations"]
+            if "capabilities" in proposed_data and proposed_data["capabilities"]:
+                config["capabilities"] = proposed_data["capabilities"]
+            return config, "selecting_integrations"
+
         if proposed_intent == "set_application_type":
             mode = proposed_data.get("integration_mode", "zyntry_managed")
             if mode not in ("zyntry_managed", "end_user_oauth", "hybrid"):
                 mode = "zyntry_managed"
             config["application_type"] = proposed_data.get("application_type", "customer_facing_ai_app")
             config["integration_mode"] = mode
+            if "integrations" in proposed_data and proposed_data["integrations"]:
+                config["integrations"] = proposed_data["integrations"]
+            if "capabilities" in proposed_data and proposed_data["capabilities"]:
+                config["capabilities"] = proposed_data["capabilities"]
             return config, "selecting_integrations"
 
-        if proposed_intent == "select_integrations":
-            raw_integrations = proposed_data.get("integrations", [])
-            valid_integrations = []
-            valid_capabilities = {}
-
-            for slug in raw_integrations:
-                defn = integration_registry.get(slug)
-                if defn:
-                    valid_integrations.append(defn.slug)
-                    req_caps = proposed_data.get("capabilities", {}).get(defn.slug)
-                    all_caps = [c.slug for c in defn.capabilities]
-                    if req_caps:
-                        valid_caps = [c for c in req_caps if c in all_caps]
-                    else:
-                        valid_caps = [c.slug for c in defn.capabilities if not c.is_write]
-                    valid_capabilities[defn.slug] = valid_caps
-
-            config["integrations"] = valid_integrations
-            config["capabilities"] = valid_capabilities
-            return config, "configuring_runtime"
+        if proposed_intent in ("select_integrations", "quick_bootstrap"):
+            if "use_case" in proposed_data:
+                config["use_case"] = proposed_data["use_case"]
+            if "application_type" in proposed_data:
+                config["application_type"] = proposed_data["application_type"]
+            if "integration_mode" in proposed_data:
+                config["integration_mode"] = proposed_data["integration_mode"]
+            return self._validate_integrations_and_transition(config, proposed_data)
 
         if proposed_intent == "confirm_configuration":
             config["model"] = proposed_data.get("model", "gpt-4o")
@@ -221,12 +223,38 @@ class OnboardingEngine:
             config["environment"] = proposed_data.get("environment", "development")
             return config, "confirming_configuration"
 
+        if proposed_intent == "modify_settings":
+            return config, "configuring_runtime"
+
         # General update fallback
         for k, v in proposed_data.items():
             if k in ("use_case", "application_type", "integration_mode", "model", "provider", "routing_strategy"):
                 config[k] = v
 
         return config, current_state
+
+    def _validate_integrations_and_transition(
+        self, config: dict[str, Any], proposed_data: dict[str, Any]
+    ) -> tuple[dict[str, Any], str]:
+        raw_integrations = proposed_data.get("integrations", [])
+        valid_integrations = []
+        valid_capabilities = {}
+
+        for slug in raw_integrations:
+            defn = integration_registry.get(slug)
+            if defn:
+                valid_integrations.append(defn.slug)
+                req_caps = proposed_data.get("capabilities", {}).get(defn.slug)
+                all_caps = [c.slug for c in defn.capabilities]
+                if req_caps:
+                    valid_caps = [c for c in req_caps if c in all_caps]
+                else:
+                    valid_caps = [c.slug for c in defn.capabilities if not c.is_write]
+                valid_capabilities[defn.slug] = valid_caps
+
+        config["integrations"] = valid_integrations
+        config["capabilities"] = valid_capabilities
+        return config, "configuring_runtime"
 
     async def complete_onboarding(
         self, user_id: UUID, req: OnboardingCompleteRequest
