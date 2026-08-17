@@ -92,13 +92,23 @@ class FastOnboardingModelProvider:
             # Natural, contextual first response
             use_case_title = use_case.replace('_', ' ').title()
             integ_mention = f" with **{', '.join(s.title() for s in detected_integrations)}**" if detected_integrations else ""
-            return OnboardingModelResponse(
-                text=(
+            
+            if detected_integrations:
+                prompt_question = (
                     f"Nice! Building a **{use_case_title}**{integ_mention}.\n\n"
+                    "Will this runtime work with your **company's internal data & repositories**, "
+                    "or will your **users connect their own external accounts**?"
+                )
+            else:
+                prompt_question = (
+                    f"Nice! Building a **{use_case_title}**.\n\n"
                     "What should the agent have access to?\n\n"
                     "For example, it could connect to your company's data, integrate with tools like "
                     "GitHub, Slack or Notion, query databases, or allow your users to connect their own accounts."
-                ),
+                )
+
+            return OnboardingModelResponse(
+                text=prompt_question,
                 proposed_intent="set_use_case",
                 proposed_data={
                     "use_case": use_case,
@@ -255,17 +265,21 @@ class FastOnboardingModelProvider:
         )
 
     def _extract_use_case(self, msg: str) -> str:
-        if "triage" in msg or "engineer" in msg or "issue" in msg:
+        # Strip out example integration stack mentions first
+        cleaned = re.sub(r"example integration stack:?.*", "", msg, flags=re.IGNORECASE)
+        cleaned = re.sub(r"example integrations:?.*", "", cleaned, flags=re.IGNORECASE).strip()
+
+        if "triage" in cleaned or "engineer" in cleaned or "issue" in cleaned:
             return "autonomous_issue_triage_agent"
-        if "support" in msg or "customer" in msg:
+        if "support" in cleaned or "customer" in cleaned:
             return "ai_customer_support"
-        if "code" in msg or "developer" in msg:
+        if "code" in cleaned or "developer" in cleaned:
             return "developer_ai_assistant"
-        if "rag" in msg or "knowledge" in msg or "search" in msg:
+        if "rag" in cleaned or "knowledge" in cleaned or "search" in cleaned:
             return "knowledge_search_rag"
-        if "agent" in msg:
+        if "agent" in cleaned:
             return "autonomous_ai_agent"
-        if "saas" in msg:
+        if "saas" in cleaned:
             return "saas_ai_copilot"
         return "general_ai_application"
 
