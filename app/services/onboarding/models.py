@@ -59,7 +59,7 @@ class FastOnboardingModelProvider:
             has_user_connect = any(k in msg_lower for k in ["their own", "users connect", "user connect", "users' accounts", "byo", "mode b"])
             has_company_data = any(k in msg_lower for k in ["company data", "our company", "company's data", "internal data", "mode a"])
 
-            # If user already explicitly stated their architecture in the first prompt
+            # If user explicitly stated architecture in the first prompt
             if has_user_connect and not has_company_data:
                 mode = "end_user_oauth"
             elif has_company_data and not has_user_connect:
@@ -70,11 +70,11 @@ class FastOnboardingModelProvider:
                 mode = None
 
             if mode:
-                # Mode is known, ask for services
                 arch_desc = "allow your users to connect their own accounts" if mode == "end_user_oauth" else "connect directly to your company data"
+                integ_hint = f" with **{', '.join(slug.title() for slug in detected_integrations)}**" if detected_integrations else ""
                 return OnboardingModelResponse(
                     text=(
-                        f"Nice. Building a **{use_case.replace('_', ' ').title()}** that will {arch_desc}.\n\n"
+                        f"Nice. Building a **{use_case.replace('_', ' ').title()}**{integ_hint} that will {arch_desc}.\n\n"
                         "Which services or external integrations should your application support? "
                         "(e.g., GitHub, Slack, Notion, PostgreSQL, MongoDB, Gmail)"
                     ),
@@ -89,14 +89,21 @@ class FastOnboardingModelProvider:
                     suggested_actions=["GitHub", "Slack", "Notion", "PostgreSQL", "MongoDB", "Gmail"],
                 )
 
+            # Natural, contextual first response
+            use_case_title = use_case.replace('_', ' ').title()
+            integ_mention = f" with **{', '.join(s.title() for s in detected_integrations)}**" if detected_integrations else ""
             return OnboardingModelResponse(
                 text=(
-                    "Nice. What should the agent have access to?\n\n"
-                    "For example, it could work with your company's data, connect to services like "
-                    "GitHub, Slack or Notion, search documents, query databases, or allow your users to connect their own accounts."
+                    f"Nice! Building a **{use_case_title}**{integ_mention}.\n\n"
+                    "What should the agent have access to?\n\n"
+                    "For example, it could connect to your company's data, integrate with tools like "
+                    "GitHub, Slack or Notion, query databases, or allow your users to connect their own accounts."
                 ),
                 proposed_intent="set_use_case",
-                proposed_data={"use_case": use_case},
+                proposed_data={
+                    "use_case": use_case,
+                    "integrations": detected_integrations,
+                },
                 suggested_actions=[
                     "Company data",
                     "My users' accounts",
@@ -110,63 +117,55 @@ class FastOnboardingModelProvider:
         # -------------------------------------------------------------
         if current_state in ("discovering_use_case", "discovering_application_type"):
             detected_integrations = self._detect_integrations(msg_lower)
+            if not detected_integrations and config.get("integrations"):
+                detected_integrations = config["integrations"]
 
-            # Check if user clarified their use case instead
-            if any(k in msg_lower for k in ["agent", "engineer", "triage", "support", "bot", "assistant", "saas"]):
-                refined_use_case = self._extract_use_case(msg_lower)
-                config["use_case"] = refined_use_case
-
-            if "company" in msg_lower or "internal" in msg_lower or "mode a" in msg_lower:
+            # Handle "Not sure yet" or unsure input gracefully without looping
+            if "not sure" in msg_lower or "unsure" in msg_lower or "default" in msg_lower or "skip" in msg_lower:
                 mode = "zyntry_managed"
                 app_type = "internal_ai_agent"
-                desc = "Your runtime will connect directly to your company's data sources and workspaces."
+                desc = "No problem! We'll set it up to connect with your **company's data and tools** by default (you can enable end-user OAuth connections anytime later)."
+            elif "company" in msg_lower or "internal" in msg_lower or "mode a" in msg_lower:
+                mode = "zyntry_managed"
+                app_type = "internal_ai_agent"
+                desc = "Got it. Your runtime will connect directly to your company's data sources and workspaces."
             elif "both" in msg_lower or "hybrid" in msg_lower:
                 mode = "hybrid"
                 app_type = "hybrid_ai_app"
-                desc = "Your runtime will support both company-level data connections and individual end-user accounts."
+                desc = "Got it. Your runtime will support both company-level data connections and individual end-user accounts."
             elif any(k in msg_lower for k in ["user", "users", "their own", "byo", "mode b"]):
                 mode = "end_user_oauth"
                 app_type = "customer_facing_ai_app"
-                desc = "Your runtime will allow each user of your application to connect their own services."
+                desc = "Got it. Your runtime will allow each user of your application to connect their own services."
             else:
-                # If they didn't specify architecture, prompt them again nicely
-                use_case_title = config.get("use_case", "AI Agent").replace("_", " ").title()
-                integ_hint = f" with **{', '.join(slug.title() for slug in detected_integrations)}**" if detected_integrations else ""
-                return OnboardingModelResponse(
-                    text=(
-                        f"Got it! Designing a **{use_case_title}**{integ_hint}.\n\n"
-                        "Should this runtime work with your **company's own internal data**, or will your **users connect their own accounts**?"
-                    ),
-                    proposed_intent="set_use_case",
-                    proposed_data={
-                        "use_case": config.get("use_case", "general_ai_application"),
-                        "integrations": detected_integrations,
-                    },
-                    suggested_actions=["Company data", "My users' accounts", "Both", "Not sure yet"],
-                )
+                # If they typed integrations directly instead of architecture, infer company data by default
+                mode = "zyntry_managed"
+                app_type = "internal_ai_agent"
+                desc = "Got it. We'll set up a Zyntry-managed runtime for your tools."
 
             if detected_integrations:
                 caps = {slug: self._default_capabilities(slug) for slug in detected_integrations}
-                integ_names = " and ".join(slug.title() for slug in detected_integrations)
+                integ_names = ", ".join(slug.title() for slug in detected_integrations)
                 return OnboardingModelResponse(
                     text=(
-                        f"Got it. {desc}\n\n"
-                        f"I've selected **{integ_names}** for your runtime.\n\n"
-                        "Which services should your application support?"
+                        f"{desc}\n\n"
+                        f"Configured **{integ_names}** with standard search and retrieval capabilities.\n\n"
+                        "What matters most for your AI runtime?\n"
+                        "**Fast responses**, **balanced performance**, or **maximum intelligence**?"
                     ),
-                    proposed_intent="set_application_type",
+                    proposed_intent="set_application_type_and_integrations",
                     proposed_data={
                         "application_type": app_type,
                         "integration_mode": mode,
                         "integrations": detected_integrations,
                         "capabilities": caps,
                     },
-                    suggested_actions=["GitHub", "Slack", "Notion", "PostgreSQL", "MongoDB", "Gmail"],
+                    suggested_actions=["Fast responses", "Balanced performance", "Maximum intelligence"],
                 )
 
             return OnboardingModelResponse(
                 text=(
-                    f"Got it. {desc}\n\n"
+                    f"{desc}\n\n"
                     "Which services should your application support?"
                 ),
                 proposed_intent="set_application_type",
@@ -206,7 +205,7 @@ class FastOnboardingModelProvider:
             integ_names = ", ".join(slug.title() for slug in detected_integrations)
             return OnboardingModelResponse(
                 text=(
-                    f"Configured **{integ_names}** with standard search and retrieval capabilities.\n\n"
+                    f"Configured **{integ_names}** with capabilities.\n\n"
                     "What matters most for your AI runtime?\n"
                     "**Fast responses**, **balanced performance**, or **maximum intelligence**?"
                 ),
@@ -256,10 +255,10 @@ class FastOnboardingModelProvider:
         )
 
     def _extract_use_case(self, msg: str) -> str:
-        if "support" in msg or "customer" in msg:
-            return "ai_customer_support"
         if "triage" in msg or "engineer" in msg or "issue" in msg:
             return "autonomous_issue_triage_agent"
+        if "support" in msg or "customer" in msg:
+            return "ai_customer_support"
         if "code" in msg or "developer" in msg:
             return "developer_ai_assistant"
         if "rag" in msg or "knowledge" in msg or "search" in msg:
@@ -337,7 +336,7 @@ class FastOnboardingModelProvider:
         environment: str,
     ) -> str:
         arch_title = "End-user connections" if integration_mode == "end_user_oauth" else "Zyntry-managed connections" if integration_mode == "zyntry_managed" else "Hybrid connections"
-        runtime_title = f"{use_case.replace('_', ' ').title()} Agent"
+        runtime_title = f"{use_case.replace('_', ' ').title()} Runtime"
 
         integ_sections = []
         for slug in integrations:
@@ -355,14 +354,14 @@ class FastOnboardingModelProvider:
         )
 
         return (
-            "**Here's what I've configured for you.**\n\n"
-            f"**Runtime**\n{runtime_title}\n\n"
-            f"**Purpose**\n{use_case.replace('_', ' ').title()}\n\n"
-            f"**Integration architecture**\n{arch_title}\n\n"
-            f"**Integrations**\n{integ_block}\n\n"
-            f"**Routing**\n{routing_strategy.replace('_', ' ').capitalize()} automatic routing\n\n"
-            f"**Environment**\n{environment.capitalize()}\n\n"
-            f"{notice}"
+            "### 📋 Here's what I've configured for you:\n\n"
+            f"**Runtime Name:** {runtime_title}\n\n"
+            f"**Purpose:** {use_case.replace('_', ' ').title()}\n\n"
+            f"**Integration Architecture:** {arch_title}\n\n"
+            f"**Enabled Integrations & Capabilities:**\n{integ_block}\n\n"
+            f"**Routing Strategy:** {routing_strategy.replace('_', ' ').capitalize()} automatic routing\n\n"
+            f"**Environment:** {environment.capitalize()}\n\n"
+            f"_{notice}_"
         )
 
 

@@ -114,7 +114,7 @@ class OnboardingEngine:
         if session.state == "completed":
             return OnboardingMessageResponse(
                 session_id=str(session.id),
-                response="This onboarding session has already been completed. Your runtime is ready!",
+                response="This onboarding session has already been completed. Your runtime is active and ready!",
                 state="completed",
                 configuration=session.configuration,
                 is_complete=True,
@@ -145,7 +145,7 @@ class OnboardingEngine:
         is_confirmation = (
             ai_resp.proposed_intent == "execute_provisioning"
             or (session.state in ("confirming_configuration", "configuring_runtime") and any(
-                k in msg_lower for k in ["confirm", "create runtime", "create", "yes", "looks good", "let's do it", "provision"]
+                k in msg_lower for k in ["confirm", "create runtime", "create", "yes", "looks good", "let's do it", "provision", "proceed"]
             ))
         )
 
@@ -155,15 +155,7 @@ class OnboardingEngine:
                 user_id=user_id,
                 req=OnboardingCompleteRequest(session_id=str(session.id)),
             )
-            integs_str = ", ".join(i.get("integration_slug", "").title() for i in complete_res.enabled_integrations) or "Standard"
-            completion_text = (
-                "**Your runtime is ready!**\n\n"
-                f"**Runtime:** {complete_res.runtime_name}\n"
-                f"**Status:** Active\n"
-                f"**Environment:** {complete_res.environment.capitalize()}\n"
-                f"**Enabled Integrations:** {integs_str}\n\n"
-                "**Next step:** Generate an API key to connect your application."
-            )
+            completion_text = complete_res.message
             messages.append({
                 "role": "assistant",
                 "content": completion_text,
@@ -263,7 +255,7 @@ class OnboardingEngine:
                 config["capabilities"] = proposed_data["capabilities"]
             return config, "selecting_integrations"
 
-        if proposed_intent in ("select_integrations", "quick_bootstrap"):
+        if proposed_intent in ("select_integrations", "quick_bootstrap", "set_application_type_and_integrations"):
             if "use_case" in proposed_data:
                 config["use_case"] = proposed_data["use_case"]
             if "application_type" in proposed_data:
@@ -351,7 +343,7 @@ class OnboardingEngine:
                     environment=existing_rt.environment,
                     status=existing_rt.status,
                     enabled_integrations=[],
-                    message="Runtime already provisioned.",
+                    message="Runtime already provisioned and ready.",
                 )
 
         config = session.configuration or {}
@@ -388,7 +380,6 @@ class OnboardingEngine:
                 continue
 
             caps = capabilities_map.get(slug, [c.slug for c in defn.capabilities if not c.is_write])
-            # Determine appropriate mode for this integration
             mode = integration_mode
             if mode not in defn.supported_connection_modes:
                 mode = defn.supported_connection_modes[0] if defn.supported_connection_modes else "zyntry_managed"
@@ -418,6 +409,24 @@ class OnboardingEngine:
         )
         await self.uow.commit()
 
+        integs_formatted = "\n".join(
+            f"* **{item['integration_slug'].title()}**: {', '.join(c.replace('_', ' ').capitalize() for c in item['enabled_capabilities'])}"
+            for item in enabled_integrations_list
+        ) if enabled_integrations_list else "* Standard read operations"
+
+        message_markdown = (
+            "### 🚀 Your Zyntry Runtime is Ready!\n\n"
+            f"**Runtime Name:** {runtime.name}\n\n"
+            f"**Status:** 🟢 Active\n\n"
+            f"**Environment:** {runtime.environment.capitalize()}\n\n"
+            f"**Routing Strategy:** {runtime.routing_strategy.replace('_', ' ').capitalize()} Automatic Routing\n\n"
+            "#### Enabled Integrations & Capabilities:\n"
+            f"{integs_formatted}\n\n"
+            "---\n\n"
+            "#### 📌 Next Step:\n"
+            "Generate an API key to connect your application and start invoking your runtime."
+        )
+
         return OnboardingCompleteResponse(
             session_id=str(session.id),
             runtime_id=str(runtime.id),
@@ -425,5 +434,5 @@ class OnboardingEngine:
             environment=runtime.environment,
             status=runtime.status,
             enabled_integrations=enabled_integrations_list,
-            message="Runtime created successfully and ready. You can now generate API keys for your application environments.",
+            message=message_markdown,
         )

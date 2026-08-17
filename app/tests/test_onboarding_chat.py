@@ -44,7 +44,7 @@ async def test_chat_onboarding_full_lifecycle(db_session: AsyncSession) -> None:
         user_id=user.id,
         req=OnboardingMessageRequest(
             session_id=session_id,
-            message="My end users will connect their own external GitHub and Slack accounts (Mode B)",
+            message="My end users will connect their own external accounts (Mode B)",
         ),
     )
     assert resp1.state == "selecting_integrations"
@@ -84,7 +84,7 @@ async def test_chat_onboarding_full_lifecycle(db_session: AsyncSession) -> None:
     )
     assert resp4.is_complete is True
     assert resp4.state == "completed"
-    assert "Your runtime is ready" in resp4.response
+    assert "Your Zyntry Runtime is Ready" in resp4.response
     assert resp4.proposed_runtime is not None
     runtime_id_str = resp4.proposed_runtime["runtime_id"]
 
@@ -118,6 +118,64 @@ async def test_chat_onboarding_full_lifecycle(db_session: AsyncSession) -> None:
     )
     assert key_result["api_key"].runtime_id == runtime_uuid
     assert key_result["raw_key"].startswith("sk_test_")
+
+
+@pytest.mark.asyncio
+async def test_chat_onboarding_natural_engineer_agent_flow(db_session: AsyncSession) -> None:
+    uow = UnitOfWork(db_session)
+    onboarding = OnboardingService(uow)
+
+    user = await uow.users.create(
+        email="engineer_triage@zyntry.space",
+        name="Engineer Triager",
+        is_active=True,
+    )
+    await uow.commit()
+
+    # 1. User starts with: Autonomous engineer agent that triages GitHub issues
+    session_data = await onboarding.create_chat_session(
+        user_id=user.id,
+        initial_prompt="Autonomous engineer agent that triages GitHub issues.",
+    )
+    assert "github" in session_data["configuration"].get("integrations", [])
+    session_id = session_data["id"]
+
+    # 2. User clicks 'Not sure yet' or mentions multiple integrations
+    resp1 = await onboarding.send_chat_message(
+        user_id=user.id,
+        req=OnboardingMessageRequest(
+            session_id=session_id,
+            message="GitHub, Slack, Notion and PostgreSQL",
+        ),
+    )
+    assert resp1.state == "configuring_runtime"
+    assert "github" in resp1.configuration.get("integrations", [])
+    assert "slack" in resp1.configuration.get("integrations", [])
+    assert "notion" in resp1.configuration.get("integrations", [])
+    assert "postgres" in resp1.configuration.get("integrations", [])
+
+    # 3. User selects performance strategy
+    resp2 = await onboarding.send_chat_message(
+        user_id=user.id,
+        req=OnboardingMessageRequest(
+            session_id=session_id,
+            message="Fast responses",
+        ),
+    )
+    assert resp2.state == "confirming_configuration"
+    assert "Confirm & Create Runtime" in resp2.suggested_actions
+
+    # 4. User confirms
+    resp3 = await onboarding.send_chat_message(
+        user_id=user.id,
+        req=OnboardingMessageRequest(
+            session_id=session_id,
+            message="Confirm & Create Runtime",
+        ),
+    )
+    assert resp3.is_complete is True
+    assert resp3.state == "completed"
+    assert "Your Zyntry Runtime is Ready" in resp3.response
 
 
 @pytest.mark.asyncio
