@@ -17,8 +17,13 @@ class IntegrationService:
     def __init__(self, uow: UnitOfWork) -> None:
         self.uow = uow
 
-    def list_definitions(self, category: str | None = None) -> list[IntegrationDefinitionRead]:
-        defs = integration_registry.list_all(category=category)
+    def list_definitions(
+        self,
+        category: str | None = None,
+        status: str | None = None,
+        search: str | None = None,
+    ) -> list[IntegrationDefinitionRead]:
+        defs = integration_registry.list_all(category=category, status=status, search=search)
         return [IntegrationDefinitionRead(**d.to_dict()) for d in defs]
 
     def get_definition(self, slug_or_id: str) -> IntegrationDefinitionRead | None:
@@ -32,22 +37,38 @@ class IntegrationService:
         return await self.uow.runtime_integrations.get_by_runtime(rid)
 
     async def enable_runtime_integration(
-        self, runtime_id: str | UUID, data: RuntimeIntegrationCreate
+        self,
+        runtime_id: str | UUID,
+        data: RuntimeIntegrationCreate,
+        user_id: UUID | None = None,
     ) -> RuntimeIntegration:
         rid = UUID(str(runtime_id)) if isinstance(runtime_id, str) else runtime_id
+
+        # Validate runtime exists and user has permission
+        runtime = await self.uow.runtimes.get(rid)
+        if runtime is None:
+            raise ValueError(f"Runtime '{runtime_id}' not found")
+        if user_id and runtime.user_id != user_id:
+            raise PermissionError("Unauthorized to modify this runtime")
+
         defn = integration_registry.get(data.integration_slug)
         if defn is None:
             raise ValueError(f"Integration '{data.integration_slug}' is not supported")
 
-        if data.connection_mode not in defn.supported_connection_modes:
+        if defn.status not in ("available", "beta"):
+            raise ValueError(
+                f"Integration '{data.integration_slug}' is currently '{defn.status}' and cannot be enabled on active runtimes"
+            )
+
+        if data.connection_mode not in defn.connection_modes:
             raise ValueError(
                 f"Connection mode '{data.connection_mode}' is not supported for '{data.integration_slug}'. "
-                f"Supported modes: {defn.supported_connection_modes}"
+                f"Supported modes: {defn.connection_modes}"
             )
 
         # Validate requested capabilities
         all_caps = {c.slug for c in defn.capabilities}
-        enabled_caps = data.enabled_capabilities or list(all_caps)
+        enabled_caps = data.enabled_capabilities or [c.slug for c in defn.capabilities if not c.is_write]
         invalid_caps = set(enabled_caps) - all_caps
         if invalid_caps:
             raise ValueError(f"Invalid capabilities for {data.integration_slug}: {invalid_caps}")

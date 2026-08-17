@@ -11,8 +11,10 @@ class IntegrationCapabilityRead(BaseModel):
     slug: str
     name: str
     description: str
+    operation: str = "read"
     is_write: bool = False
     required_scopes: list[str] = Field(default_factory=list)
+    supported_connection_modes: list[str] = Field(default_factory=list)
     permission_requirements: list[str] = Field(default_factory=list)
 
 
@@ -23,16 +25,32 @@ class IntegrationDefinitionRead(BaseModel):
     description: str
     category: str
     icon: str = ""
+    status: str = "available"  # "available", "beta", "coming_soon", "disabled", "deprecated"
     enabled: bool = True
-    supported_connection_modes: list[str] = Field(default_factory=list)
-    authentication_methods: list[str] = Field(default_factory=list)
+    connection_modes: list[str] = Field(default_factory=list)
+    auth_methods: list[str] = Field(default_factory=list)
     capabilities: list[IntegrationCapabilityRead] = Field(default_factory=list)
-    required_scopes: list[str] = Field(default_factory=list)
+    scopes: list[str] = Field(default_factory=list)
+    supports_zyntry_managed: bool = True
+    supports_end_user_oauth: bool = False
+    supports_api_key: bool = False
+    supports_database_credentials: bool = False
     documentation_url: str = ""
     configuration_schema: dict[str, Any] = Field(default_factory=dict)
     credential_requirements: dict[str, Any] = Field(default_factory=dict)
     health_check: dict[str, Any] = Field(default_factory=dict)
     version: str = "1.0.0"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    # Aliases for backward compatibility
+    supported_connection_modes: list[str] = Field(default_factory=list)
+    authentication_methods: list[str] = Field(default_factory=list)
+    required_scopes: list[str] = Field(default_factory=list)
+
+
+class IntegrationCatalogResponse(BaseModel):
+    integrations: list[IntegrationDefinitionRead]
+    total: int = 0
 
 
 class RuntimeIntegrationCreate(BaseModel):
@@ -88,7 +106,7 @@ class ConnectionDirectCreate(BaseModel):
     runtime_id: str | None = None
     end_user_id: str | None = None
     display_name: str
-    auth_method: str = "connection_string"  # "api_key", "connection_string", "credentials", "service_account"
+    auth_method: str = "connection_string"  # "api_key", "connection_string", "credentials", "storage_credentials"
     credentials: dict[str, Any]
     metadata: dict[str, Any] = Field(default_factory=dict)
 

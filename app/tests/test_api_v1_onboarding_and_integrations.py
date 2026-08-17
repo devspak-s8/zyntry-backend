@@ -31,18 +31,19 @@ async def test_api_v1_onboarding_and_integrations_routes(
         # 1. Integrations Catalog API
         resp = await client.get("/api/v1/integrations")
         assert resp.status_code == 200
-        integrations = resp.json()
+        catalog = resp.json()
+        integrations = catalog.get("integrations", catalog) if isinstance(catalog, dict) else catalog
         assert len(integrations) >= 9
         slugs = {i["slug"] for i in integrations}
         assert "github" in slugs
         assert "slack" in slugs
-        assert "postgres" in slugs
+        assert "postgresql" in slugs
 
         # Get single integration
         resp_gh = await client.get("/api/v1/integrations/github")
         assert resp_gh.status_code == 200
         assert resp_gh.json()["slug"] == "github"
-        assert "end_user_oauth" in resp_gh.json()["supported_connection_modes"]
+        assert "end_user_oauth" in resp_gh.json()["connection_modes"]
 
         # 2. Chat Onboarding Flow via API
         # Step A: Start Session

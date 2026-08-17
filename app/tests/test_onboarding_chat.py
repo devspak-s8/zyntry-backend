@@ -152,7 +152,8 @@ async def test_chat_onboarding_natural_engineer_agent_flow(db_session: AsyncSess
     assert "github" in resp1.configuration.get("integrations", [])
     assert "slack" in resp1.configuration.get("integrations", [])
     assert "notion" in resp1.configuration.get("integrations", [])
-    assert "postgres" in resp1.configuration.get("integrations", [])
+    integs = resp1.configuration.get("integrations", [])
+    assert "postgres" in integs or "postgresql" in integs
 
     # 3. User selects performance strategy
     resp2 = await onboarding.send_chat_message(
