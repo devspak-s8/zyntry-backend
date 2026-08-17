@@ -112,14 +112,48 @@ class OnboardingEngine:
             raise ValueError("Onboarding session not found")
 
         if session.state == "completed":
+            msg_lower = req.message.lower().strip()
+            rt_id = str(session.created_runtime_id) if session.created_runtime_id else None
+            runtime_name = session.configuration.get("use_case", "AI App").replace("_", " ").title() + " Runtime"
+            if any(k in msg_lower for k in ["console", "dashboard", "runtime", "view"]):
+                return OnboardingMessageResponse(
+                    session_id=str(session.id),
+                    response=f"Your runtime '{runtime_name}' is active. Redirecting to the runtime console.",
+                    state="completed",
+                    configuration=session.configuration,
+                    is_complete=True,
+                    suggested_actions=["Generate API Key", "Go to Runtime Console"],
+                    proposed_runtime={
+                        "runtime_id": rt_id,
+                        "action": "navigate_console",
+                        "redirect_url": f"/runtimes/{rt_id}" if rt_id else "/runtimes",
+                    },
+                )
+            if any(k in msg_lower for k in ["api key", "key", "generate"]):
+                return OnboardingMessageResponse(
+                    session_id=str(session.id),
+                    response=f"Your runtime '{runtime_name}' is active. Redirecting to generate API keys.",
+                    state="completed",
+                    configuration=session.configuration,
+                    is_complete=True,
+                    suggested_actions=["Generate API Key", "Go to Runtime Console"],
+                    proposed_runtime={
+                        "runtime_id": rt_id,
+                        "action": "navigate_apikeys",
+                        "redirect_url": "/apikeys",
+                    },
+                )
             return OnboardingMessageResponse(
                 session_id=str(session.id),
-                response="This onboarding session has already been completed. Your runtime is active and ready!",
+                response="Your runtime is active and ready. Select an action below to view the console or generate an API key.",
                 state="completed",
                 configuration=session.configuration,
                 is_complete=True,
                 suggested_actions=["Generate API Key", "Go to Runtime Console"],
-                proposed_runtime=session.configuration,
+                proposed_runtime={
+                    "runtime_id": rt_id,
+                    "redirect_url": f"/runtimes/{rt_id}" if rt_id else "/runtimes",
+                },
             )
 
         # Append user message
@@ -411,22 +445,25 @@ class OnboardingEngine:
         )
         await self.uow.commit()
 
-        integs_formatted = "\n".join(
-            f"* **{item['integration_slug'].title()}**: {', '.join(c.replace('_', ' ').capitalize() for c in item['enabled_capabilities'])}"
-            for item in enabled_integrations_list
-        ) if enabled_integrations_list else "* Standard read operations"
+        integ_lines = []
+        for item in enabled_integrations_list:
+            slug = item["integration_slug"]
+            defn = integration_registry.get(slug)
+            name = defn.name if defn else slug.replace("_", " ").title()
+            caps = ", ".join(c.replace("_", " ").capitalize() for c in item["enabled_capabilities"])
+            integ_lines.append(f"• {name}: {caps}")
+
+        integs_formatted = "\n".join(integ_lines) if integ_lines else "• Standard read access"
 
         message_markdown = (
-            "### 🚀 Your Zyntry Runtime is Ready!\n\n"
-            f"**Runtime Name:** {runtime.name}\n\n"
-            f"**Status:** 🟢 Active\n\n"
-            f"**Environment:** {runtime.environment.capitalize()}\n\n"
-            f"**Routing Strategy:** {runtime.routing_strategy.replace('_', ' ').capitalize()} Automatic Routing\n\n"
-            "#### Enabled Integrations & Capabilities:\n"
+            "Runtime provisioned and active.\n\n"
+            f"• Name: {runtime.name}\n"
+            f"• Status: Active\n"
+            f"• Environment: {runtime.environment.capitalize()}\n"
+            f"• Routing Strategy: {runtime.routing_strategy.replace('_', ' ').capitalize()}\n\n"
+            "Connected Services:\n"
             f"{integs_formatted}\n\n"
-            "---\n\n"
-            "#### 📌 Next Step:\n"
-            "Generate an API key to connect your application and start invoking your runtime."
+            "Next: Generate an API key to start making requests, or open the console to inspect your runtime."
         )
 
         return OnboardingCompleteResponse(

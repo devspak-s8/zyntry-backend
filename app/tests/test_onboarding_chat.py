@@ -84,7 +84,7 @@ async def test_chat_onboarding_full_lifecycle(db_session: AsyncSession) -> None:
     )
     assert resp4.is_complete is True
     assert resp4.state == "completed"
-    assert "Your Zyntry Runtime is Ready" in resp4.response
+    assert "Runtime provisioned and active" in resp4.response
     assert resp4.proposed_runtime is not None
     runtime_id_str = resp4.proposed_runtime["runtime_id"]
 
@@ -175,7 +175,7 @@ async def test_chat_onboarding_natural_engineer_agent_flow(db_session: AsyncSess
     )
     assert resp3.is_complete is True
     assert resp3.state == "completed"
-    assert "Your Zyntry Runtime is Ready" in resp3.response
+    assert "Runtime provisioned and active" in resp3.response
 
 
 @pytest.mark.asyncio

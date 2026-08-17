@@ -30,7 +30,6 @@ class OnboardingModelProvider(Protocol):
 class FastOnboardingModelProvider:
     """Fast, deterministic, contextual conversational onboarding provider with structured interpretation."""
 
-    # Slug -> human-readable display name
     _DISPLAY_NAMES: dict[str, str] = {
         "github": "GitHub",
         "slack": "Slack",
@@ -45,7 +44,6 @@ class FastOnboardingModelProvider:
         "document_storage": "Uploaded Documents",
     }
 
-    # Use-case slug -> human-readable title
     _USE_CASE_TITLES: dict[str, str] = {
         "autonomous_issue_triage_agent": "Autonomous Issue Triage Agent",
         "ai_customer_support": "AI Customer Support Agent",
@@ -73,65 +71,63 @@ class FastOnboardingModelProvider:
         return self._USE_CASE_TITLES.get(slug, slug.replace("_", " ").title())
 
     def _context_aware_integration_question(self, use_case: str) -> tuple[str, list[str]]:
-        """Return a contextual follow-up question + suggested actions based on the detected use case."""
         if use_case == "autonomous_issue_triage_agent":
             return (
                 "What data sources should your triage agent work with?\n\n"
-                "For example, it could pull issues from GitHub, post updates to Slack, "
+                "It can pull issues and PRs from GitHub, post updates to Slack, "
                 "reference internal docs, or query a database for context.",
                 [
                     "GitHub issues and pull requests",
-                    "GitHub, Slack, and our internal docs",
-                    "GitHub and our PostgreSQL database",
-                    "Not sure yet — help me decide",
+                    "GitHub, Slack, and internal docs",
+                    "GitHub and PostgreSQL database",
+                    "Help me choose",
                 ],
             )
         if use_case == "ai_customer_support":
             return (
                 "What should your support agent have access to?\n\n"
-                "It could search your knowledge base, reference Notion docs, "
-                "pull customer data from a database, or send updates via Slack.",
+                "It can search uploaded documentation, query customer databases, "
+                "or connect to Notion and Slack.",
                 [
-                    "Our knowledge base and documentation",
-                    "PostgreSQL customer data and Notion docs",
-                    "Slack, email, and uploaded support docs",
-                    "Not sure yet — help me decide",
+                    "Uploaded documentation and knowledge base",
+                    "PostgreSQL customer data and Notion",
+                    "Slack and uploaded support docs",
+                    "Help me choose",
                 ],
             )
         if use_case == "developer_ai_assistant":
             return (
                 "What tools should your dev assistant connect to?\n\n"
-                "It could browse repositories, search Slack discussions, "
-                "query databases, or reference internal documentation.",
+                "It can browse repositories, search Slack channels, "
+                "query databases, or reference internal docs.",
                 [
                     "GitHub repos and Slack channels",
                     "GitHub, Notion wiki, and PostgreSQL",
-                    "All our dev tools — GitHub, Slack, Notion",
-                    "Not sure yet — help me decide",
+                    "GitHub, Slack, and Notion",
+                    "Help me choose",
                 ],
             )
         if use_case == "knowledge_search_rag":
             return (
-                "Where does your knowledge live?\n\n"
-                "Your RAG system can index uploaded documents, Notion pages, "
+                "Where is your knowledge stored?\n\n"
+                "You can index uploaded documents, Notion pages, "
                 "database records, S3 files, or crawled websites.",
                 [
-                    "Uploaded PDFs and internal documentation",
-                    "Notion pages and PostgreSQL records",
-                    "Our website and uploaded documents",
-                    "Not sure yet — help me decide",
+                    "Uploaded documents and PDFs",
+                    "Notion pages and PostgreSQL",
+                    "Website crawler and uploaded files",
+                    "Help me choose",
                 ],
             )
-        # Generic fallback
         return (
             "What data sources and tools should your runtime connect to?\n\n"
-            "For example: GitHub for code, Slack for conversations, "
+            "For example: GitHub for code, Slack for discussions, "
             "PostgreSQL for structured data, or uploaded documents for RAG.",
             [
                 "GitHub and Slack",
                 "PostgreSQL and uploaded documents",
                 "Notion, GitHub, and Slack",
-                "Not sure yet — help me decide",
+                "Help me choose",
             ],
         )
 
@@ -145,9 +141,9 @@ class FastOnboardingModelProvider:
         msg_lower = user_message.lower().strip()
         config = dict(current_config)
 
-        # Check for direct confirmation in any late state
+        # Check for direct confirmation
         if current_state in ("confirming_configuration", "configuring_runtime"):
-            if any(k in msg_lower for k in ["confirm", "create", "yes", "looks good", "let's do it", "provision", "proceed"]):
+            if any(k in msg_lower for k in ["confirm", "create", "yes", "looks good", "provision", "proceed", "ready"]):
                 return OnboardingModelResponse(
                     text="Provisioning your Zyntry runtime now...",
                     proposed_intent="execute_provisioning",
@@ -155,9 +151,7 @@ class FastOnboardingModelProvider:
                     suggested_actions=["Generate API Key", "Go to Runtime Console"],
                 )
 
-        # -------------------------------------------------------------
-        # 1. State: onboarding_started -> Extract Use Case & Purpose
-        # -------------------------------------------------------------
+        # 1. State: onboarding_started
         if current_state == "onboarding_started":
             use_case = self._extract_use_case(msg_lower)
             detected_integrations = self._detect_integrations(msg_lower)
@@ -165,7 +159,6 @@ class FastOnboardingModelProvider:
             has_company_data = any(k in msg_lower for k in ["company data", "our company", "company's data", "internal data", "mode a"])
             uc_title = self._use_case_title(use_case)
 
-            # If user explicitly stated architecture in the first prompt
             if has_user_connect and not has_company_data:
                 mode = "end_user_oauth"
             elif has_company_data and not has_user_connect:
@@ -176,13 +169,13 @@ class FastOnboardingModelProvider:
                 mode = None
 
             if mode:
-                arch_desc = "allow your users to connect their own accounts" if mode == "end_user_oauth" else "connect directly to your company data"
-                integ_hint = f" with **{self._display_names_list(detected_integrations)}**" if detected_integrations else ""
+                arch_desc = "let users connect their own accounts" if mode == "end_user_oauth" else "connect directly to your company data"
+                integ_hint = f" with {self._display_names_list(detected_integrations)}" if detected_integrations else ""
 
                 question, actions = self._context_aware_integration_question(use_case)
                 return OnboardingModelResponse(
                     text=(
-                        f"Great — building a **{uc_title}**{integ_hint} that will {arch_desc}.\n\n"
+                        f"Configured {uc_title}{integ_hint} ({arch_desc}).\n\n"
                         f"{question}"
                     ),
                     proposed_intent="set_use_case_and_mode",
@@ -196,14 +189,13 @@ class FastOnboardingModelProvider:
                     suggested_actions=actions,
                 )
 
-            # No architecture specified — ask about data access pattern
             if detected_integrations:
                 integ_text = self._display_names_list(detected_integrations)
                 return OnboardingModelResponse(
                     text=(
-                        f"Got it — a **{uc_title}** connected to **{integ_text}**.\n\n"
-                        "One quick question: will this runtime access **your company's own data and accounts**, "
-                        "or will **your end users connect their own** (e.g., their own GitHub/Slack)?"
+                        f"Configured {uc_title} with {integ_text}.\n\n"
+                        "Will this runtime connect to your company internal data, "
+                        "or will end users connect their own external accounts?"
                     ),
                     proposed_intent="set_use_case",
                     proposed_data={
@@ -211,8 +203,8 @@ class FastOnboardingModelProvider:
                         "integrations": detected_integrations,
                     },
                     suggested_actions=[
-                        "Our company's data",
-                        "Each user connects their own",
+                        "Company data",
+                        "End users connect accounts",
                         "Both",
                         "Not sure yet",
                     ],
@@ -220,9 +212,9 @@ class FastOnboardingModelProvider:
             else:
                 return OnboardingModelResponse(
                     text=(
-                        f"Nice — building a **{uc_title}**.\n\n"
-                        "Will this runtime access **your company's own data**, "
-                        "or will **your end users connect their own accounts** (like their own GitHub or Slack)?"
+                        f"Configured {uc_title}.\n\n"
+                        "Will this runtime connect to your company internal data, "
+                        "or will end users connect their own external accounts?"
                     ),
                     proposed_intent="set_use_case",
                     proposed_data={
@@ -230,73 +222,66 @@ class FastOnboardingModelProvider:
                         "integrations": [],
                     },
                     suggested_actions=[
-                        "Our company's data",
-                        "Each user connects their own",
+                        "Company data",
+                        "End users connect accounts",
                         "Both",
                         "Not sure yet",
                     ],
                 )
 
-        # -------------------------------------------------------------
-        # 2. State: discovering_application_type / discovering_use_case
-        # -------------------------------------------------------------
+        # 2. State: discovering_application_type
         if current_state in ("discovering_use_case", "discovering_application_type"):
             detected_integrations = self._detect_integrations(msg_lower)
-            # Merge with previously-detected integrations so nothing is lost
             existing = list(config.get("integrations", []))
             for slug in existing:
                 if slug not in detected_integrations:
                     detected_integrations.append(slug)
 
             use_case = config.get("use_case", "general_ai_application")
-            uc_title = self._use_case_title(use_case)
 
-            # Handle "Not sure yet" or unsure input gracefully without looping
-            if "not sure" in msg_lower or "unsure" in msg_lower or "default" in msg_lower or "skip" in msg_lower or "help me" in msg_lower:
+            if "not sure" in msg_lower or "unsure" in msg_lower or "default" in msg_lower or "skip" in msg_lower or "help" in msg_lower:
                 mode = "zyntry_managed"
                 app_type = "internal_ai_agent"
-                desc = "No problem! We'll default to **Zyntry-managed connections** — your runtime connects directly to your data. You can always enable user-level OAuth later."
+                desc = "Defaulting to company-managed connections. You can enable end-user OAuth anytime."
             elif "company" in msg_lower or "internal" in msg_lower or "our" in msg_lower or "mode a" in msg_lower:
                 mode = "zyntry_managed"
                 app_type = "internal_ai_agent"
-                desc = "Perfect. Your runtime will connect directly to your company's data sources and workspaces."
+                desc = "Runtime configured for company data and workspaces."
             elif "both" in msg_lower or "hybrid" in msg_lower:
                 mode = "hybrid"
                 app_type = "hybrid_ai_app"
-                desc = "Got it — hybrid mode. Your runtime will support both company-level connections and individual end-user accounts."
+                desc = "Runtime configured for hybrid mode (company data and user accounts)."
             elif any(k in msg_lower for k in ["user", "users", "their own", "byo", "mode b", "each"]):
                 mode = "end_user_oauth"
                 app_type = "customer_facing_ai_app"
-                desc = "Got it. Each of your users will connect their own accounts — Zyntry handles the OAuth flows for you."
+                desc = "Runtime configured for end-user OAuth connections."
             else:
-                # They typed integrations directly instead of choosing architecture
                 mode = "zyntry_managed"
                 app_type = "internal_ai_agent"
-                desc = "Got it — setting up Zyntry-managed connections for your runtime."
+                desc = "Runtime configured for company-managed connections."
 
             if detected_integrations:
                 caps = {slug: self._default_capabilities(slug) for slug in detected_integrations}
                 integ_text = self._display_names_list(detected_integrations)
 
-                # Build a contextual capability summary instead of raw slug dump
                 cap_summary_parts = []
                 for slug in detected_integrations:
                     defn = integration_registry.get(slug)
                     if defn:
                         read_caps = [c for c in defn.capabilities if not c.is_write]
                         if read_caps:
-                            cap_summary_parts.append(f"**{self._display_name(slug)}** ({', '.join(c.name.lower() for c in read_caps[:2])})")
+                            cap_summary_parts.append(f"{self._display_name(slug)} ({', '.join(c.name for c in read_caps[:2])})")
                         else:
-                            cap_summary_parts.append(f"**{self._display_name(slug)}**")
+                            cap_summary_parts.append(self._display_name(slug))
 
                 cap_summary = ", ".join(cap_summary_parts) if cap_summary_parts else integ_text
 
                 return OnboardingModelResponse(
                     text=(
                         f"{desc}\n\n"
-                        f"I've configured {cap_summary} with read-only access by default.\n\n"
-                        "Last thing — what matters most for your AI's performance?\n"
-                        "Speed, balanced performance, or maximum intelligence?"
+                        f"Configured services: {cap_summary} with read access.\n\n"
+                        "Choose your routing preference:\n"
+                        "Low latency (fastest), balanced, or maximum quality."
                     ),
                     proposed_intent="set_application_type_and_integrations",
                     proposed_data={
@@ -305,10 +290,9 @@ class FastOnboardingModelProvider:
                         "integrations": detected_integrations,
                         "capabilities": caps,
                     },
-                    suggested_actions=["Speed — fast responses", "Balanced — best of both", "Max intelligence — highest quality"],
+                    suggested_actions=["Low latency", "Balanced", "Maximum quality"],
                 )
 
-            # No integrations detected — ask about data sources contextually
             question, actions = self._context_aware_integration_question(use_case)
             return OnboardingModelResponse(
                 text=(
@@ -320,12 +304,9 @@ class FastOnboardingModelProvider:
                 suggested_actions=actions,
             )
 
-        # -------------------------------------------------------------
-        # 3. State: selecting_integrations / selecting_capabilities
-        # -------------------------------------------------------------
+        # 3. State: selecting_integrations
         if current_state in ("selecting_integrations", "selecting_capabilities"):
             detected_integrations = self._detect_integrations(msg_lower)
-            # Merge with previously-detected integrations so nothing is lost
             existing = list(config.get("integrations", []))
             for slug in existing:
                 if slug not in detected_integrations:
@@ -355,21 +336,19 @@ class FastOnboardingModelProvider:
             integ_text = self._display_names_list(detected_integrations)
             return OnboardingModelResponse(
                 text=(
-                    f"Great — I've set up **{integ_text}** with the standard capabilities for your use case.\n\n"
-                    "Now, what matters most for your AI's performance?\n"
-                    "Speed, balanced performance, or maximum intelligence?"
+                    f"Configured {integ_text} with standard capabilities.\n\n"
+                    "Choose your routing preference:\n"
+                    "Low latency, balanced, or maximum quality."
                 ),
                 proposed_intent="select_integrations",
                 proposed_data={
                     "integrations": detected_integrations,
                     "capabilities": caps,
                 },
-                suggested_actions=["Speed — fast responses", "Balanced — best of both", "Max intelligence — highest quality"],
+                suggested_actions=["Low latency", "Balanced", "Maximum quality"],
             )
 
-        # -------------------------------------------------------------
-        # 4. State: configuring_runtime -> Performance & Environment
-        # -------------------------------------------------------------
+        # 4. State: configuring_runtime
         if current_state in ("configuring_runtime", "confirming_configuration"):
             strategy = self._extract_strategy(msg_lower)
             model, provider = self._strategy_to_model(strategy, msg_lower)
@@ -393,19 +372,17 @@ class FastOnboardingModelProvider:
                     "routing_strategy": strategy,
                     "environment": env,
                 },
-                suggested_actions=["Confirm & Create Runtime", "I want to change something"],
+                suggested_actions=["Confirm & Create Runtime", "Change settings"],
             )
 
-        # Fallback
         return OnboardingModelResponse(
-            text="Got it — I've updated your runtime configuration with those preferences.",
+            text="Updated your runtime configuration.",
             proposed_intent="general_update",
             proposed_data={},
             suggested_actions=["Confirm & Create Runtime", "Continue"],
         )
 
     def _extract_use_case(self, msg: str) -> str:
-        # Strip out example integration stack mentions first
         cleaned = re.sub(r"example integration stack:?.*", "", msg, flags=re.IGNORECASE)
         cleaned = re.sub(r"example integrations:?.*", "", cleaned, flags=re.IGNORECASE).strip()
 
@@ -447,7 +424,6 @@ class FastOnboardingModelProvider:
         if "gmail" in msg or "mail" in msg:
             if "gmail" not in found:
                 found.append("gmail")
-        # Detect document upload / RAG as a document_storage capability
         if any(k in msg for k in ["document", "documentation", "upload", "docs", "pdf", "rag"]):
             if "document_storage" not in found:
                 found.append("document_storage")
@@ -460,9 +436,9 @@ class FastOnboardingModelProvider:
         return []
 
     def _extract_strategy(self, msg: str) -> str:
-        if "fast" in msg or "speed" in msg or "router" in msg:
+        if "fast" in msg or "speed" in msg or "latency" in msg or "low" in msg:
             return "latency_optimized"
-        if "intel" in msg or "max" in msg or "best" in msg or "highest" in msg:
+        if "intel" in msg or "max" in msg or "best" in msg or "quality" in msg or "high" in msg:
             return "quality_optimized"
         return "balanced"
 
@@ -495,16 +471,16 @@ class FastOnboardingModelProvider:
     ) -> str:
         uc_title = self._use_case_title(use_case)
         strategy_labels = {
-            "latency_optimized": "⚡ Speed-optimized",
-            "quality_optimized": "🧠 Maximum intelligence",
-            "balanced": "⚖️ Balanced",
+            "latency_optimized": "Low latency",
+            "quality_optimized": "Maximum quality",
+            "balanced": "Balanced",
         }
         strategy_label = strategy_labels.get(routing_strategy, routing_strategy.replace("_", " ").capitalize())
 
         arch_labels = {
-            "end_user_oauth": "End-user OAuth — each user connects their own accounts",
-            "zyntry_managed": "Zyntry-managed — your company's data and credentials",
-            "hybrid": "Hybrid — company data + end-user accounts",
+            "end_user_oauth": "End-user OAuth (each user connects their own accounts)",
+            "zyntry_managed": "Company-managed data and credentials",
+            "hybrid": "Hybrid (company data and end-user accounts)",
         }
         arch_label = arch_labels.get(integration_mode, integration_mode.replace("_", " ").capitalize())
 
@@ -513,30 +489,29 @@ class FastOnboardingModelProvider:
             display = self._display_name(slug)
             caps = capabilities.get(slug, self._default_capabilities(slug))
             if caps:
-                cap_names = []
                 defn = integration_registry.get(slug)
                 if defn:
                     cap_map = {c.slug: c.name for c in defn.capabilities}
                     cap_names = [cap_map.get(c, c.replace("_", " ").capitalize()) for c in caps]
                 else:
                     cap_names = [c.replace("_", " ").capitalize() for c in caps]
-                integ_sections.append(f"  * **{display}** — {', '.join(cap_names)}")
+                integ_sections.append(f"• {display}: {', '.join(cap_names)}")
             else:
-                integ_sections.append(f"  * **{display}** — Standard read access")
+                integ_sections.append(f"• {display}: Standard read access")
 
-        integ_block = "\n".join(integ_sections) if integ_sections else "  * None configured yet"
+        integ_block = "\n".join(integ_sections) if integ_sections else "• None configured"
 
         return (
-            "### 📋 Here's your runtime configuration:\n\n"
-            f"**Runtime:** {uc_title} Runtime\n\n"
-            f"**Architecture:** {arch_label}\n\n"
-            f"**Routing:** {strategy_label} automatic routing\n\n"
-            f"**Environment:** {environment.capitalize()}\n\n"
-            f"**Connected Services:**\n{integ_block}\n\n"
-            "---\n\n"
-            "Does this look right? I'll create your runtime and you'll be ready to generate an API key."
+            "Runtime Summary\n\n"
+            f"• Name: {uc_title} Runtime\n"
+            f"• Mode: {arch_label}\n"
+            f"• Routing: {strategy_label}\n"
+            f"• Environment: {environment.capitalize()}\n\n"
+            f"Connected Services:\n{integ_block}\n\n"
+            "Ready to provision this runtime."
         )
 
 
 default_onboarding_model_provider = FastOnboardingModelProvider()
+
 
