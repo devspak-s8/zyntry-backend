@@ -58,8 +58,8 @@ class OnboardingEngine:
         welcome_msg = {
             "role": "assistant",
             "content": (
-                "**Let's build your Zyntry runtime.**\n\n"
-                "Tell me what you're building, what you want it to do, or what you want Zyntry to handle for you."
+                "Tell me what kind of AI application you are building, "
+                "or what tools and data sources you want Zyntry to manage."
             ),
             "timestamp": datetime.now(UTC).isoformat(),
         }
