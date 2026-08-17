@@ -9,10 +9,12 @@ from app.api.v1.apikeys.router import router as apikeys_router
 from app.api.v1.auth.router import router as auth_router
 from app.api.v1.billing.router import router as billing_router
 from app.api.v1.chat.router import router as chat_router
+from app.api.v1.connections.router import router as connections_router
 from app.api.v1.embeddings.router import router as embeddings_router
 from app.api.v1.events.router import router as events_router
-from app.api.v1.features.router import router as features_router
 from app.api.v1.features.dependencies import require_action_feature, require_feature
+from app.api.v1.features.router import router as features_router
+from app.api.v1.integrations.router import router as integrations_router
 from app.api.v1.invoke.router import router as invoke_router
 from app.api.v1.knowledge.router import router as knowledge_router
 from app.api.v1.logs.router import router as logs_router
@@ -41,6 +43,8 @@ api_router.include_router(
     runtimes_router, dependencies=[Depends(require_feature("runtime_management"))]
 )
 api_router.include_router(onboarding_router)
+api_router.include_router(integrations_router)
+api_router.include_router(connections_router)
 api_router.include_router(
     knowledge_router, dependencies=[Depends(require_feature("knowledge_bases"))]
 )

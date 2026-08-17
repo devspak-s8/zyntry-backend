@@ -8,7 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
 from app.core.database import get_session
-from app.core.security import generate_api_key, hash_token
 from app.events import NotificationEvent
 from app.models.apikeys import ApiKey
 from app.models.projects import Project
@@ -35,10 +34,15 @@ router = APIRouter(prefix="/apikeys", tags=["apikeys"])
 async def list_api_keys(
     current_user: Annotated[User, Depends(get_current_user)],
     project_id: Annotated[str | None, Query()] = None,
+    runtime_id: Annotated[str | None, Query()] = None,
     db: AsyncSession = Depends(get_session),
 ) -> list[ApiKeyRead]:
     service = ApiKeyService(db)
-    keys = await service.list_keys(project_id=project_id)
+    keys = await service.list_keys(
+        project_id=project_id,
+        user_id=current_user.id,
+        runtime_id=runtime_id,
+    )
     return [ApiKeyRead(**k) for k in keys]
 
 
@@ -59,10 +63,15 @@ async def get_api_key(
     if key is None:
         raise HTTPException(status_code=404, detail="API key not found")
 
+    if key.user_id and key.user_id != current_user.id and not current_user.is_superuser:
+        raise HTTPException(status_code=403, detail="Unauthorized")
+
     return ApiKeyRead(
         id=key.id,
         name=key.name,
         prefix=key.prefix,
+        runtime_id=getattr(key, "runtime_id", None),
+        environment=getattr(key, "environment", "development"),
         scopes=key.scopes,
         revoked=key.revoked,
         expires_at=key.expires_at,
@@ -96,27 +105,14 @@ async def create_api_key(
         if org_id is None:
             org_id = proj.organization_id
 
-    if org_id is None:
-        raise HTTPException(
-            status_code=400,
-            detail="User must belong to an organization or provide a project_id",
-        )
-
-    raw_key = generate_api_key("sk_live")
-    uow = UnitOfWork(db)
+    service = ApiKeyService(db)
     try:
-        key = await uow.api_keys.create(
-            name=body.name,
-            hashed_key=hash_token(raw_key),
-            prefix=raw_key[:16],
-            organization_id=org_id,
+        result = await service.create_key(
             user_id=current_user.id,
-            project_id=proj_id,
-            scopes=body.scopes,
+            data=body,
+            organization_id=org_id,
         )
-        await uow.commit()
     except Exception as exc:
-        await uow.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to create API key: {exc}")
 
     try:
@@ -133,21 +129,12 @@ async def create_api_key(
         logger.exception("Failed to enqueue API key created email")
 
     return ApiKeyCreateResponse(
-        id=key.id,
-        name=key.name,
-        prefix=key.prefix,
-        scopes=key.scopes,
-        revoked=key.revoked,
-        expires_at=key.expires_at,
-        last_used_at=key.last_used_at,
-        usage_count=key.usage_count,
-        usage_stats=key.usage_stats,
-        created_at=key.created_at,
-        updated_at=key.updated_at,
-        key=raw_key,
+        **result["api_key"].model_dump(),
+        key=result["raw_key"],
     )
 
 
+@router.post("/{key_id}/rotate", response_model=ApiKeyRotateResponse)
 @router.put("/{key_id}/rotate", response_model=ApiKeyRotateResponse)
 async def rotate_api_key(
     key_id: str,
@@ -209,6 +196,8 @@ async def expire_api_key(
         id=key.id,
         name=key.name,
         prefix=key.prefix,
+        runtime_id=getattr(key, "runtime_id", None),
+        environment=getattr(key, "environment", "development"),
         scopes=key.scopes,
         revoked=key.revoked,
         expires_at=key.expires_at,

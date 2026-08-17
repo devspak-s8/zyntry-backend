@@ -64,7 +64,7 @@ def main() -> int:
         ]
 
     request = urllib.request.Request(
-        f"{args.base_url.rstrip('/')}/api/v1/invoke/invoke",
+        f"{args.base_url.rstrip('/')}/api/v1/invoke",
         data=json.dumps(payload).encode(),
         headers={
             "Authorization": f"Bearer {api_key}",

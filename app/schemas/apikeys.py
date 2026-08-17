@@ -11,13 +11,17 @@ from app.schemas.organizations import ORMModel
 class ApiKeyCreate(ORMModel):
     name: str = Field(min_length=1, max_length=255)
     project_id: uuid.UUID | None = None
-    scopes: list[str] = Field(default_factory=lambda: ["read"], max_length=50)
+    runtime_id: uuid.UUID | None = None
+    environment: str = "development"
+    scopes: list[str] = Field(default_factory=lambda: ["read", "write"], max_length=50)
 
 
 class ApiKeyRead(ORMModel):
     id: uuid.UUID
     name: str
     prefix: str
+    runtime_id: uuid.UUID | None = None
+    environment: str = "development"
     scopes: list[str]
     revoked: bool
     expires_at: datetime | None

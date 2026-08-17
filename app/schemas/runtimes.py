@@ -9,35 +9,53 @@ from app.schemas.organizations import ORMModel
 
 
 class RuntimeCreate(ORMModel):
-    project_id: uuid.UUID
-    organization_id: uuid.UUID
+    user_id: uuid.UUID | None = None
+    project_id: uuid.UUID | None = None
+    organization_id: uuid.UUID | None = None
+    name: str = "Default Runtime"
+    environment: str = "development"
     provider: str = "openai"
     model: str = "gpt-4o"
+    fallback_models: list[str] = Field(default_factory=list)
+    routing_strategy: str = "balanced"
     embedding_model: str = "text-embedding-3-small"
     vector_store: str = "pgvector"
     chunk_size: int = Field(default=512, ge=64, le=4096)
     chunk_overlap: int = Field(default=64, ge=0, le=512)
+    system_instructions: str | None = None
+    security_policies: dict = Field(default_factory=dict)
     config: dict = Field(default_factory=dict)
 
 
 class RuntimeUpdate(ORMModel):
+    name: str | None = None
+    environment: str | None = None
     provider: str | None = None
     model: str | None = None
+    fallback_models: list[str] | None = None
+    routing_strategy: str | None = None
     embedding_model: str | None = None
     vector_store: str | None = None
     chunk_size: int | None = Field(default=None, ge=64, le=4096)
     chunk_overlap: int | None = Field(default=None, ge=0, le=512)
+    system_instructions: str | None = None
+    security_policies: dict | None = None
     config: dict | None = None
 
 
 class RuntimeRead(ORMModel):
     id: uuid.UUID
-    project_id: uuid.UUID
-    organization_id: uuid.UUID
+    user_id: uuid.UUID
+    name: str = "Default Runtime"
+    environment: str = "development"
+    project_id: uuid.UUID | None = None
+    organization_id: uuid.UUID | None = None
     status: str
     version: str
     provider: str
     model: str
+    fallback_models: list[str] = Field(default_factory=list)
+    routing_strategy: str = "balanced"
     embedding_model: str
     vector_store: str
     chunk_size: int
@@ -52,6 +70,8 @@ class RuntimeRead(ORMModel):
     health: float
     error_message: str | None
     api_key_id: uuid.UUID | None
+    system_instructions: str | None = None
+    security_policies: dict = Field(default_factory=dict)
     config: dict
     metadata: dict
     created_at: datetime

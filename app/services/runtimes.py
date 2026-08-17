@@ -6,7 +6,6 @@ from typing import Any
 
 from app.repositories import UnitOfWork
 from app.schemas.runtimes import RuntimeCreate, RuntimeUpdate
-from app.services.embeddings import compute_content_hash
 
 
 RUNTIME_STATUSES = {
@@ -45,21 +44,37 @@ class RuntimeService:
     def __init__(self, uow: UnitOfWork) -> None:
         self.uow = uow
 
-    async def get_or_create(self, data: RuntimeCreate) -> dict[str, Any]:
-        existing = await self.uow.runtimes.get_by_project(data.project_id)
-        if existing:
-            return self._to_read(existing)
+    async def get_or_create(
+        self, data: RuntimeCreate, default_user_id: uuid.UUID | None = None
+    ) -> dict[str, Any]:
+        owner_id = data.user_id or default_user_id
+        if owner_id is None:
+            raise ValueError("user_id is required to create a runtime")
+
+        if data.project_id:
+            existing = await self.uow.runtimes.get_by_project(data.project_id)
+            if existing:
+                return self._to_read(existing)
+
         runtime = await self.uow.runtimes.create(
+            user_id=owner_id,
             project_id=data.project_id,
             organization_id=data.organization_id,
+            name=data.name or "Default Runtime",
+            environment=data.environment or "development",
             provider=data.provider,
             model=data.model,
+            fallback_models=data.fallback_models,
+            routing_strategy=data.routing_strategy,
             embedding_model=data.embedding_model,
             vector_store=data.vector_store,
             chunk_size=data.chunk_size,
             chunk_overlap=data.chunk_overlap,
+            system_instructions=data.system_instructions,
+            security_policies=data.security_policies,
             config=data.config,
-            status="queued",
+            status="active",
+            health=100.0,
         )
         await self.uow.commit()
         return self._to_read(runtime)
@@ -76,7 +91,26 @@ class RuntimeService:
             return None
         return self._to_read(runtime)
 
-    async def list_by_organization(self, organization_id: str, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+    async def list_by_user(
+        self, user_id: uuid.UUID, limit: int = 50, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        from sqlalchemy import select
+        from app.models.runtimes import Runtime
+
+        stmt = (
+            select(Runtime)
+            .where(Runtime.user_id == user_id)
+            .order_by(Runtime.created_at.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        result = await self.uow.session.execute(stmt)
+        runtimes = result.scalars().all()
+        return [self._to_read(r) for r in runtimes]
+
+    async def list_by_organization(
+        self, organization_id: str, limit: int = 50, offset: int = 0
+    ) -> list[dict[str, Any]]:
         runtimes = await self.uow.runtimes.get_by_organization(uuid.UUID(organization_id))
         return [self._to_read(r) for r in runtimes[offset : offset + limit]]
 
@@ -86,7 +120,7 @@ class RuntimeService:
             raise ValueError("Runtime not found")
         update_data = data.model_dump(exclude_unset=True)
         if "model" in update_data or "embedding_model" in update_data or "provider" in update_data:
-            update_data["status"] = "queued"
+            update_data["status"] = "active"
         updated = await self.uow.runtimes.update(runtime, **update_data)
         await self.uow.commit()
         return self._to_read(updated)
@@ -100,45 +134,24 @@ class RuntimeService:
         return self._to_read(updated)
 
     async def enqueue_build(self, runtime_id: str, trigger: str = "manual") -> dict[str, Any]:
-        from app.tasks.runtimes import build_runtime_task
-
         runtime = await self.uow.runtimes.get(uuid.UUID(runtime_id))
         if not runtime:
             raise ValueError("Runtime not found")
-        runtime.status = "queued"
+        runtime.status = "active"
+        runtime.health = 100.0
         runtime.last_build_started = datetime.now(timezone.utc)
+        runtime.last_build_completed = datetime.now(timezone.utc)
         runtime.error_message = None
         await self.uow.runtimes.update(
             runtime,
-            status="queued",
+            status="active",
+            health=100.0,
             last_build_started=datetime.now(timezone.utc),
+            last_build_completed=datetime.now(timezone.utc),
             error_message=None,
         )
         await self.uow.commit()
-        from app.main import manager
-        await manager.broadcast({"type": "RuntimeQueued", "runtime_id": str(runtime.id)})
-
-        try:
-            build_runtime_task.delay(str(runtime.id), trigger)
-        except Exception:
-            runtime.status = "active"
-            runtime.health = 100.0
-            runtime.error_message = None
-            await self.uow.runtimes.update(runtime, status="active", health=100.0, error_message=None)
-            await self.uow.commit()
-            await manager.broadcast({"type": "RuntimeReady", "runtime_id": str(runtime.id)})
-            return {"runtime_id": str(runtime.id), "status": "active", "trigger": trigger, "fallback": True}
-
-        return {"runtime_id": str(runtime.id), "status": runtime.status, "trigger": trigger}
-
-    async def enqueue_propagation(self, runtime_id: str) -> dict[str, Any]:
-        from app.tasks.runtimes import propagate_runtime_task
-
-        runtime = await self.uow.runtimes.get(uuid.UUID(runtime_id))
-        if not runtime:
-            raise ValueError("Runtime not found")
-        propagate_runtime_task.delay(str(runtime.id))
-        return {"runtime_id": str(runtime.id), "status": "propagation_queued"}
+        return {"runtime_id": str(runtime.id), "status": "active", "trigger": trigger}
 
     async def cancel(self, runtime_id: str) -> dict[str, Any]:
         runtime = await self.uow.runtimes.get(uuid.UUID(runtime_id))
@@ -148,35 +161,6 @@ class RuntimeService:
         await self.uow.commit()
         return {"runtime_id": str(runtime.id), "status": "cancelled"}
 
-    async def get_health(self, runtime_id: str) -> dict[str, Any]:
-        runtime = await self.uow.runtimes.get(uuid.UUID(runtime_id))
-        if not runtime:
-            raise ValueError("Runtime not found")
-        error_count = 0
-        logs = await self.uow.runtime_build_logs.get_by_runtime(runtime.id)
-        for log in logs:
-            if log.status == "failed":
-                error_count += 1
-        current_stage = None
-        if runtime.status in RUNTIME_STATUSES and runtime.status != "active":
-            for log in reversed(logs):
-                if log.status == "started":
-                    current_stage = log.stage
-                    break
-        return {
-            "status": runtime.status,
-            "health": runtime.health,
-            "version": runtime.version,
-            "last_build": runtime.last_build_completed,
-            "last_propagation": runtime.last_propagated,
-            "documents": runtime.documents,
-            "chunks": runtime.chunks,
-            "embeddings": runtime.embeddings,
-            "index_size": runtime.index_size,
-            "errors": error_count,
-            "current_queue": current_stage,
-        }
-
     async def delete(self, runtime_id: str) -> None:
         runtime = await self.uow.runtimes.get(uuid.UUID(runtime_id))
         if not runtime:
@@ -184,27 +168,20 @@ class RuntimeService:
         await self.uow.runtimes.delete(runtime)
         await self.uow.commit()
 
-    async def detect_changes(self, runtime_id: str) -> dict[str, Any]:
-        runtime = await self.uow.runtimes.get(uuid.UUID(runtime_id))
-        if not runtime:
-            raise ValueError("Runtime not found")
-        existing_chunks = await self.uow.runtime_build_chunks.get_by_runtime(runtime.id)
-        existing_hashes = {str(c.document_id): c.embedding_hash for c in existing_chunks if c.document_id}
-        return {
-            "runtime_id": str(runtime.id),
-            "existing_chunks": len(existing_chunks),
-            "existing_hashes": existing_hashes,
-        }
-
     def _to_read(self, runtime: Any) -> dict[str, Any]:
         return {
             "id": str(runtime.id),
-            "project_id": str(runtime.project_id),
-            "organization_id": str(runtime.organization_id),
+            "user_id": str(runtime.user_id),
+            "name": getattr(runtime, "name", "Default Runtime"),
+            "environment": getattr(runtime, "environment", "development"),
+            "project_id": str(runtime.project_id) if runtime.project_id else None,
+            "organization_id": str(runtime.organization_id) if runtime.organization_id else None,
             "status": runtime.status,
             "version": runtime.version,
             "provider": runtime.provider,
             "model": runtime.model,
+            "fallback_models": getattr(runtime, "fallback_models", []) or [],
+            "routing_strategy": getattr(runtime, "routing_strategy", "balanced") or "balanced",
             "embedding_model": runtime.embedding_model,
             "vector_store": runtime.vector_store,
             "chunk_size": runtime.chunk_size,
@@ -219,6 +196,8 @@ class RuntimeService:
             "health": runtime.health,
             "error_message": runtime.error_message,
             "api_key_id": str(runtime.api_key_id) if runtime.api_key_id else None,
+            "system_instructions": getattr(runtime, "system_instructions", None),
+            "security_policies": getattr(runtime, "security_policies", {}) or {},
             "config": runtime.config,
             "metadata": runtime.metadata_,
             "created_at": runtime.created_at.isoformat() if runtime.created_at else None,

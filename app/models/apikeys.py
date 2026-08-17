@@ -16,15 +16,19 @@ class ApiKey(Base, UUIDMixin, TimestampMixin):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     hashed_key: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     prefix: Mapped[str] = mapped_column(String(32), nullable=False)
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True
     )
     user_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), nullable=True
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
     )
     project_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("projects.id", ondelete="CASCADE"), nullable=True
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True
     )
+    runtime_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("runtimes.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    environment: Mapped[str] = mapped_column(String(32), default="development", nullable=False)
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     scopes: Mapped[list[str]] = mapped_column(JSON, default=lambda: ["read"], nullable=False)

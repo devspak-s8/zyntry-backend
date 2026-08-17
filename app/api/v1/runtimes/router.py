@@ -15,6 +15,12 @@ from app.core.database import get_session
 from app.models.runtimes import RuntimeBuildLog
 from app.models.users import User
 from app.repositories import UnitOfWork
+from app.schemas.apikeys import ApiKeyCreate, ApiKeyCreateResponse
+from app.schemas.integrations import (
+    RuntimeIntegrationCreate,
+    RuntimeIntegrationRead,
+    RuntimeIntegrationUpdate,
+)
 from app.schemas.runtimes import (
     RuntimeBuildChunkRead,
     RuntimeBuildLogRead,
@@ -23,7 +29,9 @@ from app.schemas.runtimes import (
     RuntimeRead,
     RuntimeUpdate,
 )
+from app.services.apikeys import ApiKeyService
 from app.services.health import HealthService
+from app.services.integrations.service import IntegrationService
 from app.services.runtimes import RuntimeService
 
 router = APIRouter(prefix="/runtimes", tags=["runtimes"])
@@ -44,8 +52,12 @@ async def list_runtimes(
         return [runtime] if runtime else []
     if organization_id:
         return await service.list_by_organization(organization_id)
+    # User-first listing
+    user_runtimes = await service.list_by_user(current_user.id)
+    if user_runtimes:
+        return [RuntimeRead(**r) for r in user_runtimes]
     runtimes = await uow.runtimes.list_active()
-    return [service._to_read(r) for r in runtimes]
+    return [RuntimeRead(**service._to_read(r)) for r in runtimes]
 
 
 @router.post("", response_model=RuntimeRead, status_code=status.HTTP_201_CREATED)
@@ -56,7 +68,7 @@ async def create_runtime(
 ) -> RuntimeRead:
     uow = UnitOfWork(db)
     service = RuntimeService(uow)
-    runtime = await service.get_or_create(body)
+    runtime = await service.get_or_create(body, default_user_id=current_user.id)
     return RuntimeRead(**runtime)
 
 
@@ -105,6 +117,165 @@ async def update_runtime(
     return RuntimeRead(**runtime)
 
 
+@router.post("/{runtime_id}/api-keys", response_model=ApiKeyCreateResponse, status_code=status.HTTP_201_CREATED)
+async def create_runtime_api_key(
+    runtime_id: str,
+    body: ApiKeyCreate,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_session),
+) -> ApiKeyCreateResponse:
+    try:
+        rid = uuid.UUID(runtime_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid runtime_id format") from None
+
+    uow = UnitOfWork(db)
+    runtime = await uow.runtimes.get(rid)
+    if runtime is None:
+        raise HTTPException(status_code=404, detail="Runtime not found")
+    if runtime.user_id != current_user.id and not current_user.is_superuser:
+        raise HTTPException(status_code=403, detail="Unauthorized to create API keys for this runtime")
+
+    service = ApiKeyService(db)
+    body.runtime_id = rid
+    if not body.environment:
+        body.environment = runtime.environment
+    result = await service.create_key(
+        user_id=current_user.id,
+        data=body,
+        organization_id=runtime.organization_id,
+    )
+    return ApiKeyCreateResponse(
+        **result["api_key"].model_dump(),
+        key=result["raw_key"],
+    )
+
+
+@router.get("/{runtime_id}/integrations", response_model=list[RuntimeIntegrationRead])
+async def list_runtime_integrations(
+    runtime_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_session),
+) -> list[RuntimeIntegrationRead]:
+    try:
+        rid = uuid.UUID(runtime_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid runtime_id format") from None
+
+    uow = UnitOfWork(db)
+    service = IntegrationService(uow)
+    items = await service.list_runtime_integrations(rid)
+    return [
+        RuntimeIntegrationRead(
+            id=i.id,
+            runtime_id=i.runtime_id,
+            integration_slug=i.integration_slug,
+            connection_mode=i.connection_mode,
+            enabled_capabilities=i.enabled_capabilities or [],
+            is_enabled=i.is_enabled,
+            connection_required=i.connection_required,
+            connection_status=i.connection_status,
+            connection_id=i.connection_id,
+            config=i.config or {},
+            created_at=i.created_at,
+            updated_at=i.updated_at,
+        )
+        for i in items
+    ]
+
+
+@router.post("/{runtime_id}/integrations", response_model=RuntimeIntegrationRead, status_code=status.HTTP_201_CREATED)
+async def enable_runtime_integration(
+    runtime_id: str,
+    body: RuntimeIntegrationCreate,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_session),
+) -> RuntimeIntegrationRead:
+    try:
+        rid = uuid.UUID(runtime_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid runtime_id format") from None
+
+    uow = UnitOfWork(db)
+    runtime = await uow.runtimes.get(rid)
+    if runtime is None:
+        raise HTTPException(status_code=404, detail="Runtime not found")
+    if runtime.user_id != current_user.id and not current_user.is_superuser:
+        raise HTTPException(status_code=403, detail="Unauthorized")
+
+    service = IntegrationService(uow)
+    try:
+        item = await service.enable_runtime_integration(rid, body)
+        return RuntimeIntegrationRead(
+            id=item.id,
+            runtime_id=item.runtime_id,
+            integration_slug=item.integration_slug,
+            connection_mode=item.connection_mode,
+            enabled_capabilities=item.enabled_capabilities or [],
+            is_enabled=item.is_enabled,
+            connection_required=item.connection_required,
+            connection_status=item.connection_status,
+            connection_id=item.connection_id,
+            config=item.config or {},
+            created_at=item.created_at,
+            updated_at=item.updated_at,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.patch("/{runtime_id}/integrations/{integration_slug}", response_model=RuntimeIntegrationRead)
+async def update_runtime_integration(
+    runtime_id: str,
+    integration_slug: str,
+    body: RuntimeIntegrationUpdate,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_session),
+) -> RuntimeIntegrationRead:
+    try:
+        rid = uuid.UUID(runtime_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid runtime_id format") from None
+
+    uow = UnitOfWork(db)
+    service = IntegrationService(uow)
+    try:
+        item = await service.update_runtime_integration(rid, integration_slug, body)
+        return RuntimeIntegrationRead(
+            id=item.id,
+            runtime_id=item.runtime_id,
+            integration_slug=item.integration_slug,
+            connection_mode=item.connection_mode,
+            enabled_capabilities=item.enabled_capabilities or [],
+            is_enabled=item.is_enabled,
+            connection_required=item.connection_required,
+            connection_status=item.connection_status,
+            connection_id=item.connection_id,
+            config=item.config or {},
+            created_at=item.created_at,
+            updated_at=item.updated_at,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/{runtime_id}/integrations/{integration_slug}", status_code=status.HTTP_204_NO_CONTENT)
+async def disable_runtime_integration(
+    runtime_id: str,
+    integration_slug: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_session),
+) -> None:
+    try:
+        rid = uuid.UUID(runtime_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid runtime_id format") from None
+
+    uow = UnitOfWork(db)
+    service = IntegrationService(uow)
+    await service.disable_runtime_integration(rid, integration_slug)
+
+
 @router.post("/{runtime_id}/rebuild", response_model=dict)
 async def rebuild_runtime(
     runtime_id: str,
@@ -139,9 +310,16 @@ async def invoke_runtime_console(
     if runtime is None:
         raise HTTPException(status_code=404, detail="Runtime not found")
 
-    await require_project_membership(str(runtime.project_id), current_user, db)
+    if runtime.project_id:
+        await require_project_membership(str(runtime.project_id), current_user, db)
+    elif runtime.user_id != current_user.id and not current_user.is_superuser:
+        raise HTTPException(status_code=403, detail="Unauthorized access to runtime")
+
     safe_body = body.model_copy(
-        update={"project": str(runtime.project_id), "runtime_id": str(runtime.id)}
+        update={
+            "project": str(runtime.project_id) if runtime.project_id else None,
+            "runtime_id": str(runtime.id),
+        }
     )
     return await invoke(safe_body, current_user, db)
 
@@ -154,7 +332,7 @@ async def propagate_runtime(
 ) -> dict:
     uow = UnitOfWork(db)
     service = RuntimeService(uow)
-    result = await service.enqueue_propagation(runtime_id)
+    result = await service.enqueue_build(runtime_id, trigger="propagation")
     return result
 
 
@@ -211,7 +389,11 @@ async def list_runtime_logs(
     runtime = await uow.runtimes.get(rid)
     if runtime is None:
         raise HTTPException(status_code=404, detail="Runtime not found")
-    await require_project_membership(str(runtime.project_id), current_user, db)
+    if runtime.project_id:
+        await require_project_membership(str(runtime.project_id), current_user, db)
+    elif runtime.user_id != current_user.id and not current_user.is_superuser:
+        raise HTTPException(status_code=403, detail="Unauthorized")
+
     result = await db.execute(
         select(RuntimeBuildLog)
         .where(RuntimeBuildLog.runtime_id == rid)
@@ -251,7 +433,11 @@ async def list_runtime_chunks(
     runtime = await uow.runtimes.get(rid)
     if runtime is None:
         raise HTTPException(status_code=404, detail="Runtime not found")
-    await require_project_membership(str(runtime.project_id), current_user, db)
+    if runtime.project_id:
+        await require_project_membership(str(runtime.project_id), current_user, db)
+    elif runtime.user_id != current_user.id and not current_user.is_superuser:
+        raise HTTPException(status_code=403, detail="Unauthorized")
+
     result = await db.execute(
         select(RuntimeBuildChunk).where(RuntimeBuildChunk.runtime_id == rid)
     )

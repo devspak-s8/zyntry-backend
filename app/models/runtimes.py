@@ -14,16 +14,23 @@ from app.models.organizations import TimestampMixin, UUIDMixin
 class Runtime(Base, UUIDMixin, TimestampMixin):
     __tablename__ = "runtimes"
 
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, unique=True
+    name: Mapped[str] = mapped_column(String(255), default="Default Runtime", nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    organization_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True, index=True
     )
     status: Mapped[str] = mapped_column(String(32), default="queued", nullable=False)
     version: Mapped[str] = mapped_column(String(32), default="1.0.0", nullable=False)
+    environment: Mapped[str] = mapped_column(String(32), default="development", nullable=False)
     provider: Mapped[str] = mapped_column(String(64), default="openai", nullable=False)
     model: Mapped[str] = mapped_column(String(128), default="gpt-4o", nullable=False)
+    fallback_models: Mapped[list[str]] = mapped_column(JSONB, default=list, nullable=False)
+    routing_strategy: Mapped[str] = mapped_column(String(64), default="balanced", nullable=False)
     embedding_model: Mapped[str] = mapped_column(String(128), default="text-embedding-3-small", nullable=False)
     vector_store: Mapped[str] = mapped_column(String(64), default="pgvector", nullable=False)
     chunk_size: Mapped[int] = mapped_column(Integer, default=512, nullable=False)
@@ -40,6 +47,8 @@ class Runtime(Base, UUIDMixin, TimestampMixin):
     api_key_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("api_keys.id", ondelete="SET NULL"), nullable=True
     )
+    system_instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    security_policies: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     config: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict, nullable=False)
 
