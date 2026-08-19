@@ -130,3 +130,43 @@ class RuntimeHealthResponse(ORMModel):
     error_count: int = 0
     cache_hit_rate: float | None = None
     retrieval_quality: float | None = None
+
+
+class RuntimeTopologyNode(BaseModel):
+    id: str
+    kind: str
+    label: str
+    status: str
+    health: float | None = None
+    metrics: dict = Field(default_factory=dict)
+    metadata: dict = Field(default_factory=dict)
+    simulated: bool = False
+
+
+class RuntimeTopologyEdge(BaseModel):
+    source: str
+    target: str
+    status: str = "active"
+    metadata: dict = Field(default_factory=dict)
+
+
+class RuntimeTopologyResponse(BaseModel):
+    runtime_id: uuid.UUID
+    project_id: uuid.UUID | None = None
+    generated_at: datetime
+    window_seconds: int
+    simulated: bool = False
+    nodes: list[RuntimeTopologyNode] = Field(default_factory=list)
+    edges: list[RuntimeTopologyEdge] = Field(default_factory=list)
+    routing: dict = Field(default_factory=dict)
+    telemetry: dict = Field(default_factory=dict)
+
+
+class RuntimeTopologySimulationRequest(BaseModel):
+    mode: str = Field(pattern="^(healthy|postgres_degraded|traffic_surge|llm_failover)$")
+
+
+class RuntimeTopologySimulationResponse(RuntimeTopologyResponse):
+    simulation_id: uuid.UUID
+    expires_at: datetime
+    production_traffic_affected: bool = False
