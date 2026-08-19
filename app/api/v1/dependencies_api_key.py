@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import Cookie, Depends, Header, HTTPException, status
+from fastapi import Cookie, Depends, Header, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +24,7 @@ class ActionAuthContext:
 
 
 async def get_api_key_user(
+    request: Request,
     authorization: Annotated[str | None, Header()] = None,
     db: AsyncSession = Depends(get_session),
 ) -> User:
@@ -48,6 +49,8 @@ async def get_api_key_user(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
 
     api_key.usage_count = (api_key.usage_count or 0) + 1
+    request.state.api_key_id = api_key.id
+    request.state.api_key_project_id = api_key.project_id
     await db.commit()
     return user
 

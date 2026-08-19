@@ -1,19 +1,22 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
 from app.api.v1.features.dependencies import require_feature
 from app.core.config import settings
 from app.core.database import get_session
-from app.models.billing import UsageLog
+from app.models.apikeys import ApiKey
+from app.models.billing import BillingLedger, SpendingLimit, UsageLog
+from app.models.projects import Project
+from app.models.runtimes import Runtime
 from app.models.users import User
 from app.repositories import UnitOfWork
 from app.repositories.processed_webhook_events import ProcessedWebhookEventRepository
@@ -32,9 +35,13 @@ from app.schemas.billing import (
     UsageSummary,
     WalletRead,
     WalletTransactionRead,
+    BillingLedgerRead,
+    SpendingLimitCreate,
+    SpendingLimitRead,
 )
 from app.services.bachs import BachsService, BachsError
 from app.services.billing import BillingService, InsufficientCredits
+from app.services.metered_billing import MeteredBillingService
 from app.core.ws_events import emit_checkout_completed, emit_wallet_updated
 
 router = APIRouter(prefix="/wallet", tags=["wallet"])
@@ -69,6 +76,122 @@ async def list_transactions(
 ) -> list[WalletTransactionRead]:
     service = BillingService(db)
     return await service.get_transactions(current_user.id, limit=limit, offset=offset)
+
+
+@router.get("/ledger", response_model=list[BillingLedgerRead], dependencies=BILLING_GUARD)
+async def list_billing_ledger(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_session)],
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> list[BillingLedgerRead]:
+    result = await db.execute(
+        select(BillingLedger)
+        .where(BillingLedger.user_id == current_user.id)
+        .order_by(BillingLedger.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    return [BillingLedgerRead(
+        id=row.id, transaction_type=row.transaction_type, user_id=row.user_id,
+        organization_id=row.organization_id, project_id=row.project_id,
+        runtime_id=row.runtime_id, api_key_id=row.api_key_id,
+        request_id=row.request_id, resource_type=row.resource_type,
+        resource_id=row.resource_id, amount=row.amount, currency=row.currency,
+        provider_cost=row.provider_cost, platform_markup=row.platform_markup,
+        status=row.status, metadata=row.metadata_, created_at=row.created_at,
+    ) for row in result.scalars().all()]
+
+
+@router.get("/limits", response_model=list[SpendingLimitRead], dependencies=BILLING_GUARD)
+async def list_spending_limits(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_session)],
+) -> list[SpendingLimitRead]:
+    result = await db.execute(select(SpendingLimit).where(SpendingLimit.scope_type == "user", SpendingLimit.scope_id == current_user.id))
+    return [SpendingLimitRead.model_validate(row) for row in result.scalars().all()]
+
+
+@router.post("/limits", response_model=SpendingLimitRead, status_code=status.HTTP_201_CREATED, dependencies=BILLING_GUARD)
+async def create_spending_limit(
+    body: SpendingLimitCreate,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_session)],
+) -> SpendingLimitRead:
+    if body.scope_type == "user" and body.scope_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Cannot configure another user's limit")
+    if body.scope_type == "organization" and body.scope_id != current_user.organization_id:
+        raise HTTPException(status_code=403, detail="Organization is outside your account")
+    if body.scope_type == "project":
+        project = await db.scalar(select(Project).where(Project.id == body.scope_id, Project.organization_id == current_user.organization_id))
+        if project is None:
+            raise HTTPException(status_code=403, detail="Project is outside your organization")
+    if body.scope_type == "runtime":
+        runtime = await db.scalar(select(Runtime).where(Runtime.id == body.scope_id, Runtime.organization_id == current_user.organization_id))
+        if runtime is None:
+            raise HTTPException(status_code=403, detail="Runtime is outside your organization")
+    if body.scope_type == "api_key":
+        api_key = await db.scalar(select(ApiKey).where(ApiKey.id == body.scope_id, ApiKey.organization_id == current_user.organization_id))
+        if api_key is None:
+            raise HTTPException(status_code=403, detail="API key is outside your organization")
+    row = await db.scalar(select(SpendingLimit).where(SpendingLimit.scope_type == body.scope_type, SpendingLimit.scope_id == body.scope_id, SpendingLimit.period == body.period))
+    if row is None:
+        row = SpendingLimit(**body.model_dump())
+        db.add(row)
+    else:
+        row.amount = body.amount
+        row.active = True
+    await db.commit()
+    await db.refresh(row)
+    return SpendingLimitRead.model_validate(row)
+
+
+@router.get("/reconciliation", dependencies=BILLING_GUARD)
+async def reconcile_wallet(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_session)],
+) -> dict:
+    return await MeteredBillingService(db).reconcile_wallet(current_user.id)
+
+
+@router.get("/analytics", dependencies=BILLING_GUARD)
+async def billing_analytics(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_session)],
+    days: int = Query(default=30, ge=1, le=365),
+) -> dict:
+    """Return customer-visible spend breakdowns for billing dashboards."""
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    base = [BillingLedger.user_id == current_user.id, BillingLedger.status == "settled", BillingLedger.created_at >= since]
+
+    async def grouped(label: str, expression):
+        result = await db.execute(
+            select(expression.label(label), func.sum(BillingLedger.amount).label("amount"), func.count().label("events"))
+            .where(*base)
+            .group_by(expression)
+            .order_by(func.sum(BillingLedger.amount).desc())
+            .limit(100)
+        )
+        return [
+            {label: row[0], "amount": float(row[1] or 0), "events": int(row[2] or 0)}
+            for row in result.all()
+        ]
+
+    daily = await db.execute(
+        select(func.date(BillingLedger.created_at).label("day"), func.sum(BillingLedger.amount).label("amount"), func.count().label("events"))
+        .where(*base)
+        .group_by(func.date(BillingLedger.created_at))
+        .order_by(func.date(BillingLedger.created_at))
+    )
+    return {
+        "period_days": days,
+        "by_provider": await grouped("provider", BillingLedger.metadata_["provider"].as_string()),
+        "by_model": await grouped("model", BillingLedger.metadata_["model"].as_string()),
+        "by_operation": await grouped("resource_type", BillingLedger.resource_type),
+        "by_project": await grouped("project_id", BillingLedger.project_id),
+        "by_runtime": await grouped("runtime_id", BillingLedger.runtime_id),
+        "daily": [{"day": str(row.day), "amount": float(row.amount or 0), "events": int(row.events or 0)} for row in daily.all()],
+    }
 
 
 @router.post("/add-credits", response_model=CheckoutSessionResponse, dependencies=CREDIT_PURCHASE_GUARD)
@@ -256,19 +379,25 @@ async def list_usage_logs(
         UsageLogRead(
             id=log.id,
             user_id=log.user_id,
+            organization_id=log.organization_id,
             project_id=log.project_id,
             runtime_id=log.runtime_id,
+            api_key_id=log.api_key_id,
+            request_id=log.request_id,
             provider=log.provider,
             model=log.model,
             operation=log.operation,
             input_tokens=log.input_tokens,
             output_tokens=log.output_tokens,
+            cached_tokens=log.cached_tokens,
             embedding_tokens=log.embedding_tokens,
             vector_searches=log.vector_searches,
             storage_bytes=log.storage_bytes,
             requests=log.requests,
             latency_ms=log.latency_ms,
             cost=log.cost,
+            provider_cost=log.provider_cost,
+            platform_markup=log.platform_markup,
             metadata=log.metadata_,
             created_at=log.created_at,
         )
@@ -295,6 +424,11 @@ async def list_pricing(
             price_per_unit=r.price_per_unit,
             currency=r.currency,
             active=r.active,
+            cached_price_per_unit=r.cached_price_per_unit,
+            markup=r.markup,
+            effective_from=r.effective_from,
+            effective_until=r.effective_until,
+            version=r.version,
             created_at=r.created_at,
             updated_at=r.updated_at,
         )

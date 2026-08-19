@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.dependencies import get_current_user
 from app.core.database import get_session
 from app.models.users import User
+from app.models.billing import TransactionType
 from app.repositories import UnitOfWork
 from app.schemas.rag import RAGQuery, RAGResponse
 from app.services.billing import BillingService
@@ -83,12 +84,16 @@ async def chat_completions(
     pipeline = RAGPipeline(uow=uow)
     billing_service = BillingService(db)
 
+    project_uuid = uuid.UUID(project_id)
+    runtime_uuid = uuid.UUID(body.runtime_id) if body.runtime_id else None
+    request_id = str(uuid.uuid4())
     estimated_cost = await billing_service.calculate_cost(
         provider=body.provider,
         model=body.model,
         operation="chat",
         input_tokens=len(question.split()),
         output_tokens=500,
+        vector_searches=max(1, body.top_k),
         requests=1,
     )
 
@@ -115,61 +120,77 @@ async def chat_completions(
         )
 
     start_time = time.perf_counter()
+    try:
+        reservation = await billing_service.reserve(
+            user_id=current_user.id,
+            amount=estimated_cost,
+            request_id=request_id,
+            idempotency_key=f"chat:{request_id}",
+            organization_id=current_user.organization_id,
+            project_id=project_uuid,
+            runtime_id=runtime_uuid,
+            resource_type="rag_chat",
+            metadata={"model": body.model, "provider": body.provider, "top_k": body.top_k},
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail=str(exc)) from exc
 
     if body.stream:
         full_answer = ""
 
         async def sse_generator() -> AsyncGenerator[str, None]:
             nonlocal full_answer
-            result = await pipeline.query(rag_query)
-            if hasattr(result, "__anext__"):
-                async for chunk in result:
-                    full_answer += chunk.get("token", "") if isinstance(chunk, dict) else chunk
-                    yield f"data: {chunk}\n\n"
-            else:
-                answer = result.answer if isinstance(result, RAGResponse) else str(result)
-                full_answer = answer
-                yield f"data: {json.dumps({'token': answer, 'done': False})}\n\n"
-
-            latency_ms = int((time.perf_counter() - start_time) * 1000)
-            actual_cost = await billing_service.calculate_cost(
-                provider=body.provider,
-                model=body.model,
-                operation="chat",
-                input_tokens=len(question.split()),
-                output_tokens=len(full_answer.split()),
-                requests=1,
-            )
+            source_count = 0
+            rerank_items = 0
             try:
-                await billing_service.deduct_credit(
-                    user_id=current_user.id,
-                    amount=actual_cost,
-                    reason=f"Chat completion: {body.model}",
-                    reference_id=f"chat-{int(start_time)}",
-                    metadata={"model": body.model, "provider": body.provider, "latency_ms": latency_ms},
-                )
-                await billing_service.record_usage(
-                    user_id=current_user.id,
+                result = await pipeline.query(rag_query)
+                if hasattr(result, "__anext__"):
+                    async for chunk in result:
+                        payload = json.loads(chunk) if isinstance(chunk, str) else chunk
+                        full_answer += payload.get("token", "")
+                        source_count = max(source_count, len(payload.get("sources", [])))
+                        rerank_items = max(rerank_items, int(payload.get("rerank_items", 0) or 0))
+                        yield f"data: {json.dumps(payload)}\n\n"
+                else:
+                    answer = result.answer if isinstance(result, RAGResponse) else str(result)
+                    full_answer = answer
+                    source_count = len(result.sources) if isinstance(result, RAGResponse) else 0
+                    rerank_items = result.rerank_items if isinstance(result, RAGResponse) else 0
+                    yield f"data: {json.dumps({'token': answer, 'done': False})}\n\n"
+
+                latency_ms = int((time.perf_counter() - start_time) * 1000)
+                actual_cost = await billing_service.calculate_cost(
                     provider=body.provider,
                     model=body.model,
                     operation="chat",
-                    cost=actual_cost,
-                    project_id=rag_query.project_id if rag_query.project_id else None,
-                    runtime_id=rag_query.runtime_id if rag_query.runtime_id else None,
                     input_tokens=len(question.split()),
                     output_tokens=len(full_answer.split()),
-                    latency_ms=latency_ms,
+                    vector_searches=source_count,
+                    reranks=rerank_items,
+                    requests=1,
                 )
+                await billing_service.settle(reservation.id, actual_amount=actual_cost, metadata={"model": body.model, "provider": body.provider, "latency_ms": latency_ms, "vector_searches": source_count, "rerank_items": rerank_items}, transaction_type=TransactionType.RAG)
+                await billing_service.record_usage(
+                    user_id=current_user.id, provider=body.provider, model=body.model, operation="chat", cost=actual_cost,
+                    organization_id=current_user.organization_id, project_id=project_uuid, runtime_id=runtime_uuid,
+                    request_id=request_id, input_tokens=len(question.split()), output_tokens=len(full_answer.split()),
+                    vector_searches=source_count, latency_ms=latency_ms,
+                    metadata={"rerank_items": rerank_items},
+                )
+                yield f"data: {json.dumps({'done': True, 'latency_ms': latency_ms})}\n\n"
             except Exception:
-                pass
-
-            yield f"data: {json.dumps({'done': True, 'latency_ms': latency_ms})}\n\n"
+                await billing_service.release(reservation.id, reason="chat_failed")
+                raise
 
         return StreamingResponse(sse_generator(), media_type="text/event-stream")
 
-    result = await pipeline.query(rag_query)
-    if not isinstance(result, RAGResponse):
-        raise HTTPException(status_code=500, detail="Invalid response type")
+    try:
+        result = await pipeline.query(rag_query)
+        if not isinstance(result, RAGResponse):
+            raise HTTPException(status_code=500, detail="Invalid response type")
+    except Exception:
+        await billing_service.release(reservation.id, reason="chat_failed")
+        raise
 
     answer_text = result.answer or ""
     output_violations = guardrail_service.validate_output(answer_text, body.json_schema)
@@ -183,35 +204,22 @@ async def chat_completions(
         operation="chat",
         input_tokens=len(question.split()),
         output_tokens=len(answer_text.split()),
+        vector_searches=len(result.sources),
+        reranks=result.rerank_items,
         requests=1,
+    )
+    await billing_service.settle(reservation.id, actual_amount=actual_cost, metadata={"model": body.model, "provider": body.provider, "latency_ms": latency_ms, "vector_searches": len(result.sources), "rerank_items": result.rerank_items}, transaction_type=TransactionType.RAG)
+    await billing_service.record_usage(
+        user_id=current_user.id, provider=body.provider, model=body.model, operation="chat", cost=actual_cost,
+        organization_id=current_user.organization_id, project_id=project_uuid, runtime_id=runtime_uuid,
+        request_id=request_id, input_tokens=len(question.split()), output_tokens=len(answer_text.split()),
+        vector_searches=len(result.sources), latency_ms=latency_ms,
+        metadata={"rerank_items": result.rerank_items},
     )
 
     try:
-        await billing_service.deduct_credit(
-            user_id=current_user.id,
-            amount=actual_cost,
-            reason=f"Chat completion: {body.model}",
-            reference_id=f"chat-{int(start_time)}",
-            metadata={"model": body.model, "provider": body.provider, "latency_ms": latency_ms},
-        )
-        await billing_service.record_usage(
-            user_id=current_user.id,
-            provider=body.provider,
-            model=body.model,
-            operation="chat",
-            cost=actual_cost,
-            project_id=rag_query.project_id if rag_query.project_id else None,
-            runtime_id=rag_query.runtime_id if rag_query.runtime_id else None,
-            input_tokens=len(question.split()),
-            output_tokens=len(answer_text.split()),
-            latency_ms=latency_ms,
-        )
-    except Exception:
-        pass
-
-    try:
         await uow.request_logs.create(
-            project_id=uuid.UUID(rag_query.project_id) if rag_query.project_id else None,
+            project_id=project_uuid,
             request_id=f"chat-{int(start_time)}",
             method="POST",
             endpoint="/chat/completions",

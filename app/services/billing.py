@@ -4,8 +4,10 @@ import uuid
 from decimal import Decimal
 
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import select
 
 from app.models.billing import (
+    BillingLedger,
     Budget,
     TransactionType,
     UsageLog,
@@ -37,6 +39,66 @@ class BillingService:
     def __init__(self, session) -> None:
         self.session = session
         self.uow = UnitOfWork(session)
+
+    async def reserve(self, **kwargs):
+        from app.services.metered_billing import MeteredBillingService
+        return await MeteredBillingService(self.session).reserve(**kwargs)
+
+    async def settle(self, reservation_id, **kwargs):
+        from app.services.metered_billing import MeteredBillingService
+        return await MeteredBillingService(self.session).settle(reservation_id, **kwargs)
+
+    async def release(self, reservation_id, **kwargs):
+        from app.services.metered_billing import MeteredBillingService
+        return await MeteredBillingService(self.session).release(reservation_id, **kwargs)
+
+    async def bill_operation(
+        self,
+        *,
+        user_id: uuid.UUID,
+        estimated_cost: Decimal,
+        actual_cost: Decimal,
+        request_id: str,
+        idempotency_key: str,
+        provider_cost: Decimal = Decimal("0"),
+        organization_id: uuid.UUID | None = None,
+        project_id: uuid.UUID | None = None,
+        runtime_id: uuid.UUID | None = None,
+        api_key_id: uuid.UUID | None = None,
+        resource_type: str = "metered_operation",
+        transaction_type: str = TransactionType.AI_INFERENCE,
+        metadata: dict | None = None,
+    ):
+        """Reserve, execute externally, then settle one billable operation.
+
+        Callers that cannot execute inside this helper can retain the returned
+        reservation and settle/release it themselves.  This method is useful
+        for synchronous operations and keeps all wallet mutations in the
+        metered engine.
+        """
+        reservation = await self.reserve(
+            user_id=user_id,
+            amount=estimated_cost,
+            request_id=request_id,
+            idempotency_key=idempotency_key,
+            organization_id=organization_id,
+            project_id=project_id,
+            runtime_id=runtime_id,
+            api_key_id=api_key_id,
+            resource_type=resource_type,
+            metadata=metadata,
+        )
+        return await self.settle(
+            reservation.id,
+            actual_amount=actual_cost,
+            provider_cost=provider_cost,
+            metadata=metadata,
+            transaction_type=transaction_type,
+        )
+
+    async def reconcile(self, user_id: uuid.UUID) -> dict:
+        from app.services.metered_billing import MeteredBillingService
+        return await MeteredBillingService(self.session).reconcile_wallet(user_id)
 
     async def get_wallet(self, user_id: uuid.UUID) -> Wallet:
         wallet = await self.uow.wallets.get_by_user(user_id)
@@ -78,6 +140,10 @@ class BillingService:
             raise ValueError("Credit amount must be positive")
 
         wallet = await self.get_wallet(user_id)
+        if reference_id:
+            existing = await self.uow.wallet_transactions.get_by_reference(reference_id)
+            if existing is not None:
+                return existing
         if wallet.status != WalletStatus.ACTIVE:
             raise ValueError(f"Wallet is {wallet.status}")
 
@@ -99,9 +165,21 @@ class BillingService:
             metadata=metadata or {},
         )
         locked_wallet.balance = balance_after
+        locked_wallet.total_topups += amount
         budget = await self.uow.budgets.get_by_user(user_id)
         if budget and budget.limit_reached and balance_after > Decimal("0"):
             await self.uow.budgets.update(budget, limit_reached=False, current_spend=Decimal("0"))
+        self.session.add(BillingLedger(
+            transaction_type=TransactionType.TOPUP,
+            user_id=user_id,
+            resource_type="wallet_topup",
+            resource_id=reference_id,
+            amount=amount,
+            currency=locked_wallet.currency,
+            status="settled",
+            idempotency_key=f"topup:{reference_id}" if reference_id else f"topup:{transaction.id}",
+            metadata_=metadata or {},
+        ))
         await self.uow.commit()
         return transaction
 
@@ -110,6 +188,10 @@ class BillingService:
             raise ValueError("Deduction amount must be positive")
 
         wallet = await self.get_wallet(user_id)
+        if reference_id:
+            existing = await self.uow.wallet_transactions.get_by_reference(reference_id)
+            if existing is not None:
+                return existing
         if wallet.status != WalletStatus.ACTIVE:
             raise ValueError(f"Wallet is {wallet.status}")
 
@@ -134,7 +216,20 @@ class BillingService:
             metadata=metadata or {},
         )
         locked_wallet.balance = balance_after
+        locked_wallet.total_spent += amount
         await self._update_budget_spend(user_id, amount)
+        self.session.add(BillingLedger(
+            transaction_type=TransactionType.AI_INFERENCE,
+            user_id=user_id,
+            request_id=reference_id,
+            resource_type="metered_operation",
+            resource_id=reference_id,
+            amount=amount,
+            currency=locked_wallet.currency,
+            status="settled",
+            idempotency_key=f"debit:{reference_id}" if reference_id else f"debit:{transaction.id}",
+            metadata_=metadata or {},
+        ))
         await self.uow.commit()
         return transaction
 
@@ -145,6 +240,16 @@ class BillingService:
 
         if original.type != TransactionType.DEBIT:
             raise ValueError("Only debit transactions can be refunded")
+
+        existing_refund = await self.session.scalar(
+            select(BillingLedger).where(
+                BillingLedger.transaction_type == TransactionType.REVERSAL,
+                BillingLedger.resource_id == str(original.id),
+                BillingLedger.status == "settled",
+            )
+        )
+        if existing_refund is not None:
+            raise ValueError("Transaction has already been refunded")
 
         wallet = await self.uow.wallets.get_by_user(user_id)
         if wallet is None or wallet.id != original.wallet_id:
@@ -168,79 +273,60 @@ class BillingService:
             metadata={"original_transaction_id": str(original.id)},
         )
         locked_wallet.balance = balance_after
+        locked_wallet.total_spent = max(Decimal("0"), locked_wallet.total_spent - original.amount)
         budget = await self.uow.budgets.get_by_user(user_id)
         if budget and budget.limit_reached and balance_after > Decimal("0"):
-            await self.uow.budgets.update(budget, limit_reached=False, current_spend=budget.current_spend - original.amount)
+            await self.uow.budgets.update(budget, limit_reached=False, current_spend=max(Decimal("0"), budget.current_spend - original.amount))
+        self.session.add(BillingLedger(
+            transaction_type=TransactionType.REVERSAL,
+            user_id=user_id,
+            resource_type="refund",
+            resource_id=str(original.id),
+            amount=original.amount,
+            currency=locked_wallet.currency,
+            status="settled",
+            idempotency_key=f"refund:{original.id}",
+            metadata_={"original_transaction_id": str(original.id), "reason": body.reason},
+        ))
         await self.uow.commit()
         return transaction
 
-    async def calculate_cost(self, provider: str, model: str, operation: str, input_tokens: int = 0, output_tokens: int = 0, embedding_tokens: int = 0, vector_searches: int = 0, storage_bytes: int = 0, requests: int = 1) -> Decimal:
-        total = Decimal("0.0000")
+    async def calculate_cost(self, provider: str, model: str, operation: str, input_tokens: int = 0, output_tokens: int = 0, cached_tokens: int = 0, embedding_tokens: int = 0, vector_searches: int = 0, reranks: int = 0, storage_bytes: int = 0, requests: int = 1, resource_components: dict[str, Decimal | int] | None = None) -> Decimal:
+        from app.services.metered_billing import PricingService
 
-        rules = await self.uow.pricing_rules.list_by_provider(provider)
-        rule_map = {(r.operation, r.model): r for r in rules}
-
-        def lookup(op: str, mdl: str | None) -> PricingRule | None:
-            return rule_map.get((op, mdl)) or rule_map.get((op, None))
-
-        token_operations = {
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "embeddings": embedding_tokens,
-        }
-
-        for op, count in token_operations.items():
-            if count > 0:
-                rule = lookup(op, model)
-                if rule:
-                    total += rule.price_per_unit * Decimal(count)
-
-        if vector_searches > 0:
-            rule = lookup("vector_search", model)
-            if rule:
-                total += rule.price_per_unit * Decimal(vector_searches)
-
-        if storage_bytes > 0:
-            rule = lookup("storage", model)
-            if rule:
-                total += rule.price_per_unit * Decimal(storage_bytes)
-
-        if requests > 0 and operation not in ("input_tokens", "output_tokens", "embeddings", "vector_search", "storage"):
-            rule = lookup(operation, model)
-            if rule:
-                total += rule.price_per_unit * Decimal(requests)
-
-        return total
+        result = await PricingService(self.session).calculate(
+            provider,
+            model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cached_tokens=cached_tokens,
+            embedding_tokens=embedding_tokens,
+            vector_searches=vector_searches,
+            reranks=reranks,
+            storage_bytes=storage_bytes,
+            requests=requests if operation not in ("input_tokens", "output_tokens", "embeddings", "vector_search", "storage") else 0,
+            resource_components=resource_components,
+        )
+        return result["amount"]
 
     async def estimate_request_cost(self, body: EstimateCostRequest) -> EstimateCostResponse:
-        rules = await self.uow.pricing_rules.list_by_provider(body.provider)
-        rule_map = {(r.operation, r.model): r for r in rules}
+        from app.services.metered_billing import PricingService
 
-        def lookup(op: str, mdl: str | None) -> PricingRule | None:
-            return rule_map.get((op, mdl)) or rule_map.get((op, None))
-
-        cost = Decimal("0.0000")
-        breakdown: dict[str, Decimal] = {}
-
-        if body.input_tokens > 0:
-            rule = lookup("input_tokens", body.model)
-            if rule:
-                cost += rule.price_per_unit * Decimal(body.input_tokens)
-                breakdown["input_tokens"] = rule.price_per_unit * Decimal(body.input_tokens)
-
-        if body.output_tokens > 0:
-            rule = lookup("output_tokens", body.model)
-            if rule:
-                cost += rule.price_per_unit * Decimal(body.output_tokens)
-                breakdown["output_tokens"] = rule.price_per_unit * Decimal(body.output_tokens)
-
-        if body.embedding_tokens > 0:
-            rule = lookup("embeddings", body.model)
-            if rule:
-                cost += rule.price_per_unit * Decimal(body.embedding_tokens)
-                breakdown["embeddings"] = rule.price_per_unit * Decimal(body.embedding_tokens)
-
-        return EstimateCostResponse(estimated_cost=cost, currency="usd", breakdown=breakdown)
+        result = await PricingService(self.session).calculate(
+            body.provider,
+            body.model,
+            input_tokens=body.input_tokens,
+            output_tokens=body.output_tokens,
+            embedding_tokens=body.embedding_tokens,
+            vector_searches=body.vector_searches,
+            storage_bytes=body.storage_bytes,
+            requests=body.requests,
+        )
+        breakdown = {
+            key: value["customer_cost"]
+            for key, value in result["components"].items()
+        }
+        return EstimateCostResponse(estimated_cost=result["amount"], currency="usd", breakdown=breakdown)
 
     async def record_usage(
         self,
@@ -249,32 +335,54 @@ class BillingService:
         model: str,
         operation: str,
         cost: Decimal,
+        *,
+        organization_id: uuid.UUID | None = None,
         project_id: uuid.UUID | None = None,
         runtime_id: uuid.UUID | None = None,
+        api_key_id: uuid.UUID | None = None,
+        request_id: str | None = None,
         input_tokens: int = 0,
         output_tokens: int = 0,
+        cached_tokens: int = 0,
         embedding_tokens: int = 0,
         vector_searches: int = 0,
         storage_bytes: int = 0,
         requests: int = 1,
         latency_ms: int | None = None,
+        provider_cost: Decimal = Decimal("0"),
+        platform_markup: Decimal = Decimal("0"),
         metadata: dict | None = None,
     ) -> UsageLog:
+        if request_id:
+            existing = await self.session.scalar(
+                select(UsageLog).where(
+                    UsageLog.user_id == user_id,
+                    UsageLog.request_id == request_id,
+                )
+            )
+            if existing is not None:
+                return existing
         log = await self.uow.usage_logs.create(
             user_id=user_id,
+            organization_id=organization_id,
             project_id=project_id,
             runtime_id=runtime_id,
+            api_key_id=api_key_id,
+            request_id=request_id,
             provider=provider,
             model=model,
             operation=operation,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
+            cached_tokens=cached_tokens,
             embedding_tokens=embedding_tokens,
             vector_searches=vector_searches,
             storage_bytes=storage_bytes,
             requests=requests,
             latency_ms=latency_ms,
             cost=cost,
+            provider_cost=provider_cost,
+            platform_markup=platform_markup,
             metadata=metadata or {},
         )
         analytics_event = None
@@ -411,6 +519,9 @@ class BillingService:
             id=wallet.id,
             user_id=wallet.user_id,
             balance=wallet.balance,
+            reserved_balance=wallet.reserved_balance,
+            total_spent=wallet.total_spent,
+            total_topups=wallet.total_topups,
             currency=wallet.currency,
             status=wallet.status,
             created_at=wallet.created_at,

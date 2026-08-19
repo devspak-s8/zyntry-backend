@@ -2,7 +2,16 @@ from __future__ import annotations
 
 from app.models.analytics import UsageEvent
 from app.models.apikeys import ApiKey
-from app.models.billing import Budget, PricingRule, UsageLog, Wallet, WalletTransaction
+from app.models.billing import (
+    BillingLedger,
+    BillingReservation,
+    Budget,
+    PricingRule,
+    SpendingLimit,
+    UsageLog,
+    Wallet,
+    WalletTransaction,
+)
 from app.models.chat import Conversation, Message
 from app.models.embeddings import Embedding
 from app.models.embedding_cache import EmbeddingCache
@@ -57,9 +66,12 @@ __all__ = [
     "UsageEvent",
     "Wallet",
     "WalletTransaction",
+    "BillingLedger",
+    "BillingReservation",
     "PricingRule",
     "UsageLog",
     "Budget",
+    "SpendingLimit",
     "WebhookEvent",
     "WebhookSubscription",
     "Event",

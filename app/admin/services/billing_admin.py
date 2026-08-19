@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
+import uuid
 from typing import Any
 
 from sqlalchemy import func, select
@@ -10,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.admin.models import WalletFreeze
 from app.admin.repositories import WalletFreezeRepository
 from app.models.billing import Wallet, WalletTransaction
+from app.schemas.billing import RefundRequest
+from app.services.billing import BillingService, InsufficientCredits
 from app.models.organizations import Organization
 from app.models.users import User
 
@@ -65,6 +68,9 @@ class BillingAdminService:
             "user_name": user_row.name if user_row else None,
             "org_name": None,
             "balance": float(wallet.balance),
+            "reserved_balance": float(wallet.reserved_balance),
+            "total_spent": float(wallet.total_spent),
+            "total_topups": float(wallet.total_topups),
             "currency": "usd",
             "status": wallet.status,
             "created_at": wallet.created_at.isoformat() if wallet.created_at else "",
@@ -72,138 +78,86 @@ class BillingAdminService:
         }
 
     async def credit_wallet(self, user_id: str, amount: float, reason: str | None = None) -> dict[str, Any]:
-        uid = user_id
-        result = await self.db.execute(select(Wallet).where(Wallet.user_id == uid))
-        wallet = result.scalar_one_or_none()
-        if wallet is None:
-            return {"error": "Wallet not found"}
-
+        service = BillingService(self.db)
+        wallet = await service.get_wallet(uuid.UUID(user_id))
         balance_before = wallet.balance
-        wallet.balance += amount
-        balance_after = wallet.balance
-
-        transaction = WalletTransaction(
-            wallet_id=wallet.id,
-            user_id=uid,
-            type="credit",
-            amount=amount,
-            balance_after=balance_after,
-            reason=reason or "Admin credit",
-        )
-        self.db.add(transaction)
-        await self.db.flush()
+        transaction = await service.add_credit(uuid.UUID(user_id), Decimal(str(amount)), reason or "Admin credit", reference_id=f"admin-credit:{user_id}:{datetime.now(UTC).timestamp()}")
+        wallet = await service.get_wallet(uuid.UUID(user_id))
 
         return {
             "transaction_id": str(transaction.id) if transaction.id else "",
             "type": "credit",
             "amount": amount,
             "balance_before": float(balance_before),
-            "balance_after": float(balance_after),
+            "balance_after": float(wallet.balance),
             "reason": reason,
         }
 
     async def debit_wallet(self, user_id: str, amount: float, reason: str | None = None) -> dict[str, Any]:
-        uid = user_id
-        result = await self.db.execute(select(Wallet).where(Wallet.user_id == uid))
-        wallet = result.scalar_one_or_none()
-        if wallet is None:
-            return {"error": "Wallet not found"}
-
+        service = BillingService(self.db)
+        uid = uuid.UUID(user_id)
+        wallet = await service.get_wallet(uid)
         balance_before = wallet.balance
-        wallet.balance -= amount
-        balance_after = wallet.balance
-
-        transaction = WalletTransaction(
-            wallet_id=wallet.id,
-            user_id=uid,
-            type="debit",
-            amount=amount,
-            balance_after=balance_after,
-            reason=reason or "Admin debit",
-        )
-        self.db.add(transaction)
-        await self.db.flush()
+        try:
+            transaction = await service.deduct_credit(uid, Decimal(str(amount)), reason or "Admin debit", reference_id=f"admin-debit:{user_id}:{datetime.now(UTC).timestamp()}")
+        except InsufficientCredits as exc:
+            return {"error": "Insufficient balance", "required": float(exc.required), "balance": float(exc.balance)}
+        wallet = await service.get_wallet(uid)
 
         return {
             "transaction_id": str(transaction.id) if transaction.id else "",
             "type": "debit",
             "amount": amount,
             "balance_before": float(balance_before),
-            "balance_after": float(balance_after),
+            "balance_after": float(wallet.balance),
             "reason": reason,
         }
 
     async def refund_transaction(self, user_id: str, transaction_id: str, reason: str | None = None) -> dict[str, Any]:
-        result = await self.db.execute(select(WalletTransaction).where(WalletTransaction.id == transaction_id))
-        original = result.scalar_one_or_none()
-        if original is None:
-            return {"error": "Transaction not found"}
-
-        if original.type != "debit":
-            return {"error": "Only debit transactions can be refunded"}
-
-        result2 = await self.db.execute(select(Wallet).where(Wallet.user_id == user_id))
-        wallet = result2.scalar_one_or_none()
-        if wallet is None:
-            return {"error": "Wallet not found"}
-
-        if wallet.id != original.wallet_id:
-            return {"error": "Wallet mismatch"}
-
+        uid = uuid.UUID(user_id)
+        service = BillingService(self.db)
+        wallet = await service.get_wallet(uid)
         balance_before = wallet.balance
-        wallet.balance += original.amount
-        balance_after = wallet.balance
-
-        refund_txn = WalletTransaction(
-            wallet_id=wallet.id,
-            user_id=user_id,
-            type="credit",
-            amount=original.amount,
-            balance_after=balance_after,
-            reason=reason or f"Refund of {original.id}",
-            original_transaction_id=original.id,
-        )
-        self.db.add(refund_txn)
-        await self.db.flush()
+        try:
+            refund_txn = await service.refund_transaction(uid, RefundRequest(transaction_id=uuid.UUID(transaction_id), reason=reason or "Admin refund"))
+        except ValueError as exc:
+            return {"error": str(exc)}
+        wallet = await service.get_wallet(uid)
 
         return {
             "transaction_id": str(refund_txn.id) if refund_txn.id else "",
             "type": "refund",
             "amount": original.amount,
             "balance_before": float(balance_before),
-            "balance_after": float(balance_after),
+            "balance_after": float(wallet.balance),
             "reason": reason,
         }
 
     async def adjust_balance(self, user_id: str, new_balance: float, reason: str | None = None) -> dict[str, Any]:
-        uid = user_id
-        result = await self.db.execute(select(Wallet).where(Wallet.user_id == uid))
-        wallet = result.scalar_one_or_none()
-        if wallet is None:
-            return {"error": "Wallet not found"}
-
+        uid = uuid.UUID(user_id)
+        service = BillingService(self.db)
+        wallet = await service.get_wallet(uid)
         balance_before = wallet.balance
-        amount = new_balance - balance_before
-        txn_type = "credit" if amount > 0 else "debit"
-        wallet.balance = new_balance
-
-        transaction = WalletTransaction(
-            wallet_id=wallet.id,
-            user_id=uid,
-            type=txn_type,
-            amount=abs(amount),
-            balance_after=new_balance,
-            reason=reason or "Admin adjustment",
-        )
-        self.db.add(transaction)
-        await self.db.flush()
+        amount = Decimal(str(new_balance)) - balance_before
+        if amount > 0:
+            transaction = await service.add_credit(uid, amount, reason or "Admin adjustment", reference_id=f"admin-adjust:{user_id}:{datetime.now(UTC).timestamp()}")
+            txn_type = "credit"
+        elif amount < 0:
+            try:
+                transaction = await service.deduct_credit(uid, abs(amount), reason or "Admin adjustment", reference_id=f"admin-adjust:{user_id}:{datetime.now(UTC).timestamp()}")
+            except InsufficientCredits as exc:
+                return {"error": "Insufficient balance", "required": float(exc.required), "balance": float(exc.balance)}
+            txn_type = "debit"
+        else:
+            return {"error": "No balance adjustment required", "balance": float(balance_before)}
+        wallet = await service.get_wallet(uid)
 
         return {
             "transaction_id": str(transaction.id) if transaction.id else "",
             "type": txn_type,
             "amount": abs(amount),
             "balance_before": float(balance_before),
-            "balance_after": float(new_balance),
+            "balance_after": float(wallet.balance),
             "reason": reason,
         }
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Body, Depends, HTTPException, status
@@ -9,8 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.dependencies import get_current_user
 from app.core.database import get_session
 from app.models.users import User
+from app.models.billing import TransactionType
 from app.repositories import UnitOfWork
-from app.schemas.rag import RAGQuery, RAGResponse
 from app.services.billing import BillingService
 from app.services.rag import RAGPipeline
 
@@ -71,9 +72,6 @@ async def create_embeddings(
             },
         )
 
-    uow = UnitOfWork(db)
-    pipeline = RAGPipeline(uow=uow)
-
     dummy_response = EmbeddingResponse(
         object="list",
         data=[{"object": "embedding", "embedding": [0.0] * 1536, "index": i} for i in range(len(texts))],
@@ -81,13 +79,23 @@ async def create_embeddings(
         usage={"prompt_tokens": token_count, "total_tokens": token_count},
     )
 
+    request_id = str(uuid.uuid4())
+    reservation = await billing_service.reserve(
+        user_id=current_user.id,
+        amount=estimated_cost,
+        request_id=request_id,
+        idempotency_key=f"embedding:{request_id}",
+        organization_id=current_user.organization_id,
+        project_id=uuid.UUID(body.project_id) if body.project_id else None,
+        resource_type="embedding",
+        metadata={"model": body.model, "provider": body.provider, "texts_count": len(texts)},
+    )
     try:
-        await billing_service.deduct_credit(
-            user_id=current_user.id,
-            amount=estimated_cost,
-            reason=f"Embeddings: {body.model}",
-            reference_id=f"embed-{hash(str(texts))}",
+        await billing_service.settle(
+            reservation.id,
+            actual_amount=estimated_cost,
             metadata={"model": body.model, "provider": body.provider, "texts_count": len(texts)},
+            transaction_type=TransactionType.EMBEDDING,
         )
         await billing_service.record_usage(
             user_id=current_user.id,
@@ -95,12 +103,15 @@ async def create_embeddings(
             model=body.model,
             operation="embeddings",
             cost=estimated_cost,
-            project_id=body.project_id,
+            organization_id=current_user.organization_id,
+            project_id=uuid.UUID(body.project_id) if body.project_id else None,
+            request_id=request_id,
             input_tokens=token_count,
             embedding_tokens=token_count,
             requests=1,
         )
     except Exception:
-        pass
+        await billing_service.release(reservation.id, reason="embedding_failed")
+        raise
 
     return dummy_response

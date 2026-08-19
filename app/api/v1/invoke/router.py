@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,6 +22,7 @@ from app.services.actions.confirmations import ConfirmationService
 from app.services.actions.executor import ActionExecutor
 from app.services.actions.guardrails import GuardrailService as ActionGuardrailService
 from app.services.billing import BillingService, InsufficientCredits
+from app.services.metered_billing import InsufficientBalanceError, MeteredBillingService
 from app.services.guardrails import GuardrailService
 from app.services.model_router import ModelRouter, RoutingGoal, RoutingPreference
 from app.services.oauth.service import OAuthService
@@ -97,6 +98,7 @@ class InvokeRequest(BaseModel):
     stream: bool = False
     top_k: int = 5
     conversation_id: str | None = None
+    idempotency_key: str | None = None
     json_schema: dict | None = None
     actions: list[ActionRequest] = []
 
@@ -114,6 +116,9 @@ class InvokeResponse(BaseModel):
     action_results: list[ActionResponse] = []
     tokens_used: int = 0
     guardrail_violations: list[str] = []
+    estimated_cost: float = 0.0
+    actual_cost: float = 0.0
+    remaining_balance: float | None = None
 
 
 async def _execute_tool(tool: Any, arguments: dict) -> dict:
@@ -141,6 +146,7 @@ async def _execute_tool(tool: Any, arguments: dict) -> dict:
 @router.post("/invoke", response_model=InvokeResponse)
 async def invoke(
     body: InvokeRequest,
+    request: Request,
     current_user: User = Depends(require_api_key_feature("runtime_console")),
     db: AsyncSession = Depends(get_session),
 ) -> InvokeResponse:
@@ -223,12 +229,61 @@ async def invoke(
         if key:
             provider_keys[p_name] = key
 
+    # Reserve the worst-case inference estimate before contacting a provider.
+    # A failed provider call releases this reservation without charging.
+    pre_reservation = None
+    billing_idempotency_key = body.idempotency_key or request_id
+    estimated_cost = await billing_service.calculate_cost(
+        provider=provider_name,
+        model=model_name,
+        operation="invoke",
+        input_tokens=len(body.input.split()),
+        output_tokens=2048,
+        requests=1,
+    )
+    if estimated_cost > Decimal("0"):
+        if wallet.balance < estimated_cost:
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail=InsufficientCreditsError(required=estimated_cost, balance=wallet.balance, available_balance=wallet.balance).model_dump(),
+            )
+        if not await billing_service.check_budget(current_user.id, estimated_cost):
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail={"error": "Budget limit reached", "required": float(estimated_cost), "balance": float(wallet.balance)},
+            )
+        try:
+            pre_reservation = await MeteredBillingService(db).reserve(
+                user_id=current_user.id,
+                amount=estimated_cost,
+                request_id=request_id,
+                idempotency_key=billing_idempotency_key,
+                organization_id=current_user.organization_id,
+                project_id=project.id,
+                runtime_id=uuid.UUID(body.runtime_id) if body.runtime_id else None,
+                api_key_id=getattr(request.state, "api_key_id", None),
+                resource_type="ai_inference",
+                metadata={"estimate": True, "model": model_name, "provider": provider_name},
+            )
+        except (InsufficientBalanceError,):
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail=InsufficientCreditsError(required=estimated_cost, balance=wallet.balance, available_balance=wallet.balance).model_dump(),
+            )
+
     router_service = ModelRouter(uow)
     messages = [{"role": "user", "content": body.input}]
-    result_text, invoked_model, invoked_provider, last_error = await router_service._invoke_with_fallback(
-        preference, provider_keys, messages
-    )
+    try:
+        result_text, invoked_model, invoked_provider, last_error = await router_service._invoke_with_fallback(
+            preference, provider_keys, messages
+        )
+    except Exception:
+        if pre_reservation is not None:
+            await MeteredBillingService(db).release(pre_reservation.id, reason="provider_exception")
+        raise
     if not result_text:
+        if pre_reservation is not None:
+            await MeteredBillingService(db).release(pre_reservation.id, reason="provider_failed")
         raise HTTPException(status_code=502, detail=f"All providers failed: {last_error}")
     provider_name = invoked_provider or provider_name
     model_name = invoked_model or model_name
@@ -287,55 +342,50 @@ async def invoke(
             action_results.append(result)
             events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Action Executed", "provider": action_req.provider, "action": action_req.action, "success": result.success})
 
-    estimated_cost = await billing_service.calculate_cost(
-        provider=provider_name,
-        model=model_name,
-        operation="invoke",
-        input_tokens=len(body.input.split()),
-        output_tokens=500,
-        requests=1,
-    )
-
-    if wallet.balance < estimated_cost:
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail=InsufficientCreditsError(required=estimated_cost, balance=wallet.balance).model_dump(),
-        )
-
-    budget_ok = await billing_service.check_budget(current_user.id, estimated_cost)
-    if not budget_ok:
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail={"error": "Budget limit reached", "required": float(estimated_cost), "balance": float(wallet.balance)},
-        )
-
     response_text, output_violations = guardrail_service.enforce(result_text, body.json_schema)
     latency_ms = (time.perf_counter() - start_time) * 1000
 
-    actual_cost = await billing_service.calculate_cost(
-        provider=provider_name,
-        model=model_name,
-        operation="invoke",
+    metered = MeteredBillingService(db)
+    billing_breakdown = await metered.pricing.calculate(
+        provider_name,
+        model_name,
         input_tokens=len(body.input.split()),
         output_tokens=len(response_text.split()),
-        requests=1,
+        requests=0,
     )
+    actual_cost = billing_breakdown["amount"]
     if actual_cost <= 0:
         actual_cost = _catalog_token_cost(
             router_service.last_invoked_candidate,
             input_tokens=len(body.input.split()),
             output_tokens=len(response_text.split()),
         )
+        billing_breakdown["provider_cost"] = actual_cost
+        billing_breakdown["markup"] = Decimal("0")
 
+    reservation = pre_reservation
     try:
-        await _charge_invoke_if_billable(
-            billing_service,
-            user_id=current_user.id,
-            amount=actual_cost,
-            reason=f"Invoke: {model_name}",
-            reference_id=request_id,
-            metadata={"model": model_name, "provider": provider_name, "latency_ms": latency_ms, "project_id": str(project.id)},
-        )
+        if reservation is None and actual_cost > Decimal("0"):
+            reservation = await metered.reserve(
+                user_id=current_user.id,
+                amount=actual_cost,
+                request_id=request_id,
+                idempotency_key=billing_idempotency_key,
+                organization_id=current_user.organization_id,
+                project_id=project.id,
+                runtime_id=uuid.UUID(body.runtime_id) if body.runtime_id else None,
+                api_key_id=getattr(request.state, "api_key_id", None),
+                resource_type="ai_inference",
+                metadata={"model": model_name, "provider": provider_name},
+            )
+        if reservation is not None:
+            await metered.settle(
+                reservation.id,
+                actual_amount=actual_cost,
+                provider_cost=billing_breakdown["provider_cost"],
+                metadata={"model": model_name, "provider": provider_name, "latency_ms": latency_ms},
+                transaction_type="AI_INFERENCE",
+            )
         await billing_service.record_usage(
             user_id=current_user.id,
             provider=provider_name,
@@ -343,16 +393,28 @@ async def invoke(
             operation="invoke",
             cost=actual_cost,
             project_id=project.id,
+            organization_id=current_user.organization_id,
+            runtime_id=uuid.UUID(body.runtime_id) if body.runtime_id else None,
+            api_key_id=getattr(request.state, "api_key_id", None),
+            request_id=request_id,
             input_tokens=len(body.input.split()),
             output_tokens=len(response_text.split()),
             latency_ms=int(latency_ms),
+            provider_cost=billing_breakdown["provider_cost"],
+            platform_markup=billing_breakdown["markup"],
         )
-    except InsufficientCredits:
+    except (InsufficientCredits, InsufficientBalanceError) as exc:
+        if reservation is not None:
+            await metered.release(reservation.id, reason="settlement_failed")
+        required = getattr(exc, "required", actual_cost)
+        available = getattr(exc, "available", wallet.balance)
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail=InsufficientCreditsError(required=actual_cost, balance=wallet.balance).model_dump(),
+            detail=InsufficientCreditsError(required=required, balance=available, available_balance=available).model_dump(),
         )
     except Exception:
+        if reservation is not None:
+            await metered.release(reservation.id, reason="billing_failed")
         raise
 
     try:
@@ -380,6 +442,7 @@ async def invoke(
     events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Wallet Deducted", "amount": float(actual_cost)})
     events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Completed", "request_id": request_id})
 
+    wallet = await billing_service.get_wallet(current_user.id)
     return InvokeResponse(
         request_id=request_id,
         response=response_text,
@@ -393,4 +456,7 @@ async def invoke(
         action_results=action_results,
         tokens_used=len(body.input.split()) + len(response_text.split()),
         guardrail_violations=output_violations,
+        estimated_cost=float(estimated_cost),
+        actual_cost=float(actual_cost),
+        remaining_balance=float(wallet.balance),
     )

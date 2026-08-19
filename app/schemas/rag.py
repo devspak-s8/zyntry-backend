@@ -36,3 +36,4 @@ class RAGResponse(BaseModel):
     latency_ms: float = 0.0
     tokens_used: int = 0
     model: str = ""
+    rerank_items: int = 0

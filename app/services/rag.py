@@ -294,7 +294,8 @@ class RAGPipeline:
         if runtime and runtime.config and runtime.config.get("rerank"):
             rerank = True
 
-        if rerank and len(candidates) > rag_query.top_k:
+        rerank_items = len(candidates) if rerank and len(candidates) > rag_query.top_k else 0
+        if rerank_items:
             candidates = self._rerank(rewritten_query, candidates, top_k=rag_query.top_k)
         else:
             candidates = candidates[: rag_query.top_k]
@@ -346,6 +347,7 @@ class RAGPipeline:
                 latency_ms=latency,
                 tokens_used=0,
                 model="none",
+                rerank_items=rerank_items,
             )
 
         model_name = runtime.model if runtime else "gpt-4o"
@@ -359,13 +361,14 @@ class RAGPipeline:
                 sources=sources_list,
                 model=model_name,
                 provider_name=provider_name,
+                rerank_items=rerank_items,
                 start_time=start_time,
             )
 
         answer, tokens = await llm_provider.generate(
             messages=[{"role": "user", "content": prompt}],
             model=model_name,
-        )
+            )
         latency = (time.perf_counter() - start_time) * 1000
         return RAGResponse(
             answer=answer,
@@ -374,6 +377,7 @@ class RAGPipeline:
             latency_ms=latency,
             tokens_used=tokens,
             model=model_name,
+            rerank_items=rerank_items,
         )
 
     async def _astream(
@@ -384,6 +388,7 @@ class RAGPipeline:
         sources: list[SourceDocument],
         model: str,
         provider_name: str,
+        rerank_items: int,
         start_time: float,
     ) -> AsyncGenerator[str, None]:
         full_answer = ""
@@ -408,6 +413,7 @@ class RAGPipeline:
             "latency_ms": latency,
             "tokens_used": 0,
             "model": model,
+            "rerank_items": rerank_items,
         }
         yield json.dumps(payload)
 

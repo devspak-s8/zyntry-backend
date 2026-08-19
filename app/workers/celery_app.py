@@ -34,6 +34,10 @@ celery_app.conf.update(
             "task": "app.tasks.billing.clean_expired_sessions",
             "schedule": 3600.0,
         },
+        "expire-billing-reservations": {
+            "task": "app.tasks.billing.expire_billing_reservations",
+            "schedule": 60.0,
+        },
         "run-security-scan": {
             "task": "app.tasks.security.run_security_scan",
             "schedule": 3600.0,

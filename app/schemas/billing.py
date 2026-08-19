@@ -13,6 +13,9 @@ class WalletRead(ORMModel):
     id: uuid.UUID
     user_id: uuid.UUID
     balance: Decimal
+    reserved_balance: Decimal = Decimal("0")
+    total_spent: Decimal = Decimal("0")
+    total_topups: Decimal = Decimal("0")
     currency: str
     status: str
     created_at: datetime
@@ -58,6 +61,11 @@ class PricingRuleRead(ORMModel):
     price_per_unit: Decimal
     currency: str
     active: bool
+    cached_price_per_unit: Decimal | None = None
+    markup: Decimal = Decimal("0")
+    effective_from: datetime | None = None
+    effective_until: datetime | None = None
+    version: int = 1
     created_at: datetime
     updated_at: datetime
 
@@ -70,24 +78,35 @@ class PricingRuleCreate(BaseModel):
     price_per_unit: Decimal = Field(ge=0)
     currency: str = Field(default="usd", min_length=3, max_length=3)
     active: bool = True
+    cached_price_per_unit: Decimal | None = Field(default=None, ge=0)
+    markup: Decimal = Field(default=Decimal("0"), ge=0)
+    effective_from: datetime | None = None
+    effective_until: datetime | None = None
+    version: int = Field(default=1, ge=1)
 
 
 class UsageLogRead(ORMModel):
     id: uuid.UUID
     user_id: uuid.UUID
+    organization_id: uuid.UUID | None = None
     project_id: uuid.UUID | None
     runtime_id: uuid.UUID | None
+    api_key_id: uuid.UUID | None = None
+    request_id: str | None = None
     provider: str
     model: str
     operation: str
     input_tokens: int
     output_tokens: int
+    cached_tokens: int = 0
     embedding_tokens: int
     vector_searches: int
     storage_bytes: int
     requests: int
     latency_ms: int | None
     cost: Decimal
+    provider_cost: Decimal = Decimal("0")
+    platform_markup: Decimal = Decimal("0")
     metadata: dict
     created_at: datetime
 
@@ -157,6 +176,43 @@ class InsufficientCreditsError(ORMModel):
     error: str = "Insufficient Credits"
     required: Decimal
     balance: Decimal
+    available_balance: Decimal | None = None
+
+
+class SpendingLimitCreate(BaseModel):
+    scope_type: str = Field(pattern="^(user|organization|project|runtime|api_key)$")
+    scope_id: uuid.UUID
+    period: str = Field(pattern="^(daily|monthly|lifetime)$")
+    amount: Decimal = Field(gt=0)
+
+
+class SpendingLimitRead(ORMModel):
+    id: uuid.UUID
+    scope_type: str
+    scope_id: uuid.UUID
+    period: str
+    amount: Decimal
+    active: bool
+
+
+class BillingLedgerRead(ORMModel):
+    id: uuid.UUID
+    transaction_type: str
+    user_id: uuid.UUID | None
+    organization_id: uuid.UUID | None
+    project_id: uuid.UUID | None
+    runtime_id: uuid.UUID | None
+    api_key_id: uuid.UUID | None
+    request_id: str | None
+    resource_type: str
+    resource_id: str | None
+    amount: Decimal
+    currency: str
+    provider_cost: Decimal
+    platform_markup: Decimal
+    status: str
+    metadata: dict
+    created_at: datetime
 
 
 class CheckoutSessionRequest(BaseModel):

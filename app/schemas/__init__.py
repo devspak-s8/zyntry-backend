@@ -59,6 +59,9 @@ from app.schemas.billing import (
     WalletRead,
     WalletTransactionCreate,
     WalletTransactionRead,
+    BillingLedgerRead,
+    SpendingLimitCreate,
+    SpendingLimitRead,
 )
 from app.schemas.webhooks import WebhookSubscriptionCreate, WebhookSubscriptionRead
 from app.schemas.workflows import (
@@ -157,6 +160,9 @@ __all__ = [
     "AdminUserRead",
     "WalletRead",
     "WalletTransactionRead",
+    "BillingLedgerRead",
+    "SpendingLimitCreate",
+    "SpendingLimitRead",
     "WalletTransactionCreate",
     "AddCreditsRequest",
     "RefundRequest",

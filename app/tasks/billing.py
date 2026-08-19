@@ -13,6 +13,20 @@ from app.workers.celery_app import celery_app
 logger = get_logger("app.tasks.billing")
 
 
+@celery_app.task(name="app.tasks.billing.expire_billing_reservations")
+def expire_billing_reservations() -> dict:
+    async def _run() -> dict:
+        from app.core.database import get_session
+        from app.services.metered_billing import MeteredBillingService
+
+        async for session in get_session():
+            count = await MeteredBillingService(session).expire_reservations(limit=500)
+            return {"status": "completed", "released": count}
+        return {"status": "completed", "released": 0}
+
+    return run_async(_run())
+
+
 @celery_app.task(name="app.tasks.billing.send_budget_notification")
 def send_budget_notification_task(user_id: str, event_type: str, limit: str) -> None:
     logger.info("Budget notification queued", extra={"user_id": user_id, "event_type": event_type})
