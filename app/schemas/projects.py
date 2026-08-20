@@ -16,6 +16,15 @@ class ProjectCreate(ORMModel):
     settings: dict = Field(default_factory=dict)
 
 
+class ProjectUpdate(ORMModel):
+    """Fields that may be changed after a project has been created."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    slug: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = None
+    settings: dict | None = None
+
+
 class ProjectRead(ORMModel):
     id: uuid.UUID
     name: str

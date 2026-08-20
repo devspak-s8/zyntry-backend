@@ -30,7 +30,7 @@ from app.schemas.models import ModelRead, ProviderConnectionCreate, ProviderConn
 from app.schemas.notifications import NotificationRead, NotificationUpdate, WebhookSubscriptionCreate, WebhookSubscriptionRead
 from app.schemas.onboarding import OnboardingStateCreate, OnboardingStateRead, OnboardingStateUpdate
 from app.schemas.organizations import OrganizationCreate, OrganizationRead, ORMModel
-from app.schemas.projects import ProjectCreate, ProjectRead
+from app.schemas.projects import ProjectCreate, ProjectRead, ProjectUpdate
 from app.schemas.rag import Citation, RAGQuery, RAGResponse, SourceDocument
 from app.schemas.runtimes import (
     RuntimeBuildChunkRead,
@@ -98,6 +98,7 @@ __all__ = [
     "ORMModel",
     "ProjectCreate",
     "ProjectRead",
+    "ProjectUpdate",
     "UserCreate",
     "UserRead",
     "UserUpdate",

@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.v1.dependencies import get_current_user
+from app.api.v1.features.dependencies import require_feature
 from app.core.database import get_session
 from app.core.redis import redis_client
 from app.events import NotificationEvent
@@ -21,8 +22,10 @@ from app.models.organizations import Organization
 from app.models.projects import Project
 from app.models.users import User
 from app.repositories import UnitOfWork
-from app.schemas.projects import ProjectCreate, ProjectRead
+from app.schemas.projects import ProjectCreate, ProjectRead, ProjectUpdate
+from app.schemas.runtimes import RuntimeCreate, RuntimeRead
 from app.services.notifications import publish_notification
+from app.services.runtimes import RuntimeService
 
 logger = logging.getLogger(__name__)
 
@@ -257,10 +260,49 @@ async def get_project(
     return _to_read(proj)
 
 
+@router.post(
+    "/{project_id}/runtime",
+    response_model=RuntimeRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_feature("runtime_management"))],
+)
+async def create_project_runtime(
+    project_id: str,
+    body: RuntimeCreate,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_session),
+) -> RuntimeRead:
+    """Create (or return) the runtime attached to a project.
+
+    This project-scoped form mirrors ``POST /runtimes`` while deriving all
+    ownership fields from the authenticated project instead of trusting them
+    from the request body.
+    """
+    try:
+        pid = uuid.UUID(project_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid project id") from None
+
+    proj = await db.get(Project, pid)
+    if proj is None or proj.organization_id != current_user.organization_id:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    runtime_data = body.model_copy(
+        update={
+            "project_id": pid,
+            "organization_id": proj.organization_id,
+            "user_id": current_user.id,
+        }
+    )
+    service = RuntimeService(UnitOfWork(db))
+    runtime = await service.get_or_create(runtime_data, default_user_id=current_user.id)
+    return RuntimeRead(**runtime)
+
+
 @router.patch("/{project_id}", response_model=ProjectRead)
 async def update_project(
     project_id: str,
-    body: ProjectCreate,
+    body: ProjectUpdate,
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> ProjectRead:
@@ -273,15 +315,18 @@ async def update_project(
     if proj is None or proj.organization_id != current_user.organization_id:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    update_data = body.model_dump(exclude_unset=True)
+    if update_data.get("name") is None and "name" in update_data:
+        raise HTTPException(status_code=422, detail="name cannot be null")
+    if update_data.get("slug") is None and "slug" in update_data:
+        raise HTTPException(status_code=422, detail="slug cannot be null")
+    if update_data.get("settings") is None and "settings" in update_data:
+        update_data["settings"] = {}
+
     uow = UnitOfWork(db)
     try:
-        await uow.projects.update(
-            proj,
-            name=body.name,
-            slug=body.slug,
-            description=body.description,
-            settings=body.settings or {},
-        )
+        if update_data:
+            await uow.projects.update(proj, **update_data)
         await uow.commit()
     except IntegrityError:
         await uow.rollback()
