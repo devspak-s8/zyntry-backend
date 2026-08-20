@@ -27,8 +27,9 @@ class ProjectUpdate(ORMModel):
 
 
 class ProjectConfigUpdate(ORMModel):
-    provider: str = Field(min_length=1, max_length=64)
-    model: str = Field(min_length=1, max_length=128)
+    provider: str | None = Field(default=None, min_length=1, max_length=64)
+    providers: list[str] = Field(default_factory=list)
+    model: str | None = Field(default=None, min_length=1, max_length=128)
     routing_strategy: str = Field(min_length=1, max_length=64)
     system_instructions: str | None = None
     security_settings: dict = Field(default_factory=dict)

@@ -326,13 +326,16 @@ async def configure_project(
     config_data = body.model_dump(exclude_none=True)
     runtime_config = {**(runtime.config or {}), **config_data}
     runtime_updates = {
-        "provider": body.provider,
-        "model": body.model,
         "routing_strategy": body.routing_strategy,
-        "system_instructions": body.system_instructions,
         "security_policies": body.security_settings,
         "config": runtime_config,
     }
+    if body.provider is not None:
+        runtime_updates["provider"] = body.provider
+    if body.model is not None:
+        runtime_updates["model"] = body.model
+    if body.system_instructions is not None:
+        runtime_updates["system_instructions"] = body.system_instructions
     project_settings = {**(proj.settings or {}), **config_data}
 
     try:
