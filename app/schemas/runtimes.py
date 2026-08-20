@@ -28,6 +28,7 @@ class RuntimeCreate(ORMModel):
 
 
 class RuntimeUpdate(ORMModel):
+    project_id: uuid.UUID | None = None
     name: str | None = None
     environment: str | None = None
     provider: str | None = None
