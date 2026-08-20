@@ -33,6 +33,14 @@ class ConnectionService:
         if defn is None:
             raise ValueError(f"Integration '{integration_slug}' is not supported")
 
+        # Only integrations explicitly configured for OAuth may enter this
+        # flow. File-upload and other managed capabilities (for example
+        # ``document_storage``) must be handled by their own endpoints.
+        if "oauth2" not in defn.auth_methods:
+            raise ValueError(
+                f"Integration '{integration_slug}' does not support OAuth authorization"
+            )
+
         if data.connection_mode not in defn.supported_connection_modes:
             raise ValueError(
                 f"Connection mode '{data.connection_mode}' is not supported for '{integration_slug}'"
