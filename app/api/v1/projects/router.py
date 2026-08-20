@@ -22,7 +22,7 @@ from app.models.organizations import Organization
 from app.models.projects import Project
 from app.models.users import User
 from app.repositories import UnitOfWork
-from app.schemas.projects import ProjectCreate, ProjectRead, ProjectUpdate
+from app.schemas.projects import ProjectConfigUpdate, ProjectCreate, ProjectRead, ProjectUpdate
 from app.schemas.runtimes import RuntimeCreate, RuntimeRead
 from app.services.notifications import publish_notification
 from app.services.runtimes import RuntimeService
@@ -299,6 +299,81 @@ async def create_project_runtime(
     return RuntimeRead(**runtime)
 
 
+@router.put("/{project_id}/config", response_model=dict)
+async def configure_project(
+    project_id: str,
+    body: ProjectConfigUpdate,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_session),
+) -> dict:
+    try:
+        pid = uuid.UUID(project_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid project id") from None
+
+    proj = await db.get(Project, pid)
+    if proj is None or proj.organization_id != current_user.organization_id:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    uow = UnitOfWork(db)
+    runtime = await uow.runtimes.get_by_project(pid)
+    if runtime is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Attach a runtime before configuring the project",
+        )
+
+    config_data = body.model_dump(exclude_none=True)
+    runtime_config = {**(runtime.config or {}), **config_data}
+    runtime_updates = {
+        "provider": body.provider,
+        "model": body.model,
+        "routing_strategy": body.routing_strategy,
+        "system_instructions": body.system_instructions,
+        "security_policies": body.security_settings,
+        "config": runtime_config,
+    }
+    project_settings = {**(proj.settings or {}), **config_data}
+
+    try:
+        await uow.runtimes.update(runtime, **runtime_updates)
+        await uow.projects.update(proj, settings=project_settings)
+        await uow.commit()
+    except Exception as exc:
+        await uow.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to configure project: {exc}") from exc
+
+    await _invalidate_projects_cache(proj.organization_id)
+    return {
+        "project_id": str(proj.id),
+        "runtime_id": str(runtime.id),
+        "config": config_data,
+    }
+
+
+@router.post("/{project_id}/build", response_model=dict)
+async def build_project_runtime(
+    project_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_session),
+) -> dict:
+    try:
+        pid = uuid.UUID(project_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid project id") from None
+
+    proj = await db.get(Project, pid)
+    if proj is None or proj.organization_id != current_user.organization_id:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    uow = UnitOfWork(db)
+    runtime = await uow.runtimes.get_by_project(pid)
+    if runtime is None:
+        raise HTTPException(status_code=409, detail="Attach a runtime before building the project")
+
+    return await RuntimeService(uow).enqueue_build(str(runtime.id), trigger="project_wizard")
+
+
 @router.patch("/{project_id}", response_model=ProjectRead)
 async def update_project(
     project_id: str,
@@ -316,6 +391,8 @@ async def update_project(
         raise HTTPException(status_code=404, detail="Project not found")
 
     update_data = body.model_dump(exclude_unset=True)
+    runtime_requested = "runtime_id" in update_data
+    runtime_id = update_data.pop("runtime_id", None)
     if update_data.get("name") is None and "name" in update_data:
         raise HTTPException(status_code=422, detail="name cannot be null")
     if update_data.get("slug") is None and "slug" in update_data:
@@ -325,9 +402,31 @@ async def update_project(
 
     uow = UnitOfWork(db)
     try:
+        if runtime_requested:
+            if runtime_id is None:
+                raise HTTPException(status_code=422, detail="runtime_id cannot be null")
+            runtime = await uow.runtimes.get(runtime_id)
+            if runtime is None or runtime.user_id != current_user.id:
+                raise HTTPException(status_code=404, detail="Runtime not found")
+            if runtime.project_id not in (None, pid):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Runtime is attached to another project",
+                )
+            attached = await uow.runtimes.get_by_project(pid)
+            if attached is not None and attached.id != runtime.id:
+                raise HTTPException(status_code=409, detail="Project already has another runtime")
+            await uow.runtimes.update(
+                runtime,
+                project_id=pid,
+                organization_id=proj.organization_id,
+            )
         if update_data:
             await uow.projects.update(proj, **update_data)
         await uow.commit()
+    except HTTPException:
+        await uow.rollback()
+        raise
     except IntegrityError:
         await uow.rollback()
         raise HTTPException(status_code=409, detail="Project with this slug already exists")

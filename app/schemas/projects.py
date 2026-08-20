@@ -23,6 +23,15 @@ class ProjectUpdate(ORMModel):
     slug: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = None
     settings: dict | None = None
+    runtime_id: uuid.UUID | None = None
+
+
+class ProjectConfigUpdate(ORMModel):
+    provider: str = Field(min_length=1, max_length=64)
+    model: str = Field(min_length=1, max_length=128)
+    routing_strategy: str = Field(min_length=1, max_length=64)
+    system_instructions: str | None = None
+    security_settings: dict = Field(default_factory=dict)
 
 
 class ProjectRead(ORMModel):

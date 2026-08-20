@@ -6,9 +6,18 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.api.v1.projects.router import create_project_runtime
-from app.schemas.projects import ProjectUpdate
+from app.api.v1.projects.router import (
+    build_project_runtime,
+    configure_project,
+    create_project_runtime,
+    update_project,
+)
+from app.repositories import UnitOfWork
+from app.schemas.integrations import RuntimeIntegrationCreate
+from app.schemas.projects import ProjectConfigUpdate, ProjectUpdate
 from app.schemas.runtimes import RuntimeCreate
+from app.services.integrations.service import IntegrationService
+from app.services.runtimes import RuntimeService
 
 
 def _runtime_response(
@@ -94,3 +103,84 @@ async def test_project_runtime_endpoint_derives_ownership_from_project(monkeypat
     assert runtime_data.organization_id == organization_id
     assert runtime_data.user_id == user_id
     assert response.project_id == project_id
+
+
+@pytest.mark.asyncio
+async def test_wizard_attaches_configures_and_builds_the_same_runtime(
+    db_session, monkeypatch
+) -> None:
+    uow = UnitOfWork(db_session)
+    organization = await uow.organizations.create(name="Wizard Org", slug="wizard-org")
+    await uow.commit()
+    user = await uow.users.create(
+        email="wizard@zyntry.space",
+        name="Wizard User",
+        organization_id=organization.id,
+    )
+    project = await uow.projects.create(
+        name="Wizard Project",
+        slug="wizard-project",
+        organization_id=organization.id,
+        settings={},
+        status="ready",
+    )
+    await uow.commit()
+
+    runtime_data = await RuntimeService(uow).get_or_create(
+        RuntimeCreate(name="Onboarding Runtime"),
+        default_user_id=user.id,
+    )
+    runtime_id = uuid.UUID(runtime_data["id"])
+    await IntegrationService(uow).enable_runtime_integration(
+        runtime_id,
+        RuntimeIntegrationCreate(
+            integration_slug="github",
+            connection_mode="end_user_oauth",
+            enabled_capabilities=["repository_search"],
+        ),
+    )
+    monkeypatch.setattr(
+        "app.api.v1.projects.router._invalidate_projects_cache",
+        AsyncMock(return_value=None),
+    )
+
+    await update_project(
+        str(project.id),
+        ProjectUpdate(runtime_id=runtime_id),
+        user,
+        db_session,
+    )
+    attached_runtime = await uow.runtimes.get(runtime_id)
+    assert attached_runtime.project_id == project.id
+    assert attached_runtime.organization_id == organization.id
+
+    configured = await configure_project(
+        str(project.id),
+        ProjectConfigUpdate(
+            provider="anthropic",
+            model="claude-sonnet-4",
+            routing_strategy="balanced",
+            system_instructions="Answer from connected repositories.",
+            security_settings={"pii_redaction": True},
+        ),
+        user,
+        db_session,
+    )
+    assert configured["runtime_id"] == str(runtime_id)
+    assert attached_runtime.provider == "anthropic"
+    assert attached_runtime.model == "claude-sonnet-4"
+    assert attached_runtime.security_policies == {"pii_redaction": True}
+    integrations = await IntegrationService(uow).list_runtime_integrations(runtime_id)
+    assert [item.integration_slug for item in integrations] == ["github"]
+
+    enqueue_build = AsyncMock(
+        return_value={"runtime_id": str(runtime_id), "status": "active"}
+    )
+    monkeypatch.setattr(
+        "app.api.v1.projects.router.RuntimeService.enqueue_build",
+        enqueue_build,
+    )
+    built = await build_project_runtime(str(project.id), user, db_session)
+
+    assert built["runtime_id"] == str(runtime_id)
+    enqueue_build.assert_awaited_once_with(str(runtime_id), trigger="project_wizard")
