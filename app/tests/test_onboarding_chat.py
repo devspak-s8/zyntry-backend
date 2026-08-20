@@ -84,7 +84,7 @@ async def test_chat_onboarding_full_lifecycle(db_session: AsyncSession) -> None:
     )
     assert resp4.is_complete is True
     assert resp4.state == "completed"
-    assert "Runtime provisioned and active" in resp4.response
+    assert "Runtime preconfigured" in resp4.response
     assert resp4.proposed_runtime is not None
     runtime_id_str = resp4.proposed_runtime["runtime_id"]
 
@@ -93,7 +93,7 @@ async def test_chat_onboarding_full_lifecycle(db_session: AsyncSession) -> None:
     runtime = await uow.runtimes.get(runtime_uuid)
     assert runtime is not None
     assert runtime.user_id == user.id
-    assert runtime.status == "active"
+    assert runtime.status == "preconfigured"
     assert runtime.organization_id is None
     assert runtime.project_id is None
 
@@ -104,7 +104,9 @@ async def test_chat_onboarding_full_lifecycle(db_session: AsyncSession) -> None:
     assert slugs == {"github", "slack"}
     for ri in r_integrations:
         assert ri.connection_mode == "end_user_oauth"
-        assert ri.connection_status == "not_connected"
+        assert ri.connection_required is False
+        assert ri.connection_status == "ready_for_end_users"
+        assert ri.config["allowed_connection_modes"] == ["end_user_oauth"]
 
     # 7. Explicit API Key Creation (Decoupled Lifecycle)
     key_result = await apikey_service.create_key(
@@ -176,7 +178,7 @@ async def test_chat_onboarding_natural_engineer_agent_flow(db_session: AsyncSess
     )
     assert resp3.is_complete is True
     assert resp3.state == "completed"
-    assert "Runtime provisioned and active" in resp3.response
+    assert "Runtime preconfigured" in resp3.response
 
 
 @pytest.mark.asyncio

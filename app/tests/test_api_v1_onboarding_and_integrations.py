@@ -101,7 +101,7 @@ async def test_api_v1_onboarding_and_integrations_routes(
         )
         assert resp_comp.status_code == 200
         comp_data = resp_comp.json()
-        assert comp_data["status"] == "active"
+        assert comp_data["status"] == "preconfigured"
         runtime_id = comp_data["runtime_id"]
 
         # 3. Runtimes API

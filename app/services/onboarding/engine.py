@@ -379,14 +379,15 @@ class OnboardingEngine:
                     environment=existing_rt.environment,
                     status=existing_rt.status,
                     enabled_integrations=[],
-                    message="Runtime already provisioned and ready.",
+                    message="Runtime already preconfigured. Attach it to a project before building.",
                 )
 
         config = session.configuration or {}
         runtime_name = req.runtime_name or f"{config.get('use_case', 'AI App').replace('_', ' ').title()} Runtime"
         env = req.environment or config.get("environment", "development")
 
-        # 1. Create user-first Runtime (user_id NOT NULL, org/project NULL)
+        # 1. Create a user-first runtime. It remains a configuration draft
+        # until it is attached to a project and the build worker succeeds.
         runtime = await self.uow.runtimes.create(
             user_id=user_id,
             name=runtime_name,
@@ -398,8 +399,8 @@ class OnboardingEngine:
             vector_store="pgvector",
             chunk_size=512,
             chunk_overlap=64,
-            status="active",
-            health=100.0,
+            status="preconfigured",
+            health=0.0,
             config=config,
         )
         await self.uow.commit()
@@ -409,6 +410,10 @@ class OnboardingEngine:
         integrations = config.get("integrations", [])
         capabilities_map = config.get("capabilities", {})
         integration_mode = config.get("integration_mode", "zyntry_managed")
+        integration_modes = {
+            **config.get("integration_modes", {}),
+            **req.integration_modes,
+        }
 
         for slug in integrations:
             defn = integration_registry.get(slug)
@@ -416,9 +421,20 @@ class OnboardingEngine:
                 continue
 
             caps = capabilities_map.get(slug, [c.slug for c in defn.capabilities if not c.is_write])
-            mode = integration_mode
-            if mode not in defn.supported_connection_modes:
-                mode = defn.supported_connection_modes[0] if defn.supported_connection_modes else "zyntry_managed"
+            requested_mode = integration_modes.get(slug, integration_mode)
+            mode = requested_mode
+            if mode == "hybrid" and not {"zyntry_managed", "end_user_oauth"}.issubset(
+                defn.supported_connection_modes
+            ):
+                # The selected integration only supports a company connection.
+                # Preserve the original choice in its policy config rather than
+                # presenting it as an end-user connection.
+                mode = "zyntry_managed"
+            elif mode not in defn.supported_connection_modes and mode != "hybrid":
+                raise ValueError(
+                    f"{defn.name} does not support the requested connection mode "
+                    f"'{requested_mode}'"
+                )
 
             ri = await self.integration_service.enable_runtime_integration(
                 runtime_id=runtime.id,
@@ -426,7 +442,15 @@ class OnboardingEngine:
                     integration_slug=slug,
                     connection_mode=mode,
                     enabled_capabilities=caps,
-                    config={"onboarded": True},
+                    config={
+                        "onboarded": True,
+                        "requested_connection_mode": requested_mode,
+                        "mode_resolution": (
+                            "requested"
+                            if mode == requested_mode
+                            else "company_connection_required"
+                        ),
+                    },
                 ),
             )
             enabled_integrations_list.append({
@@ -456,14 +480,14 @@ class OnboardingEngine:
         integs_formatted = "\n".join(integ_lines) if integ_lines else "• Standard read access"
 
         message_markdown = (
-            "Runtime provisioned and active.\n\n"
+            "Runtime preconfigured.\n\n"
             f"• Name: {runtime.name}\n"
-            f"• Status: Active\n"
+            f"• Status: Preconfigured\n"
             f"• Environment: {runtime.environment.capitalize()}\n"
             f"• Routing Strategy: {runtime.routing_strategy.replace('_', ' ').capitalize()}\n\n"
-            "Connected Services:\n"
+            "Configured Integrations:\n"
             f"{integs_formatted}\n\n"
-            "Next: Generate an API key to start making requests, or open the console to inspect your runtime."
+            "Next: create or attach a project, complete any required company connections, and build the runtime."
         )
 
         return OnboardingCompleteResponse(

@@ -46,6 +46,7 @@ class OnboardingCompleteRequest(BaseModel):
     session_id: str
     runtime_name: str | None = None
     environment: str = "development"
+    integration_modes: dict[str, str] = Field(default_factory=dict)
 
 
 class OnboardingCompleteResponse(BaseModel):

@@ -60,7 +60,14 @@ class IntegrationService:
                 f"Integration '{data.integration_slug}' is currently '{defn.status}' and cannot be enabled on active runtimes"
             )
 
-        if data.connection_mode not in defn.connection_modes:
+        is_hybrid = data.connection_mode == "hybrid"
+        supports_hybrid = {
+            "zyntry_managed",
+            "end_user_oauth",
+        }.issubset(defn.connection_modes)
+        if (is_hybrid and not supports_hybrid) or (
+            not is_hybrid and data.connection_mode not in defn.connection_modes
+        ):
             raise ValueError(
                 f"Connection mode '{data.connection_mode}' is not supported for '{data.integration_slug}'. "
                 f"Supported modes: {defn.connection_modes}"
@@ -73,6 +80,19 @@ class IntegrationService:
         if invalid_caps:
             raise ValueError(f"Invalid capabilities for {data.integration_slug}: {invalid_caps}")
 
+        connection_required = data.connection_mode in {"zyntry_managed", "hybrid"}
+        connection_status = (
+            "connection_required" if connection_required else "ready_for_end_users"
+        )
+        policy_config = {
+            **data.config,
+            "allowed_connection_modes": (
+                ["zyntry_managed", "end_user_oauth"]
+                if data.connection_mode == "hybrid"
+                else [data.connection_mode]
+            ),
+        }
+
         existing = await self.uow.runtime_integrations.get_by_runtime_and_slug(
             rid, data.integration_slug
         )
@@ -82,7 +102,9 @@ class IntegrationService:
                 connection_mode=data.connection_mode,
                 enabled_capabilities=enabled_caps,
                 is_enabled=True,
-                config=data.config,
+                connection_required=connection_required,
+                connection_status=connection_status,
+                config=policy_config,
             )
             await self.uow.commit()
             return updated
@@ -93,9 +115,9 @@ class IntegrationService:
             connection_mode=data.connection_mode,
             enabled_capabilities=enabled_caps,
             is_enabled=True,
-            connection_required=True,
-            connection_status="not_connected",
-            config=data.config,
+            connection_required=connection_required,
+            connection_status=connection_status,
+            config=policy_config,
         )
         await self.uow.commit()
         return created

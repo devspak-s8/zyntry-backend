@@ -9,6 +9,8 @@ from app.schemas.runtimes import RuntimeCreate, RuntimeUpdate
 
 
 RUNTIME_STATUSES = {
+    "preconfigured",
+    "awaiting_connections",
     "queued",
     "validating",
     "discovering",
@@ -73,8 +75,8 @@ class RuntimeService:
             system_instructions=data.system_instructions,
             security_policies=data.security_policies,
             config=data.config,
-            status="active",
-            health=100.0,
+            status="preconfigured",
+            health=0.0,
         )
         await self.uow.commit()
         return self._to_read(runtime)
@@ -119,8 +121,6 @@ class RuntimeService:
         if not runtime:
             raise ValueError("Runtime not found")
         update_data = data.model_dump(exclude_unset=True)
-        if "model" in update_data or "embedding_model" in update_data or "provider" in update_data:
-            update_data["status"] = "active"
         updated = await self.uow.runtimes.update(runtime, **update_data)
         await self.uow.commit()
         return self._to_read(updated)
@@ -137,21 +137,51 @@ class RuntimeService:
         runtime = await self.uow.runtimes.get(uuid.UUID(runtime_id))
         if not runtime:
             raise ValueError("Runtime not found")
-        runtime.status = "active"
-        runtime.health = 100.0
-        runtime.last_build_started = datetime.now(timezone.utc)
-        runtime.last_build_completed = datetime.now(timezone.utc)
-        runtime.error_message = None
+        integrations = await self.uow.runtime_integrations.get_by_runtime(runtime.id)
+        required_connections = [
+            item.integration_slug
+            for item in integrations
+            if item.is_enabled
+            and item.connection_required
+            and item.connection_status != "connected"
+        ]
+        if required_connections:
+            await self.uow.runtimes.update(
+                runtime,
+                status="awaiting_connections",
+                error_message=None,
+            )
+            await self.uow.commit()
+            return {
+                "runtime_id": str(runtime.id),
+                "status": "awaiting_connections",
+                "required_connections": required_connections,
+                "trigger": trigger,
+            }
+
+        started_at = datetime.now(timezone.utc)
         await self.uow.runtimes.update(
             runtime,
-            status="active",
-            health=100.0,
-            last_build_started=datetime.now(timezone.utc),
-            last_build_completed=datetime.now(timezone.utc),
+            status="building",
+            health=0.0,
+            last_build_started=started_at,
+            last_build_completed=None,
             error_message=None,
         )
         await self.uow.commit()
-        return {"runtime_id": str(runtime.id), "status": "active", "trigger": trigger}
+        from app.tasks.runtimes import build_runtime_task
+
+        try:
+            build_runtime_task.delay(str(runtime.id), trigger=trigger)
+        except Exception as exc:
+            await self.uow.runtimes.update(
+                runtime,
+                status="failed",
+                error_message=f"Unable to queue runtime build: {exc}",
+            )
+            await self.uow.commit()
+            raise RuntimeError("Unable to queue runtime build") from exc
+        return {"runtime_id": str(runtime.id), "status": "building", "trigger": trigger}
 
     async def cancel(self, runtime_id: str) -> dict[str, Any]:
         runtime = await self.uow.runtimes.get(uuid.UUID(runtime_id))

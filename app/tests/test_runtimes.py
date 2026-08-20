@@ -2,7 +2,7 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 from app.services.runtimes import RuntimeService
 from app.services.health import HealthService
@@ -22,15 +22,18 @@ class FakeRuntimeRepo:
 
 
 class FakeUnitOfWork:
-    def __init__(self, runtime):
+    def __init__(self, runtime, integrations=None):
         self.runtimes = FakeRuntimeRepo(runtime)
+        self.runtime_integrations = SimpleNamespace(
+            get_by_runtime=AsyncMock(return_value=integrations or [])
+        )
 
     async def commit(self):
         return None
 
 
 @pytest.mark.asyncio
-async def test_enqueue_build_falls_back_to_active_when_celery_is_unavailable(monkeypatch):
+async def test_enqueue_build_queues_worker_and_keeps_runtime_building(monkeypatch):
     runtime = SimpleNamespace(
         id=uuid.uuid4(),
         status="queued",
@@ -41,16 +44,40 @@ async def test_enqueue_build_falls_back_to_active_when_celery_is_unavailable(mon
     service = RuntimeService(uow)
 
     class FakeBuildTask:
-        def delay(self, *_args, **_kwargs):
-            raise RuntimeError("broker unavailable")
+        def __init__(self):
+            self.delay = Mock()
 
-    monkeypatch.setattr("app.tasks.runtimes.build_runtime_task", FakeBuildTask())
-    monkeypatch.setattr("app.main.manager.broadcast", AsyncMock(return_value=None))
+    task = FakeBuildTask()
+    monkeypatch.setattr("app.tasks.runtimes.build_runtime_task", task)
 
     result = await service.enqueue_build(str(runtime.id), trigger="manual")
 
-    assert result["status"] == "active"
-    assert runtime.status == "active"
+    assert result["status"] == "building"
+    assert runtime.status == "building"
+    task.delay.assert_called_once_with(str(runtime.id), trigger="manual")
+
+
+@pytest.mark.asyncio
+async def test_enqueue_build_waits_for_required_company_connections() -> None:
+    runtime = SimpleNamespace(
+        id=uuid.uuid4(),
+        status="preconfigured",
+        last_build_started=None,
+        error_message=None,
+    )
+    pending_company_connection = SimpleNamespace(
+        integration_slug="github",
+        is_enabled=True,
+        connection_required=True,
+        connection_status="connection_required",
+    )
+    service = RuntimeService(FakeUnitOfWork(runtime, [pending_company_connection]))
+
+    result = await service.enqueue_build(str(runtime.id), trigger="project_wizard")
+
+    assert result["status"] == "awaiting_connections"
+    assert result["required_connections"] == ["github"]
+    assert runtime.status == "awaiting_connections"
 
 
 @pytest.mark.asyncio
