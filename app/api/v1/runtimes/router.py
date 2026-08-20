@@ -62,12 +62,12 @@ async def list_runtimes(
         return [runtime] if runtime else []
     if organization_id:
         return await service.list_by_organization(organization_id)
-    # User-first listing
+
+    # Runtime discovery is user-scoped. Falling back to every active runtime
+    # leaks other accounts' runtimes and can fail response validation on legacy
+    # rows that predate user ownership.
     user_runtimes = await service.list_by_user(current_user.id)
-    if user_runtimes:
-        return [RuntimeRead(**r) for r in user_runtimes]
-    runtimes = await uow.runtimes.list_active()
-    return [RuntimeRead(**service._to_read(r)) for r in runtimes]
+    return [RuntimeRead(**runtime) for runtime in user_runtimes]
 
 
 @router.post("", response_model=RuntimeRead, status_code=status.HTTP_201_CREATED)

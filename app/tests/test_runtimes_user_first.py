@@ -1,19 +1,46 @@
 from __future__ import annotations
 
 import uuid
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.runtimes.router import list_runtimes
 from app.repositories import UnitOfWork
 from app.schemas.apikeys import ApiKeyCreate
 from app.schemas.integrations import (
     RuntimeIntegrationCreate,
     RuntimeIntegrationUpdate,
 )
-from app.schemas.runtimes import RuntimeCreate, RuntimeUpdate
+from app.schemas.runtimes import RuntimeCreate
 from app.services.apikeys import ApiKeyService
 from app.services.integrations.service import IntegrationService
 from app.services.runtimes import RuntimeService
+
+
+@pytest.mark.asyncio
+async def test_runtime_listing_is_isolated_for_a_first_time_user(
+    db_session: AsyncSession,
+) -> None:
+    uow = UnitOfWork(db_session)
+    new_user = await uow.users.create(email="new_user@zyntry.space", name="New User")
+    other_user = await uow.users.create(email="other_user@zyntry.space", name="Other User")
+    await uow.commit()
+
+    other_runtime = await RuntimeService(uow).get_or_create(
+        RuntimeCreate(name="Other User Runtime"),
+        default_user_id=other_user.id,
+    )
+
+    result = await list_runtimes(
+        current_user=new_user,
+        organization_id=None,
+        project_id=None,
+        db=db_session,
+    )
+
+    assert result == []
+    assert all(str(runtime.id) != other_runtime["id"] for runtime in result)
 
 
 @pytest.mark.asyncio
@@ -47,6 +74,14 @@ async def test_user_first_runtime_and_capabilities(db_session: AsyncSession) -> 
     assert runtime_data["routing_strategy"] == "fastest"
     assert runtime_data["fallback_models"] == ["claude-3-5-sonnet-20241022", "deepseek-chat"]
     runtime_id = uuid.UUID(runtime_data["id"])
+
+    listed_runtimes = await list_runtimes(
+        current_user=user,
+        organization_id=None,
+        project_id=None,
+        db=db_session,
+    )
+    assert [runtime.id for runtime in listed_runtimes] == [runtime_id]
 
     # 3. Enable GitHub and Notion capabilities
     ri_github = await integration_service.enable_runtime_integration(
