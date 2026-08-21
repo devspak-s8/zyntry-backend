@@ -221,6 +221,10 @@ class ConnectionService:
         if defn is None:
             raise ValueError(f"Unknown integration: {data.integration_slug}")
 
+        # Store the registry's canonical slug (for example, web_crawler -> website)
+        # so runtime capabilities and connections resolve to the same record.
+        data.integration_slug = defn.slug
+
         runtime_uuid = UUID(data.runtime_id) if data.runtime_id else None
 
         # Verify capability enabled on runtime if runtime_id specified

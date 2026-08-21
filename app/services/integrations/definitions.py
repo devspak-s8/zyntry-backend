@@ -1529,6 +1529,8 @@ ALIASES: dict[str, str] = {
     "gdrive": "google_drive",
     "docs": "document_storage",
     "documentation": "document_storage",
+    "web_crawler": "website",
+    "crawler": "website",
     "gemini": "google_gemini",
     "grok": "xai",
 }
