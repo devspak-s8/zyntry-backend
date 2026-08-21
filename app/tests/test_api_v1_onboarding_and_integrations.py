@@ -101,10 +101,31 @@ async def test_api_v1_onboarding_and_integrations_routes(
         )
         assert resp_comp.status_code == 200
         comp_data = resp_comp.json()
-        assert comp_data["status"] == "preconfigured"
-        runtime_id = comp_data["runtime_id"]
+        assert comp_data["status"] == "draft"
 
-        # 3. Runtimes API
+        assert comp_data["runtime_id"] is None
+        assert comp_data["enabled_integrations"]
+
+        # 3. Runtimes API: provisioning happens after onboarding draft
+        resp_create_runtime = await client.post(
+            "/api/v1/runtimes",
+            json={"name": "API Provisioned Support Runtime", "environment": "development"},
+        )
+        assert resp_create_runtime.status_code == 201
+        runtime_id = resp_create_runtime.json()["id"]
+
+        for policy in comp_data["enabled_integrations"]:
+            resp_enable = await client.post(
+                f"/api/v1/runtimes/{runtime_id}/integrations",
+                json={
+                    "integration_slug": policy["integration_slug"],
+                    "connection_mode": policy["connection_mode"],
+                    "enabled_capabilities": policy["enabled_capabilities"],
+                },
+            )
+            assert resp_enable.status_code == 201
+
+        # List runtimes for current user
         # List runtimes for current user
         resp_runtimes = await client.get("/api/v1/runtimes")
         assert resp_runtimes.status_code == 200

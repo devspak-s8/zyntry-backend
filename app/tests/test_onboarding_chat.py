@@ -84,42 +84,10 @@ async def test_chat_onboarding_full_lifecycle(db_session: AsyncSession) -> None:
     )
     assert resp4.is_complete is True
     assert resp4.state == "completed"
-    assert "Runtime preconfigured" in resp4.response
+    assert "Configuration draft saved" in resp4.response
     assert resp4.proposed_runtime is not None
-    runtime_id_str = resp4.proposed_runtime["runtime_id"]
-
-    # Verify Runtime in database
-    runtime_uuid = uuid.UUID(runtime_id_str)
-    runtime = await uow.runtimes.get(runtime_uuid)
-    assert runtime is not None
-    assert runtime.user_id == user.id
-    assert runtime.status == "preconfigured"
-    assert runtime.organization_id is None
-    assert runtime.project_id is None
-
-    # Verify Runtime Integrations are declared as supported capabilities
-    r_integrations = await uow.runtime_integrations.get_by_runtime(runtime_uuid)
-    assert len(r_integrations) == 2
-    slugs = {ri.integration_slug for ri in r_integrations}
-    assert slugs == {"github", "slack"}
-    for ri in r_integrations:
-        assert ri.connection_mode == "end_user_oauth"
-        assert ri.connection_required is False
-        assert ri.connection_status == "ready_for_end_users"
-        assert ri.config["allowed_connection_modes"] == ["end_user_oauth"]
-
-    # 7. Explicit API Key Creation (Decoupled Lifecycle)
-    key_result = await apikey_service.create_key(
-        user_id=user.id,
-        data=ApiKeyCreate(
-            name="Dev Backend Key",
-            runtime_id=runtime_uuid,
-            environment="development",
-            scopes=["read", "write"],
-        ),
-    )
-    assert key_result["api_key"].runtime_id == runtime_uuid
-    assert key_result["raw_key"].startswith("sk_test_")
+    assert resp4.proposed_runtime["runtime_id"] is None
+    assert resp4.proposed_runtime["status"] == "draft"
 
 
 @pytest.mark.asyncio
@@ -178,7 +146,7 @@ async def test_chat_onboarding_natural_engineer_agent_flow(db_session: AsyncSess
     )
     assert resp3.is_complete is True
     assert resp3.state == "completed"
-    assert "Runtime preconfigured" in resp3.response
+    assert "Configuration draft saved" in resp3.response
 
 
 @pytest.mark.asyncio
