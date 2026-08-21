@@ -12,7 +12,7 @@ class RuntimeCreate(ORMModel):
     user_id: uuid.UUID | None = None
     project_id: uuid.UUID | None = None
     organization_id: uuid.UUID | None = None
-    name: str = "Default Runtime"
+    name: str = Field(default="Default Runtime", min_length=1, max_length=255)
     environment: str = "development"
     provider: str = "openai"
     model: str = "gpt-4o"
@@ -29,7 +29,7 @@ class RuntimeCreate(ORMModel):
 
 class RuntimeUpdate(ORMModel):
     project_id: uuid.UUID | None = None
-    name: str | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=255)
     environment: str | None = None
     provider: str | None = None
     model: str | None = None

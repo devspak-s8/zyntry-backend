@@ -27,6 +27,12 @@ class RuntimeRepository:
         )
         return list(result.scalars().all())
 
+    async def get_by_owner_and_name(self, user_id: UUID, name: str) -> Runtime | None:
+        result = await self.session.execute(
+            select(Runtime).where(Runtime.user_id == user_id, Runtime.name.ilike(name))
+        )
+        return result.scalars().first()
+
     async def create(self, **kwargs: object) -> Runtime:
         runtime = Runtime(**kwargs)
         self.session.add(runtime)

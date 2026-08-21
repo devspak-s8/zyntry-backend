@@ -54,6 +54,13 @@ class RuntimeService:
         if owner_id is None:
             raise ValueError("user_id is required to create a runtime")
 
+        runtime_name = (data.name or "Default Runtime").strip()
+        if not runtime_name:
+            raise ValueError("Runtime name cannot be empty")
+        duplicate = await self.uow.runtimes.get_by_owner_and_name(owner_id, runtime_name)
+        if duplicate:
+            raise ValueError(f"A runtime named '{runtime_name}' already exists")
+
         if data.project_id:
             existing = await self.uow.runtimes.get_by_project(data.project_id)
             if existing:
@@ -63,7 +70,7 @@ class RuntimeService:
             user_id=owner_id,
             project_id=data.project_id,
             organization_id=data.organization_id,
-            name=data.name or "Default Runtime",
+            name=runtime_name,
             environment=data.environment or "development",
             provider=data.provider,
             model=data.model,

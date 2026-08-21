@@ -78,7 +78,10 @@ async def create_runtime(
 ) -> RuntimeRead:
     uow = UnitOfWork(db)
     service = RuntimeService(uow)
-    runtime = await service.get_or_create(body, default_user_id=current_user.id)
+    try:
+        runtime = await service.get_or_create(body, default_user_id=current_user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return RuntimeRead(**runtime)
 
 
