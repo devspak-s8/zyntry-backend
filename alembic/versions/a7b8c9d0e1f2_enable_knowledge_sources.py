@@ -19,7 +19,7 @@ def upgrade() -> None:
     # Knowledge sources are now part of the supported project setup flow.
     op.execute(
         sa.text(
-            "UPDATE feature_flags "
+            "UPDATE admin_feature_flags "
             "SET enabled = TRUE, default_value = TRUE, rollout_percentage = 100 "
             "WHERE key = 'knowledge_sources'"
         )
@@ -29,7 +29,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.execute(
         sa.text(
-            "UPDATE feature_flags "
+            "UPDATE admin_feature_flags "
             "SET enabled = TRUE, default_value = FALSE, rollout_percentage = 0 "
             "WHERE key = 'knowledge_sources'"
         )
