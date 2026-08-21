@@ -81,6 +81,7 @@ class RuntimeAssistantService:
             context=context,
             available_tools=_get_available_tools(role),
         )
+        decision = planner.classify_request(message)
         plan = planner.plan(message)
 
         executor = RuntimeAssistantExecutor(
@@ -108,6 +109,8 @@ class RuntimeAssistantService:
                     for term in ("enable", "disable", "change", "apply", "restart", "delete")
                 ),
                 "conversation_id": str(conversation.id),
+                "decision": decision,
+                "plan_reason": plan.reasoning,
             }
         )
 

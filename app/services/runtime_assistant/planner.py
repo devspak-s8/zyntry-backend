@@ -85,6 +85,51 @@ class RuntimeAssistantPlanner:
         reasoning = " ".join(reasoning_parts) if reasoning_parts else "Processing general request."
         return ToolPlan(tool_calls=tool_calls, reasoning=reasoning)
 
+    def classify_request(self, user_message: str) -> dict[str, Any]:
+        """Return a high-level, safe execution decision for observability.
+
+        This is intentionally a decision summary, not hidden chain-of-thought.
+        It lets the console explain why a path was selected without exposing
+        private model reasoning.
+        """
+        text = user_message.lower()
+        current = any(term in text for term in ("current", "latest", "today", "now", "recent"))
+        action = any(term in text for term in ("create", "send", "update", "delete", "run", "execute"))
+        document = any(term in text for term in ("pdf", "document", "uploaded file", "chapter"))
+        knowledge = any(term in text for term in ("what", "who", "when", "where", "how", "why", "find", "search"))
+        policy = self.context.external_sources or {}
+        strategy = policy.get("strategy", "internal_then_external")
+        external_enabled = bool(policy.get("enabled")) and strategy != "internal_only"
+
+        if action:
+            mode = "action"
+        elif knowledge or document:
+            mode = "retrieval"
+        else:
+            mode = "direct"
+
+        sources: list[str] = []
+        for source in self.context.knowledge_sources:
+            source_type = str(source.get("source_type") or source.get("provider") or "").lower()
+            if source_type and (source_type in text or source_type in {"document", "documents"} and document):
+                sources.append(source_type)
+        if document and "documents" not in sources:
+            sources.append("documents")
+        external_reason = "current_information" if current else "internal_context_insufficient"
+        return {
+            "intent": "current_information" if current else ("document_question" if document else ("action_request" if action else "knowledge_question" if knowledge else "conversation")),
+            "response_mode": mode,
+            "candidate_sources": sources,
+            "external_retrieval": {
+                "enabled": external_enabled,
+                "allowed": external_enabled and mode == "retrieval",
+                "strategy": strategy,
+                "reason": external_reason,
+                "providers": policy.get("providers", []),
+            },
+            "context_selection": "relevant_sources_and_recent_execution",
+        }
+
     def _plan_slow_runtime(self, message: str) -> list[ToolCall]:
         calls = []
         if "get_runtime_health" in self.tool_map:

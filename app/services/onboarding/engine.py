@@ -184,7 +184,8 @@ class OnboardingEngine:
         )
 
         if is_confirmation:
-            # Auto-provision the runtime directly and complete session
+            # Save the configuration draft and complete onboarding. Provisioning
+            # happens later when the user creates a project in the console.
             complete_res = await self.complete_onboarding(
                 user_id=user_id,
                 req=OnboardingCompleteRequest(session_id=str(session.id)),
@@ -205,7 +206,7 @@ class OnboardingEngine:
                 state="completed",
                 configuration=session.configuration,
                 is_complete=True,
-                suggested_actions=["Generate API Key", "Go to Runtime Console"],
+                suggested_actions=["Create Project", "Review Configuration"],
                 proposed_runtime={
                     "runtime_id": complete_res.runtime_id,
                     "runtime_name": complete_res.runtime_name,
@@ -340,7 +341,12 @@ class OnboardingEngine:
         config["capabilities"] = existing_capabilities
         return config, "configuring_runtime"
 
-    def get_suggested_actions_for_state(self, state: str) -> list[str]:
+    def get_suggested_actions_for_state(
+        self, state: str, configuration: dict[str, Any] | None = None
+    ) -> list[str]:
+        config = configuration or {}
+        integrations = list(config.get("integrations", []))
+        external = config.get("external_sources", {})
         if state == "onboarding_started":
             return [
                 "I'm building an AI customer support agent.",
@@ -351,14 +357,26 @@ class OnboardingEngine:
         if state in ("discovering_use_case", "discovering_application_type"):
             return ["Company data", "My users' accounts", "Both", "Not sure yet"]
         if state in ("selecting_integrations", "selecting_capabilities"):
-            return ["GitHub", "Slack", "Notion", "PostgreSQL", "MongoDB", "Gmail"]
+            actions = [
+                f"Configure {self._display_name(slug)}" for slug in integrations
+            ]
+            actions.extend(["Add another source", "Use uploaded documents"])
+            if not external.get("enabled"):
+                actions.append("Add external knowledge")
+            return actions
         if state == "configuring_runtime":
-            return ["Fast responses", "Balanced performance", "Maximum intelligence"]
+            return [
+                f"Use {self._display_name(slug)}" for slug in integrations
+            ] or ["Describe the data this runtime should use", "Add external knowledge"]
         if state == "confirming_configuration":
             return ["Confirm & Create Runtime", "Change something"]
         if state == "completed":
             return ["Generate API Key", "Go to Runtime Console"]
         return ["Continue"]
+
+    @staticmethod
+    def _display_name(slug: str) -> str:
+        return slug.replace("_", " ").strip().title()
 
     async def complete_onboarding(
         self, user_id: UUID, req: OnboardingCompleteRequest
@@ -368,44 +386,26 @@ class OnboardingEngine:
         if session is None or session.user_id != user_id:
             raise ValueError("Onboarding session not found")
 
-        # If already provisioned, return existing
-        if session.state == "completed" and session.created_runtime_id:
-            existing_rt = await self.uow.runtimes.get(session.created_runtime_id)
-            if existing_rt:
-                return OnboardingCompleteResponse(
-                    session_id=str(session.id),
-                    runtime_id=str(existing_rt.id),
-                    runtime_name=existing_rt.name,
-                    environment=existing_rt.environment,
-                    status=existing_rt.status,
-                    enabled_integrations=[],
-                    message="Runtime already preconfigured. Attach it to a project before building.",
-                )
+        # Onboarding is non-provisioning: it stores a configuration draft.
+        if session.state == "completed":
+            config = session.configuration or {}
+            return OnboardingCompleteResponse(
+                session_id=str(session.id),
+                runtime_id=None,
+                runtime_name=req.runtime_name or config.get("runtime_name", "AI App Runtime"),
+                environment=req.environment or config.get("environment", "development"),
+                status="draft",
+                enabled_integrations=config.get("integration_policies", []),
+                message="Configuration draft already saved. Create a project to provision the runtime.",
+            )
 
         config = session.configuration or {}
         runtime_name = req.runtime_name or f"{config.get('use_case', 'AI App').replace('_', ' ').title()} Runtime"
         env = req.environment or config.get("environment", "development")
 
-        # 1. Create a user-first runtime. It remains a configuration draft
-        # until it is attached to a project and the build worker succeeds.
-        runtime = await self.uow.runtimes.create(
-            user_id=user_id,
-            name=runtime_name,
-            environment=env,
-            provider=config.get("provider", "openai"),
-            model=config.get("model", "gpt-4o"),
-            routing_strategy=config.get("routing_strategy", "balanced"),
-            embedding_model="text-embedding-3-small",
-            vector_store="pgvector",
-            chunk_size=512,
-            chunk_overlap=64,
-            status="preconfigured",
-            health=0.0,
-            config=config,
-        )
-        await self.uow.commit()
+        config = {**config, "runtime_name": runtime_name, "environment": env}
 
-        # 2. Configure Runtime Integrations (Separate capability from connection)
+        # Record intended integrations in the draft; provision them later.
         enabled_integrations_list: list[dict[str, Any]] = []
         integrations = config.get("integrations", [])
         capabilities_map = config.get("capabilities", {})
@@ -436,35 +436,21 @@ class OnboardingEngine:
                     f"'{requested_mode}'"
                 )
 
-            ri = await self.integration_service.enable_runtime_integration(
-                runtime_id=runtime.id,
-                data=RuntimeIntegrationCreate(
-                    integration_slug=slug,
-                    connection_mode=mode,
-                    enabled_capabilities=caps,
-                    config={
-                        "onboarded": True,
-                        "requested_connection_mode": requested_mode,
-                        "mode_resolution": (
-                            "requested"
-                            if mode == requested_mode
-                            else "company_connection_required"
-                        ),
-                    },
-                ),
-            )
             enabled_integrations_list.append({
                 "integration_slug": slug,
                 "connection_mode": mode,
                 "enabled_capabilities": caps,
-                "connection_status": ri.connection_status,
+                "connection_status": "not_configured",
             })
+
+        config["integration_policies"] = enabled_integrations_list
 
         # 3. Mark session completed (API Key generation is decoupled and user-requested)
         await self.uow.onboarding_sessions.update(
             session,
             state="completed",
-            created_runtime_id=runtime.id,
+            created_runtime_id=None,
+            configuration=config,
             completed_at=datetime.now(UTC),
         )
         await self.uow.commit()
@@ -480,22 +466,22 @@ class OnboardingEngine:
         integs_formatted = "\n".join(integ_lines) if integ_lines else "• Standard read access"
 
         message_markdown = (
-            "Runtime preconfigured.\n\n"
-            f"• Name: {runtime.name}\n"
-            f"• Status: Preconfigured\n"
-            f"• Environment: {runtime.environment.capitalize()}\n"
-            f"• Routing Strategy: {runtime.routing_strategy.replace('_', ' ').capitalize()}\n\n"
+            "Configuration draft saved.\n\n"
+            f"• Name: {runtime_name}\n"
+            "• Status: Draft\n"
+            f"• Environment: {env.capitalize()}\n"
+            f"• Routing Strategy: {config.get('routing_strategy', 'balanced').replace('_', ' ').capitalize()}\n\n"
             "Configured Integrations:\n"
             f"{integs_formatted}\n\n"
-            "Next: create or attach a project, complete any required company connections, and build the runtime."
+            "Next: create a project, connect the selected resources, and provision the runtime."
         )
 
         return OnboardingCompleteResponse(
             session_id=str(session.id),
-            runtime_id=str(runtime.id),
-            runtime_name=runtime.name,
-            environment=runtime.environment,
-            status=runtime.status,
+            runtime_id=None,
+            runtime_name=runtime_name,
+            environment=env,
+            status="draft",
             enabled_integrations=enabled_integrations_list,
             message=message_markdown,
         )

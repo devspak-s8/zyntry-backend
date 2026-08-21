@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -22,6 +22,10 @@ from app.schemas.onboarding_chat import (
 from app.services.onboarding import OnboardingService
 
 router = APIRouter(prefix="/onboarding", tags=["onboarding"])
+
+
+def _to_legacy_state_read(state: dict[str, Any]) -> OnboardingStateRead:
+    return OnboardingStateRead(**state)
 
 
 # =========================================================
@@ -125,18 +129,11 @@ async def get_onboarding_state(
         project_id=project_id,
         organization_id=organization_id,
     )
-    state = await service.get_or_create(data)
-    return OnboardingStateRead(
-        id=state["id"],
-        organization_id=organization_id,
-        project_id=project_id,
-        user_id=str(current_user.id),
-        current_step=state["current_step"],
-        completed_steps=state["completed_steps"],
-        extra_data=state["extra_data"],
-        created_at=None,
-        updated_at=None,
-    )
+    try:
+        state = await service.get_or_create(data, current_user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid project_id or organization_id") from exc
+    return _to_legacy_state_read(state)
 
 
 @router.post("", response_model=OnboardingStateRead, status_code=status.HTTP_201_CREATED)
@@ -147,18 +144,11 @@ async def create_onboarding_state(
 ) -> OnboardingStateRead:
     uow = UnitOfWork(db)
     service = OnboardingService(uow)
-    state = await service.get_or_create(body)
-    return OnboardingStateRead(
-        id=state["id"],
-        organization_id=body.organization_id,
-        project_id=body.project_id,
-        user_id=str(current_user.id),
-        current_step=state["current_step"],
-        completed_steps=state["completed_steps"],
-        extra_data=state["extra_data"],
-        created_at=None,
-        updated_at=None,
-    )
+    try:
+        state = await service.get_or_create(body, current_user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid project_id or organization_id") from exc
+    return _to_legacy_state_read(state)
 
 
 @router.patch("/{state_id}", response_model=OnboardingStateRead)
@@ -170,15 +160,12 @@ async def update_onboarding_state(
 ) -> OnboardingStateRead:
     uow = UnitOfWork(db)
     service = OnboardingService(uow)
-    state = await service.update(state_id, body)
-    return OnboardingStateRead(
-        id=state["id"],
-        organization_id=None,
-        project_id=None,
-        user_id=str(current_user.id),
-        current_step=state["current_step"],
-        completed_steps=state["completed_steps"],
-        extra_data=state["extra_data"],
-        created_at=None,
-        updated_at=None,
-    )
+    try:
+        state = await service.update(state_id, body, current_user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid onboarding state id") from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return _to_legacy_state_read(state)

@@ -61,6 +61,7 @@ class RuntimeContextBuilder:
             billing=self._serialize_billing(billing_summary),
             health=health,
             config=runtime.get("config", {}),
+            external_sources=runtime.get("config", {}).get("external_sources", {}),
             security=await self._get_security_settings(),
             deployment=self._get_deployment_status(runtime),
         )

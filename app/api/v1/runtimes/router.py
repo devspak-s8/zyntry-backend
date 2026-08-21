@@ -21,6 +21,7 @@ from app.models.integrations import RuntimeIntegration
 from app.models.users import User
 from app.repositories import UnitOfWork
 from app.schemas.apikeys import ApiKeyCreate, ApiKeyCreateResponse
+from app.schemas.external_sources import ExternalSourcePolicy
 from app.schemas.integrations import (
     RuntimeIntegrationCreate,
     RuntimeIntegrationRead,
@@ -128,6 +129,33 @@ async def update_runtime(
     service = RuntimeService(uow)
     runtime = await service.update(runtime_id, body)
     return RuntimeRead(**runtime)
+
+
+@router.put("/{runtime_id}/external-sources", response_model=ExternalSourcePolicy)
+async def configure_external_sources(
+    runtime_id: str,
+    body: ExternalSourcePolicy,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_session),
+) -> ExternalSourcePolicy:
+    """Persist the runtime's external knowledge/retrieval policy."""
+    try:
+        rid = uuid.UUID(runtime_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid runtime_id format") from None
+
+    uow = UnitOfWork(db)
+    runtime = await uow.runtimes.get(rid)
+    if runtime is None:
+        raise HTTPException(status_code=404, detail="Runtime not found")
+    if runtime.user_id != current_user.id and not current_user.is_superuser:
+        raise HTTPException(status_code=403, detail="Unauthorized")
+
+    config = dict(runtime.config or {})
+    config["external_sources"] = body.model_dump()
+    await uow.runtimes.update(runtime, config=config)
+    await uow.commit()
+    return body
 
 
 @router.post("/{runtime_id}/api-keys", response_model=ApiKeyCreateResponse, status_code=status.HTTP_201_CREATED)

@@ -51,7 +51,7 @@ class OnboardingCompleteRequest(BaseModel):
 
 class OnboardingCompleteResponse(BaseModel):
     session_id: str
-    runtime_id: str
+    runtime_id: str | None = None
     runtime_name: str
     environment: str
     status: str

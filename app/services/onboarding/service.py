@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
+from app.models.onboarding import OnboardingState
 from app.repositories import UnitOfWork
 from app.schemas.onboarding import OnboardingStateCreate, OnboardingStateUpdate
 from app.schemas.onboarding_chat import (
@@ -24,7 +25,9 @@ class OnboardingService:
         self, user_id: UUID, initial_prompt: str | None = None, reset: bool = False
     ) -> dict[str, Any]:
         session = await self.engine.get_or_create_session(user_id, initial_prompt, reset=reset)
-        suggested = self.engine.get_suggested_actions_for_state(session.state)
+        suggested = self.engine.get_suggested_actions_for_state(
+            session.state, session.configuration
+        )
         return {
             "id": str(session.id),
             "user_id": str(session.user_id),
@@ -50,7 +53,9 @@ class OnboardingService:
         session = await self.uow.onboarding_sessions.get(session_id)
         if not session:
             return None
-        suggested = self.engine.get_suggested_actions_for_state(session.state)
+        suggested = self.engine.get_suggested_actions_for_state(
+            session.state, session.configuration
+        )
         return {
             "id": str(session.id),
             "user_id": str(session.user_id),
@@ -67,49 +72,59 @@ class OnboardingService:
         }
 
     # Legacy Onboarding Methods (Backwards compatibility)
-    async def get_or_create(self, data: OnboardingStateCreate) -> dict:
+    @staticmethod
+    def _serialize_state(state: OnboardingState) -> dict[str, Any]:
+        return {
+            "id": str(state.id),
+            "organization_id": str(state.organization_id) if state.organization_id else None,
+            "project_id": str(state.project_id) if state.project_id else None,
+            "user_id": str(state.user_id) if state.user_id else None,
+            "current_step": state.current_step,
+            "completed_steps": state.completed_steps or [],
+            "extra_data": state.extra_data or {},
+            "created_at": state.created_at,
+            "updated_at": state.updated_at,
+        }
+
+    async def get_or_create(self, data: OnboardingStateCreate, user_id: UUID) -> dict[str, Any]:
+        project_id = UUID(str(data.project_id)) if data.project_id else None
+        organization_id = UUID(str(data.organization_id)) if data.organization_id else None
         existing = None
-        if data.project_id:
-            existing = await self.uow.onboarding.get_by_project(UUID(str(data.project_id)))
-        elif data.organization_id:
-            existing = await self.uow.onboarding.get_by_org(UUID(str(data.organization_id)))
+        if project_id:
+            existing = await self.uow.onboarding.get_by_project(project_id, user_id)
+        elif organization_id:
+            existing = await self.uow.onboarding.get_by_org(organization_id, user_id)
+        else:
+            existing = await self.uow.onboarding.get_account_state(user_id)
 
         if existing:
-            return {
-                "id": str(existing.id),
-                "current_step": existing.current_step,
-                "completed_steps": existing.completed_steps,
-                "extra_data": existing.extra_data,
-            }
+            return self._serialize_state(existing)
 
         created = await self.uow.onboarding.create(
-            organization_id=UUID(str(data.organization_id)) if data.organization_id else None,
-            project_id=UUID(str(data.project_id)) if data.project_id else None,
+            organization_id=organization_id,
+            project_id=project_id,
+            user_id=user_id,
             current_step=data.current_step,
             completed_steps=data.completed_steps,
             extra_data=data.extra_data,
         )
         await self.uow.commit()
-        return {
-            "id": str(created.id),
-            "current_step": created.current_step,
-            "completed_steps": created.completed_steps,
-            "extra_data": created.extra_data,
-        }
+        return self._serialize_state(created)
 
-    async def update(self, state_id: str, data: OnboardingStateUpdate) -> dict:
-        existing = await self.uow.onboarding.session.get(
-            self.uow.onboarding.__class__, state_id
-        )
+    async def update(
+        self, state_id: str, data: OnboardingStateUpdate, user_id: UUID
+    ) -> dict[str, Any]:
+        existing = await self.uow.onboarding.get(UUID(state_id))
         if not existing:
-            raise ValueError("Onboarding state not found")
+            raise LookupError("Onboarding state not found")
+        if existing.user_id not in (None, user_id):
+            raise PermissionError("Unauthorized access to onboarding state")
 
         update_data = data.model_dump(exclude_unset=True)
+        # States created before user ownership was persisted are claimed by the
+        # authenticated caller on first update, preserving legacy progress.
+        if existing.user_id is None:
+            update_data["user_id"] = user_id
         updated = await self.uow.onboarding.update(existing, **update_data)
         await self.uow.commit()
-        return {
-            "id": str(updated.id),
-            "current_step": updated.current_step,
-            "completed_steps": updated.completed_steps,
-            "extra_data": updated.extra_data,
-        }
+        return self._serialize_state(updated)

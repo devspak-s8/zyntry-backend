@@ -73,6 +73,7 @@ class RuntimeContext(BaseModel):
     billing: dict[str, Any] = Field(default_factory=dict)
     health: dict[str, Any] = Field(default_factory=dict)
     config: dict[str, Any] = Field(default_factory=dict)
+    external_sources: dict[str, Any] = Field(default_factory=dict)
     security: dict[str, Any] = Field(default_factory=dict)
     deployment: dict[str, Any] = Field(default_factory=dict)
 
