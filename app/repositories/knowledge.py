@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.knowledge import Document, KnowledgeBase, KnowledgeSource, SyncJob, SyncSchedule
@@ -47,6 +47,14 @@ class DocumentRepository:
             select(Document).where(Document.knowledge_base_id == knowledge_base_id)
         )
         return list(result.scalars().all())
+
+    async def count_by_project(self, project_id: UUID) -> int:
+        result = await self.session.execute(
+            select(func.count(Document.id))
+            .join(KnowledgeBase, KnowledgeBase.id == Document.knowledge_base_id)
+            .where(KnowledgeBase.project_id == project_id)
+        )
+        return int(result.scalar_one() or 0)
 
     async def get(self, id: UUID) -> Document | None:
         return await self.session.get(Document, id)

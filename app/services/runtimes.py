@@ -11,6 +11,7 @@ from app.schemas.runtimes import RuntimeCreate, RuntimeUpdate
 RUNTIME_STATUSES = {
     "preconfigured",
     "awaiting_connections",
+    "awaiting_documents",
     "queued",
     "validating",
     "discovering",
@@ -158,6 +159,26 @@ class RuntimeService:
                 "required_connections": required_connections,
                 "trigger": trigger,
             }
+
+        requires_documents = any(
+            item.is_enabled and item.integration_slug == "document_storage"
+            for item in integrations
+        )
+        if requires_documents and runtime.project_id:
+            document_count = await self.uow.documents.count_by_project(runtime.project_id)
+            if document_count == 0:
+                await self.uow.runtimes.update(
+                    runtime,
+                    status="awaiting_documents",
+                    error_message=None,
+                )
+                await self.uow.commit()
+                return {
+                    "runtime_id": str(runtime.id),
+                    "status": "awaiting_documents",
+                    "required_documents": True,
+                    "trigger": trigger,
+                }
 
         started_at = datetime.now(timezone.utc)
         await self.uow.runtimes.update(
