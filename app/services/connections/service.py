@@ -221,21 +221,28 @@ class ConnectionService:
         if defn is None:
             raise ValueError(f"Unknown integration: {data.integration_slug}")
 
-        # Store the registry's canonical slug (for example, web_crawler -> website)
-        # so runtime capabilities and connections resolve to the same record.
-        data.integration_slug = defn.slug
-
         runtime_uuid = UUID(data.runtime_id) if data.runtime_id else None
+
+        requested_slug = data.integration_slug
+        canonical_slug = defn.slug
 
         # Verify capability enabled on runtime if runtime_id specified
         if runtime_uuid:
             runtime_int = await self.uow.runtime_integrations.get_by_runtime_and_slug(
-                runtime_uuid, data.integration_slug
+                runtime_uuid, requested_slug
             )
+            if runtime_int is None and canonical_slug != requested_slug:
+                runtime_int = await self.uow.runtime_integrations.get_by_runtime_and_slug(
+                    runtime_uuid, canonical_slug
+                )
             if runtime_int is None or not runtime_int.is_enabled:
                 raise ValueError(
-                    f"Integration capability '{data.integration_slug}' is not enabled on runtime {data.runtime_id}"
+                    f"Integration capability '{requested_slug}' is not enabled on runtime {data.runtime_id}"
                 )
+
+        # Keep an explicitly enabled legacy alias on the connection; otherwise
+        # use the registry's canonical slug for new standalone connections.
+        data.integration_slug = runtime_int.integration_slug if runtime_uuid and runtime_int else canonical_slug
 
         secret_payload = json.dumps(data.credentials)
         encrypted_creds = self.secrets.encrypt(secret_payload)

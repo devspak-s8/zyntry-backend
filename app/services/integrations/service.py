@@ -54,7 +54,6 @@ class IntegrationService:
         defn = integration_registry.get(data.integration_slug)
         if defn is None:
             raise ValueError(f"Integration '{data.integration_slug}' is not supported")
-        data.integration_slug = defn.slug
 
         if defn.status not in ("available", "beta"):
             raise ValueError(
