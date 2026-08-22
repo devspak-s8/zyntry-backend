@@ -309,6 +309,8 @@ class OnboardingEngine:
             return self._validate_integrations_and_transition(config, proposed_data)
 
         if proposed_intent == "confirm_configuration":
+            if proposed_data.get("runtime_name"):
+                config["runtime_name"] = proposed_data["runtime_name"]
             config["model"] = proposed_data.get("model", "gpt-4o")
             config["provider"] = proposed_data.get("provider", "openai")
             config["routing_strategy"] = proposed_data.get("routing_strategy", "balanced")
@@ -320,7 +322,7 @@ class OnboardingEngine:
 
         # General update fallback
         for k, v in proposed_data.items():
-            if k in ("use_case", "application_type", "integration_mode", "model", "provider", "routing_strategy"):
+            if k in ("use_case", "application_type", "integration_mode", "runtime_name", "model", "provider", "routing_strategy"):
                 config[k] = v
 
         return config, current_state
