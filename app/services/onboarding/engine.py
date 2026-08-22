@@ -273,6 +273,8 @@ class OnboardingEngine:
 
         if proposed_intent == "set_use_case":
             config["use_case"] = proposed_data.get("use_case", "general_ai_application")
+            if proposed_data.get("runtime_name"):
+                config["runtime_name"] = proposed_data["runtime_name"]
             if "integrations" in proposed_data and proposed_data["integrations"]:
                 config["integrations"] = proposed_data["integrations"]
             return config, "discovering_application_type"
@@ -281,6 +283,8 @@ class OnboardingEngine:
             config["use_case"] = proposed_data.get("use_case", "general_ai_application")
             config["application_type"] = proposed_data.get("application_type", "customer_facing_ai_app")
             config["integration_mode"] = proposed_data.get("integration_mode", "end_user_oauth")
+            if proposed_data.get("runtime_name"):
+                config["runtime_name"] = proposed_data["runtime_name"]
             if "integrations" in proposed_data and proposed_data["integrations"]:
                 config["integrations"] = proposed_data["integrations"]
             if "capabilities" in proposed_data and proposed_data["capabilities"]:
@@ -293,6 +297,8 @@ class OnboardingEngine:
                 mode = "zyntry_managed"
             config["application_type"] = proposed_data.get("application_type", "customer_facing_ai_app")
             config["integration_mode"] = mode
+            if proposed_data.get("runtime_name"):
+                config["runtime_name"] = proposed_data["runtime_name"]
             if "integrations" in proposed_data and proposed_data["integrations"]:
                 config["integrations"] = proposed_data["integrations"]
             if "capabilities" in proposed_data and proposed_data["capabilities"]:
@@ -306,6 +312,8 @@ class OnboardingEngine:
                 config["application_type"] = proposed_data["application_type"]
             if "integration_mode" in proposed_data:
                 config["integration_mode"] = proposed_data["integration_mode"]
+            if proposed_data.get("runtime_name"):
+                config["runtime_name"] = proposed_data["runtime_name"]
             return self._validate_integrations_and_transition(config, proposed_data)
 
         if proposed_intent == "confirm_configuration":
@@ -389,6 +397,24 @@ class OnboardingEngine:
     def _display_name(slug: str) -> str:
         return slug.replace("_", " ").strip().title()
 
+    @staticmethod
+    def _resolve_connection_mode(slug: str, requested_mode: str) -> tuple[str, str]:
+        """Return the effective mode and explain any safe fallback."""
+        defn = integration_registry.get(slug)
+        if defn is None:
+            return requested_mode, "requested"
+        supports_hybrid = {"zyntry_managed", "end_user_oauth"}.issubset(
+            defn.supported_connection_modes
+        )
+        if requested_mode == "hybrid" and not supports_hybrid:
+            return "zyntry_managed", "company_managed_only"
+        if requested_mode not in defn.supported_connection_modes and requested_mode != "hybrid":
+            raise ValueError(
+                f"{defn.name} does not support the requested connection mode "
+                f"'{requested_mode}'"
+            )
+        return requested_mode, "requested"
+
     async def complete_onboarding(
         self, user_id: UUID, req: OnboardingCompleteRequest
     ) -> OnboardingCompleteResponse:
@@ -400,13 +426,34 @@ class OnboardingEngine:
         # Onboarding is non-provisioning: it stores a configuration draft.
         if session.state == "completed":
             config = session.configuration or {}
+            existing_policies = config.get("integration_policies", [])
+            normalized_policies: list[dict[str, Any]] = []
+            for policy in existing_policies:
+                slug = policy.get("integration_slug")
+                if not slug:
+                    continue
+                requested = policy.get(
+                    "requested_connection_mode",
+                    policy.get("connection_mode", config.get("integration_mode", "zyntry_managed")),
+                )
+                mode, resolution = self._resolve_connection_mode(slug, requested)
+                normalized_policies.append({
+                    **policy,
+                    "connection_mode": mode,
+                    "requested_connection_mode": requested,
+                    "mode_resolution": resolution,
+                })
+            if normalized_policies and normalized_policies != existing_policies:
+                config = {**config, "integration_policies": normalized_policies}
+                await self.uow.onboarding_sessions.update(session, configuration=config)
+                await self.uow.commit()
             return OnboardingCompleteResponse(
                 session_id=str(session.id),
                 runtime_id=None,
                 runtime_name=req.runtime_name or config.get("runtime_name", "AI App Runtime"),
                 environment=req.environment or config.get("environment", "development"),
                 status="draft",
-                enabled_integrations=config.get("integration_policies", []),
+                enabled_integrations=normalized_policies,
                 message="Configuration draft already saved. Create a project to provision the runtime.",
             )
 
@@ -433,23 +480,13 @@ class OnboardingEngine:
 
             caps = capabilities_map.get(slug, [c.slug for c in defn.capabilities if not c.is_write])
             requested_mode = integration_modes.get(slug, integration_mode)
-            mode = requested_mode
-            if mode == "hybrid" and not {"zyntry_managed", "end_user_oauth"}.issubset(
-                defn.supported_connection_modes
-            ):
-                # The selected integration only supports a company connection.
-                # Preserve the original choice in its policy config rather than
-                # presenting it as an end-user connection.
-                mode = "zyntry_managed"
-            elif mode not in defn.supported_connection_modes and mode != "hybrid":
-                raise ValueError(
-                    f"{defn.name} does not support the requested connection mode "
-                    f"'{requested_mode}'"
-                )
+            mode, mode_resolution = self._resolve_connection_mode(slug, requested_mode)
 
             enabled_integrations_list.append({
                 "integration_slug": slug,
                 "connection_mode": mode,
+                "requested_connection_mode": requested_mode,
+                "mode_resolution": mode_resolution,
                 "enabled_capabilities": caps,
                 "connection_status": "not_configured",
             })

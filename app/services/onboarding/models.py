@@ -146,10 +146,13 @@ class FastOnboardingModelProvider:
         if current_state in ("confirming_configuration", "configuring_runtime"):
             if any(k in msg_lower for k in ["confirm", "create", "yes", "looks good", "provision", "proceed", "ready"]):
                 return OnboardingModelResponse(
-                    text="Provisioning your Zyntry runtime now...",
+                    text=(
+                        "I’ll save this as a configuration draft. You can create a project "
+                        "later to connect resources and provision the runtime."
+                    ),
                     proposed_intent="execute_provisioning",
                     proposed_data={},
-                    suggested_actions=["Generate API Key", "Go to Runtime Console"],
+                    suggested_actions=["Create Project", "Review Configuration"],
                 )
 
         # 1. State: onboarding_started
@@ -364,6 +367,7 @@ class FastOnboardingModelProvider:
                 capabilities=config.get("capabilities", {}),
                 routing_strategy=strategy,
                 environment=env,
+                runtime_name=config.get("runtime_name"),
             )
 
             return OnboardingModelResponse(
@@ -497,8 +501,9 @@ class FastOnboardingModelProvider:
         capabilities: dict[str, list[str]],
         routing_strategy: str,
         environment: str,
+        runtime_name: str | None = None,
     ) -> str:
-        uc_title = self._use_case_title(use_case)
+        uc_title = runtime_name or self._use_case_title(use_case)
         strategy_labels = {
             "latency_optimized": "Low latency",
             "quality_optimized": "Maximum quality",
@@ -537,7 +542,7 @@ class FastOnboardingModelProvider:
             f"• Routing: {strategy_label}\n"
             f"• Environment: {environment.capitalize()}\n\n"
             f"Connected Services:\n{integ_block}\n\n"
-            "Ready to provision this runtime."
+            "Configuration draft ready. Create a project later to connect resources and provision the runtime."
         )
 
 
