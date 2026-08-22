@@ -33,6 +33,15 @@ class RuntimeRepository:
         )
         return result.scalars().first()
 
+    async def get_latest_by_user(self, user_id: UUID) -> Runtime | None:
+        result = await self.session.execute(
+            select(Runtime)
+            .where(Runtime.user_id == user_id)
+            .order_by(Runtime.created_at.desc())
+            .limit(1)
+        )
+        return result.scalars().first()
+
     async def create(self, **kwargs: object) -> Runtime:
         runtime = Runtime(**kwargs)
         self.session.add(runtime)

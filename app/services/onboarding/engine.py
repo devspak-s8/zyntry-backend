@@ -51,6 +51,48 @@ class OnboardingEngine:
             await self.uow.onboarding_sessions.cancel_all_active_by_user(user_id)
             await self.uow.commit()
 
+        # Onboarding is for accounts that do not have a runtime yet. Runtime
+        # creation starts at ``preconfigured`` because it still needs project
+        # resources, but that is not a reason to send an existing user back
+        # through first-time onboarding.
+        existing_runtime = await self.uow.runtimes.get_latest_by_user(user_id)
+        if existing_runtime and not reset:
+            session = await self.uow.onboarding_sessions.get_latest_active_by_user(user_id)
+            if session:
+                session = await self.uow.onboarding_sessions.update(
+                    session,
+                    state="completed",
+                    created_runtime_id=existing_runtime.id,
+                    configuration={
+                        **(session.configuration or {}),
+                        "runtime_id": str(existing_runtime.id),
+                        "runtime_name": existing_runtime.name,
+                        "runtime_status": existing_runtime.status,
+                    },
+                    completed_at=datetime.now(UTC),
+                )
+                await self.uow.commit()
+                return session
+
+            latest_session = await self.uow.onboarding_sessions.get_latest_by_user(user_id)
+            if latest_session and latest_session.state == "completed":
+                return latest_session
+
+            session = await self.uow.onboarding_sessions.create(
+                user_id=user_id,
+                state="completed",
+                messages=[],
+                configuration={
+                    "runtime_id": str(existing_runtime.id),
+                    "runtime_name": existing_runtime.name,
+                    "runtime_status": existing_runtime.status,
+                },
+                created_runtime_id=existing_runtime.id,
+                completed_at=datetime.now(UTC),
+            )
+            await self.uow.commit()
+            return session
+
         session = await self.uow.onboarding_sessions.get_latest_active_by_user(user_id)
         if session and not reset:
             return session

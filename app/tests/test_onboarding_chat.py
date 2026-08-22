@@ -166,3 +166,30 @@ async def test_chat_onboarding_reset_and_fresh_session(db_session: AsyncSession)
     assert s2["id"] != s1_id
     assert s2["state"] == "onboarding_started"
     assert len(s2["messages"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_existing_preconfigured_runtime_skips_first_time_onboarding(
+    db_session: AsyncSession,
+) -> None:
+    uow = UnitOfWork(db_session)
+    onboarding = OnboardingService(uow)
+
+    user = await uow.users.create(
+        email="existing_runtime@zyntry.space",
+        name="Existing Runtime User",
+        is_active=True,
+    )
+    runtime = await uow.runtimes.create(
+        user_id=user.id,
+        name="Existing Assistant",
+        status="preconfigured",
+    )
+    await uow.commit()
+
+    session = await onboarding.create_chat_session(user_id=user.id)
+
+    assert session["state"] == "completed"
+    assert session["is_complete"] is True
+    assert session["created_runtime_id"] == str(runtime.id)
+    assert session["configuration"]["runtime_status"] == "preconfigured"

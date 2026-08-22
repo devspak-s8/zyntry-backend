@@ -24,6 +24,15 @@ class OnboardingSessionRepository:
         )
         return result.scalars().first()
 
+    async def get_latest_by_user(self, user_id: UUID) -> OnboardingSession | None:
+        result = await self.session.execute(
+            select(OnboardingSession)
+            .where(OnboardingSession.user_id == user_id)
+            .order_by(OnboardingSession.created_at.desc())
+            .limit(1)
+        )
+        return result.scalars().first()
+
     async def cancel_all_active_by_user(self, user_id: UUID) -> None:
         result = await self.session.execute(
             select(OnboardingSession)
