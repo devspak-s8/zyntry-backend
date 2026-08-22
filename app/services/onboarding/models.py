@@ -386,6 +386,11 @@ class FastOnboardingModelProvider:
         cleaned = re.sub(r"example integration stack:?.*", "", msg, flags=re.IGNORECASE)
         cleaned = re.sub(r"example integrations:?.*", "", cleaned, flags=re.IGNORECASE).strip()
 
+        # Prefer an explicit application description over incidental words in
+        # a long capability list (for example, GitHub issues in a knowledge
+        # assistant description should not turn it into an issue-triage app).
+        if any(term in cleaned for term in ("operations and knowledge", "knowledge assistant", "ai operations")):
+            return "knowledge_search_rag"
         if "triage" in cleaned or "engineer" in cleaned or "issue" in cleaned:
             return "autonomous_issue_triage_agent"
         if "support" in cleaned or "customer" in cleaned:
@@ -401,7 +406,7 @@ class FastOnboardingModelProvider:
         return "general_ai_application"
 
     def _detect_integrations(self, msg: str) -> list[str]:
-        found = []
+        found: list[str] = []
         slugs = integration_registry.list_slugs()
         for slug in slugs:
             if slug in msg or slug.replace("_", " ") in msg:
@@ -416,8 +421,8 @@ class FastOnboardingModelProvider:
             if "notion" not in found:
                 found.append("notion")
         if "postgres" in msg or "sql" in msg or "database" in msg:
-            if "postgres" not in found:
-                found.append("postgres")
+            if "postgresql" not in found and "postgres" not in found:
+                found.append("postgresql")
         if "mongo" in msg:
             if "mongodb" not in found:
                 found.append("mongodb")
@@ -427,7 +432,28 @@ class FastOnboardingModelProvider:
         if any(k in msg for k in ["document", "documentation", "upload", "docs", "pdf", "rag"]):
             if "document_storage" not in found:
                 found.append("document_storage")
-        return list(dict.fromkeys(found))
+        # Keep the catalog's canonical slug and remove case/alias duplicates.
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for slug in found:
+            definition = integration_registry.get(slug)
+            canonical = definition.slug if definition else slug
+            if canonical not in seen:
+                seen.add(canonical)
+                normalized.append(canonical)
+        return normalized
+
+    @staticmethod
+    def _extract_runtime_name(msg: str) -> str | None:
+        match = re.search(
+            r"(?:name the runtime|runtime name|call (?:the )?runtime)\s*[:\-]?\s*[`\"']?([^`\"'\.\n]+)",
+            msg,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return None
+        name = re.sub(r"\s+", " ", match.group(1)).strip(" ,:;")
+        return name[:255] if name else None
 
     def _default_capabilities(self, slug: str) -> list[str]:
         defn = integration_registry.get(slug)

@@ -173,6 +173,15 @@ class OnboardingEngine:
             current_config=current_config,
             history=messages,
         )
+        # Preserve an explicit name embedded in a natural-language onboarding
+        # message even when the message also contains a long capability list.
+        extractor = getattr(self.model_provider, "_extract_runtime_name", None)
+        runtime_name = extractor(req.message) if callable(extractor) else None
+        if runtime_name:
+            ai_resp.proposed_data = {
+                **ai_resp.proposed_data,
+                "runtime_name": runtime_name,
+            }
 
         # Step 2: Check for direct execution / confirmation
         msg_lower = req.message.lower().strip()
@@ -400,7 +409,7 @@ class OnboardingEngine:
             )
 
         config = session.configuration or {}
-        runtime_name = req.runtime_name or f"{config.get('use_case', 'AI App').replace('_', ' ').title()} Runtime"
+        runtime_name = req.runtime_name or config.get("runtime_name") or f"{config.get('use_case', 'AI App').replace('_', ' ').title()} Runtime"
         env = req.environment or config.get("environment", "development")
 
         config = {**config, "runtime_name": runtime_name, "environment": env}
