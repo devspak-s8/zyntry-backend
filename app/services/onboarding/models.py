@@ -109,13 +109,14 @@ class FastOnboardingModelProvider:
             )
         if use_case == "knowledge_search_rag":
             return (
-                "Where is your knowledge stored?\n\n"
-                "You can index uploaded documents, Notion pages, "
-                "database records, S3 files, or crawled websites.",
+                "I understand this is a knowledge and operations assistant. "
+                "Where should its knowledge come from, and should it use external sources when internal data is insufficient?\n\n"
+                "You can index uploaded documents, Redis, PostgreSQL, Notion, GitHub, Slack, "
+                "or crawled websites. External retrieval can be restricted to trusted domains and require citations.",
                 [
-                    "Uploaded documents and PDFs",
-                    "Notion pages and PostgreSQL",
-                    "Website crawler and uploaded files",
+                    "Internal sources only",
+                    "Internal sources, then approved web search",
+                    "Use trusted websites with citations",
                     "Help me choose",
                 ],
             )
@@ -158,6 +159,8 @@ class FastOnboardingModelProvider:
             has_user_connect = any(k in msg_lower for k in ["their own", "users connect", "user connect", "users' accounts", "byo", "mode b"])
             has_company_data = any(k in msg_lower for k in ["company data", "our company", "company's data", "internal data", "mode a"])
             uc_title = self._use_case_title(use_case)
+            runtime_name = self._extract_runtime_name(msg_lower)
+            name_hint = f" Runtime name: {runtime_name}." if runtime_name else ""
 
             if has_user_connect and not has_company_data:
                 mode = "end_user_oauth"
@@ -175,7 +178,7 @@ class FastOnboardingModelProvider:
                 question, actions = self._context_aware_integration_question(use_case)
                 return OnboardingModelResponse(
                     text=(
-                        f"Configured {uc_title}{integ_hint} ({arch_desc}).\n\n"
+                        f"Configured {uc_title}{integ_hint} ({arch_desc}).{name_hint}\n\n"
                         f"{question}"
                     ),
                     proposed_intent="set_use_case_and_mode",
@@ -193,7 +196,7 @@ class FastOnboardingModelProvider:
                 integ_text = self._display_names_list(detected_integrations)
                 return OnboardingModelResponse(
                     text=(
-                        f"Configured {uc_title} with {integ_text}.\n\n"
+                        f"Configured {uc_title} with {integ_text}.{name_hint}\n\n"
                         "Will this runtime connect to your company internal data, "
                         "or will end users connect their own external accounts?"
                     ),
@@ -212,7 +215,7 @@ class FastOnboardingModelProvider:
             else:
                 return OnboardingModelResponse(
                     text=(
-                        f"Configured {uc_title}.\n\n"
+                        f"Configured {uc_title}.{name_hint}\n\n"
                         "Will this runtime connect to your company internal data, "
                         "or will end users connect their own external accounts?"
                     ),
