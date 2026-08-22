@@ -34,7 +34,29 @@ class IntegrationService:
 
     async def list_runtime_integrations(self, runtime_id: str | UUID) -> list[RuntimeIntegration]:
         rid = UUID(str(runtime_id)) if isinstance(runtime_id, str) else runtime_id
-        return await self.uow.runtime_integrations.get_by_runtime(rid)
+        items = await self.uow.runtime_integrations.get_by_runtime(rid)
+        changed = False
+        for item in items:
+            defn = integration_registry.get(item.integration_slug)
+            supports_hybrid = bool(defn) and {
+                "zyntry_managed",
+                "end_user_oauth",
+            }.issubset(defn.connection_modes)
+            if item.connection_mode == "hybrid" and not supports_hybrid:
+                item.connection_mode = "zyntry_managed"
+                item.connection_required = True
+                if item.connection_status == "ready_for_end_users":
+                    item.connection_status = "connection_required"
+                item.config = {
+                    **(item.config or {}),
+                    "requested_connection_mode": "hybrid",
+                    "mode_resolution": "company_managed_only",
+                    "allowed_connection_modes": ["zyntry_managed"],
+                }
+                changed = True
+        if changed:
+            await self.uow.commit()
+        return items
 
     async def enable_runtime_integration(
         self,
@@ -60,18 +82,26 @@ class IntegrationService:
                 f"Integration '{data.integration_slug}' is currently '{defn.status}' and cannot be enabled on active runtimes"
             )
 
-        is_hybrid = data.connection_mode == "hybrid"
+        requested_mode = data.connection_mode
+        is_hybrid = requested_mode == "hybrid"
         supports_hybrid = {
             "zyntry_managed",
             "end_user_oauth",
         }.issubset(defn.connection_modes)
-        if (is_hybrid and not supports_hybrid) or (
-            not is_hybrid and data.connection_mode not in defn.connection_modes
-        ):
+        if is_hybrid and not supports_hybrid:
+            # Website crawling and uploaded documents are company-owned
+            # resources. Resolve an old or overly broad hybrid request instead
+            # of exposing an invalid end-user policy to the console.
+            effective_mode = "zyntry_managed"
+            mode_resolution = "company_managed_only"
+        elif not is_hybrid and requested_mode not in defn.connection_modes:
             raise ValueError(
-                f"Connection mode '{data.connection_mode}' is not supported for '{data.integration_slug}'. "
+                f"Connection mode '{requested_mode}' is not supported for '{data.integration_slug}'. "
                 f"Supported modes: {defn.connection_modes}"
             )
+        else:
+            effective_mode = requested_mode
+            mode_resolution = "requested"
 
         # Validate requested capabilities
         all_caps = {c.slug for c in defn.capabilities}
@@ -80,7 +110,7 @@ class IntegrationService:
         if invalid_caps:
             raise ValueError(f"Invalid capabilities for {data.integration_slug}: {invalid_caps}")
 
-        connection_required = data.connection_mode in {"zyntry_managed", "hybrid"}
+        connection_required = effective_mode in {"zyntry_managed", "hybrid"}
         connection_status = (
             "connection_required" if connection_required else "ready_for_end_users"
         )
@@ -88,9 +118,11 @@ class IntegrationService:
             **data.config,
             "allowed_connection_modes": (
                 ["zyntry_managed", "end_user_oauth"]
-                if data.connection_mode == "hybrid"
-                else [data.connection_mode]
+                if effective_mode == "hybrid"
+                else [effective_mode]
             ),
+            "requested_connection_mode": requested_mode,
+            "mode_resolution": mode_resolution,
         }
 
         existing = await self.uow.runtime_integrations.get_by_runtime_and_slug(
@@ -99,7 +131,7 @@ class IntegrationService:
         if existing:
             updated = await self.uow.runtime_integrations.update(
                 existing,
-                connection_mode=data.connection_mode,
+                connection_mode=effective_mode,
                 enabled_capabilities=enabled_caps,
                 is_enabled=True,
                 connection_required=connection_required,
@@ -112,7 +144,7 @@ class IntegrationService:
         created = await self.uow.runtime_integrations.create(
             runtime_id=rid,
             integration_slug=data.integration_slug,
-            connection_mode=data.connection_mode,
+            connection_mode=effective_mode,
             enabled_capabilities=enabled_caps,
             is_enabled=True,
             connection_required=connection_required,

@@ -256,8 +256,8 @@ class RuntimeService:
             "api_key_id": str(runtime.api_key_id) if runtime.api_key_id else None,
             "system_instructions": getattr(runtime, "system_instructions", None),
             "security_policies": getattr(runtime, "security_policies", {}) or {},
-            "config": runtime.config,
-            "metadata": runtime.metadata_,
+            "config": getattr(runtime, "config", None) or {},
+            "metadata": getattr(runtime, "metadata_", None) or {},
             "created_at": runtime.created_at.isoformat() if runtime.created_at else None,
             "updated_at": runtime.updated_at.isoformat() if runtime.updated_at else None,
         }
