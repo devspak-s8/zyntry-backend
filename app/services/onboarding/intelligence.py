@@ -151,8 +151,17 @@ class RuleBasedRequirementsExtractor:
 
         if any(term in lowered for term in ("remember", "memory", "previous conversation", "follow-up")):
             data["requires_memory"] = True
-        if any(term in lowered for term in ("no memory", "independent request", "stateless")):
+        if any(term in lowered for term in (
+            "no memory",
+            "no long-term memory",
+            "no long term memory",
+            "do not remember",
+            "don't remember",
+            "independent request",
+            "stateless",
+        )):
             data["requires_memory"] = False
+            data["memory_scope"] = "request"
         if "organization memory" in lowered or "company memory" in lowered:
             data["memory_scope"] = "organization"
         elif "user memory" in lowered or "per user" in lowered:
