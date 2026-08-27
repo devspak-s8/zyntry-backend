@@ -15,6 +15,7 @@ from app.api.v1.features.dependencies import require_api_key_feature
 from app.core.config import settings
 from app.core.database import get_session
 from app.models.users import User
+from app.models.apikeys import ApiKey
 from app.repositories import UnitOfWork
 from app.schemas.actions import ActionRequest, ActionResponse
 from app.schemas.billing import InsufficientCreditsError
@@ -29,6 +30,13 @@ from app.services.oauth.service import OAuthService
 
 router = APIRouter()
 guardrail_service = GuardrailService()
+
+
+def _insufficient_credits_detail() -> dict[str, str]:
+    return {
+        "error": "Insufficient credits",
+        "message": "Add credits to continue.",
+    }
 
 
 def _normalize_runtime_status(status_val: Any) -> str | None:
@@ -173,6 +181,25 @@ async def invoke(
     if not runtime:
         runtime = await uow.runtimes.get_by_project(project.id)
 
+    if runtime and runtime.project_id != project.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Runtime not found for this project")
+
+    api_key_id = getattr(request.state, "api_key_id", None)
+    api_key = await db.get(ApiKey, api_key_id) if api_key_id else None
+    if api_key is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
+    if api_key.project_id and api_key.project_id != project.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="API key is not authorized for this project")
+    if api_key.runtime_id and (runtime is None or api_key.runtime_id != runtime.id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="API key is not authorized for this runtime")
+
+    project_environment = str((project.settings or {}).get("environment") or "").strip().lower()
+    runtime_environment = str(runtime.environment if runtime else project_environment or "development").strip().lower()
+    if project_environment and project_environment != runtime_environment:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Project and runtime environments do not match")
+    if str(api_key.environment or "development").strip().lower() != runtime_environment:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="API key environment does not match this runtime")
+
     if runtime:
         runtime_data = {
             "id": str(runtime.id),
@@ -203,7 +230,7 @@ async def invoke(
     if wallet.status != "active":
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail=InsufficientCreditsError(required=Decimal("0"), balance=wallet.balance).model_dump(),
+            detail=_insufficient_credits_detail(),
         )
 
     provider_name = body.provider or runtime_data.get("provider", "openai")
@@ -245,7 +272,7 @@ async def invoke(
         if wallet.balance < estimated_cost:
             raise HTTPException(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail=InsufficientCreditsError(required=estimated_cost, balance=wallet.balance, available_balance=wallet.balance).model_dump(),
+                detail=_insufficient_credits_detail(),
             )
         if not await billing_service.check_budget(current_user.id, estimated_cost):
             raise HTTPException(
@@ -268,7 +295,7 @@ async def invoke(
         except (InsufficientBalanceError,):
             raise HTTPException(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail=InsufficientCreditsError(required=estimated_cost, balance=wallet.balance, available_balance=wallet.balance).model_dump(),
+                detail=_insufficient_credits_detail(),
             )
 
     router_service = ModelRouter(uow)
@@ -410,7 +437,7 @@ async def invoke(
         available = getattr(exc, "available", wallet.balance)
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail=InsufficientCreditsError(required=required, balance=available, available_balance=available).model_dump(),
+            detail=_insufficient_credits_detail(),
         )
     except Exception:
         if reservation is not None:

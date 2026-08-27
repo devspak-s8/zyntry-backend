@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Literal
 
 from pydantic import Field
 
@@ -14,6 +15,7 @@ class ProjectCreate(ORMModel):
     organization_id: uuid.UUID | None = None
     preset: str | None = None
     settings: dict = Field(default_factory=dict)
+    environment: Literal["development", "staging", "production"] = "development"
 
 
 class ProjectUpdate(ORMModel):

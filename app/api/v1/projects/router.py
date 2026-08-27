@@ -197,7 +197,7 @@ async def create_project(
             slug=body.slug,
             description=body.description,
             organization_id=org_id,
-            settings=body.settings or {},
+            settings={**(body.settings or {}), "environment": body.environment},
             status="ready",
         )
         await uow.commit()
