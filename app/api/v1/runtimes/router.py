@@ -94,13 +94,13 @@ async def create_runtime(
 
 @router.get("/{runtime_id:uuid}", response_model=RuntimeRead)
 async def get_runtime(
-    runtime_id: str,
+    runtime_id: uuid.UUID,
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> RuntimeRead:
     uow = UnitOfWork(db)
     service = RuntimeService(uow)
-    runtime = await service.get(runtime_id)
+    runtime = await service.get(str(runtime_id))
     if not runtime:
         raise HTTPException(status_code=404, detail="Runtime not found")
     return RuntimeRead(**runtime)
