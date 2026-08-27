@@ -638,6 +638,17 @@ class RuntimePlanGenerator:
         }.get(requirements.connection_ownership or "company", "zyntry_managed")
         planned_integrations = list(requirements.integrations)
         planned_slugs = {item.slug for item in planned_integrations}
+        # For legacy/document-only drafts with no requested integrations, keep
+        # the document storage component discoverable. Explicit integration
+        # lists remain authoritative and are never augmented.
+        if not planned_integrations and requirements.requires_documents and "document_storage" not in planned_slugs:
+            planned_integrations.append(
+                ApplicationIntegrationRequirement(
+                    slug="document_storage",
+                    purpose="Accept and index application documents",
+                    ownership="company",
+                )
+            )
         for integration in planned_integrations:
             defn = integration_registry.get(integration.slug)
             if not defn:
