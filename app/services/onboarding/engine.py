@@ -302,6 +302,7 @@ class OnboardingEngine:
                 },
                 application_requirements=complete_res.application_requirements,
                 runtime_plan=complete_res.runtime_plan,
+                clarification_question=None,
             )
 
         # Step 3: Backend Authorizes & Validates LLM Proposals
@@ -333,6 +334,14 @@ class OnboardingEngine:
         await self.uow.commit()
 
         is_ready_to_provision = next_state in ("confirming_configuration", "provisioning")
+        clarification_question = None
+        requirements_data = validated_config.get("application_requirements")
+        if requirements_data:
+            try:
+                requirements = ApplicationRequirements.model_validate(requirements_data)
+                clarification_question = self.clarification_service.next_question(requirements)
+            except Exception:
+                clarification_question = None
 
         return OnboardingMessageResponse(
             session_id=str(session.id),
@@ -344,6 +353,7 @@ class OnboardingEngine:
             proposed_runtime=validated_config if is_ready_to_provision else None,
             application_requirements=validated_config.get("application_requirements"),
             runtime_plan=validated_config.get("runtime_plan"),
+            clarification_question=clarification_question,
         )
 
     async def _apply_requirements_intelligence(

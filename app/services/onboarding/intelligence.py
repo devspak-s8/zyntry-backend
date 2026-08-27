@@ -669,11 +669,25 @@ class RuntimePlanGenerator:
                 capability.slug for capability in defn.capabilities
                 if integration.write_access or not capability.is_write
             ]
+            write_capability_slugs = {
+                capability.slug for capability in defn.capabilities if capability.is_write
+            }
+            read_capabilities = [
+                capability for capability in capabilities
+                if capability not in write_capability_slugs
+            ]
+            write_capabilities = [
+                capability for capability in capabilities
+                if capability in write_capability_slugs
+            ]
             integration_policies.append(
                 {
                     "integration_slug": defn.slug,
                     "connection_mode": mode,
                     "enabled_capabilities": capabilities,
+                    "read_capabilities": read_capabilities,
+                    "write_capabilities": write_capabilities,
+                    "requires_confirmation": bool(write_capabilities),
                     "write_access": integration.write_access,
                     "required": integration.required,
                     "purpose": integration.purpose,

@@ -12,6 +12,7 @@ from app.schemas.onboarding_chat import (
     OnboardingMessageRequest,
     OnboardingMessageResponse,
 )
+from app.schemas.onboarding_intelligence import ApplicationRequirements
 from app.services.onboarding.engine import OnboardingEngine
 
 
@@ -19,6 +20,16 @@ class OnboardingService:
     def __init__(self, uow: UnitOfWork) -> None:
         self.uow = uow
         self.engine = OnboardingEngine(uow)
+
+    def _clarification_question(self, configuration: dict[str, Any] | None) -> Any:
+        requirements_data = (configuration or {}).get("application_requirements")
+        if not requirements_data:
+            return None
+        try:
+            requirements = ApplicationRequirements.model_validate(requirements_data)
+        except Exception:
+            return None
+        return self.engine.clarification_service.next_question(requirements)
 
     # Chat-Based Onboarding Methods (Primary flow)
     async def create_chat_session(
@@ -43,6 +54,7 @@ class OnboardingService:
             "updated_at": session.updated_at.isoformat() if session.updated_at else None,
             "application_requirements": (session.configuration or {}).get("application_requirements"),
             "runtime_plan": (session.configuration or {}).get("runtime_plan"),
+            "clarification_question": None if session.state == "completed" else self._clarification_question(session.configuration),
         }
 
     async def send_chat_message(self, user_id: UUID, req: OnboardingMessageRequest) -> OnboardingMessageResponse:
@@ -73,6 +85,7 @@ class OnboardingService:
             "updated_at": session.updated_at.isoformat() if session.updated_at else None,
             "application_requirements": (session.configuration or {}).get("application_requirements"),
             "runtime_plan": (session.configuration or {}).get("runtime_plan"),
+            "clarification_question": None if session.state == "completed" else self._clarification_question(session.configuration),
         }
 
     # Legacy Onboarding Methods (Backwards compatibility)

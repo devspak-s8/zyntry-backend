@@ -11,6 +11,7 @@ from fastapi import Depends
 from app.core.database import get_session
 from app.repositories import UnitOfWork
 from app.services.runtime_assistant.context import RuntimeContextBuilder
+from app.services.runtime_assistant.commands import RuntimeAssistantCommandService
 from app.services.runtime_assistant.diagnostics import RuntimeDiagnostics
 from app.services.runtime_assistant.executor import RuntimeAssistantExecutor
 from app.services.runtime_assistant.memory import RuntimeAssistantMemory
@@ -21,6 +22,7 @@ from app.services.runtime_assistant.records import RuntimeAssistantRecords, evid
 from app.services.runtime_assistant.schemas import (
     AssistantMessage,
     AssistantResponse,
+    ActionType,
     DiagnosticResult,
     OptimizationResult,
     RuntimeContext,
@@ -77,19 +79,48 @@ class RuntimeAssistantService:
             conversation, role="user", content=message, mode=_infer_mode(message)
         )
 
+        available_tools = _get_available_tools(role)
         planner = RuntimeAssistantPlanner(
             context=context,
-            available_tools=_get_available_tools(role),
+            available_tools=available_tools,
         )
         decision = planner.classify_request(message)
         plan = planner.plan(message)
 
+        tool_types = {tool.name: tool.action_type for tool in available_tools}
+        mutating_calls = [
+            call for call in plan.tool_calls
+            if tool_types.get(call.name, ActionType.READ) != ActionType.READ
+        ]
+        executable_calls = [call for call in plan.tool_calls if call not in mutating_calls]
+
         executor = RuntimeAssistantExecutor(
             uow=self.uow,
             context=context,
-            available_tools=_get_available_tools(role),
+            available_tools=available_tools,
         )
-        tool_results = await executor.execute_plan(plan.tool_calls)
+        tool_results = await executor.execute_plan(executable_calls)
+
+        action_proposal: dict[str, Any] | None = None
+        if mutating_calls:
+            pending = mutating_calls[0]
+            proposal = await RuntimeAssistantCommandService(self.uow).propose(
+                runtime_id=uuid.UUID(runtime_id),
+                project_id=uuid.UUID(context.project_id),
+                user_id=uuid.UUID(user_id),
+                user_role=role,
+                action=pending.name,
+                arguments=pending.arguments,
+            )
+            action_proposal = {
+                "id": str(proposal.id),
+                "action": proposal.action,
+                "arguments": proposal.arguments,
+                "risk": proposal.risk,
+                "expires_at": proposal.expires_at.isoformat(),
+                "status": proposal.status,
+                "requires_confirmation": True,
+            }
 
         for result in tool_results:
             await memory.save_action(result.tool_call.name, result.tool_call.result or {})
@@ -104,15 +135,18 @@ class RuntimeAssistantService:
                 "evidence": evidence,
                 "confidence": _evidence_confidence(tool_results),
                 "changes_applied": False,
-                "approval_required": any(
-                    term in message.lower()
-                    for term in ("enable", "disable", "change", "apply", "restart", "delete")
-                ),
+                "approval_required": action_proposal is not None,
+                "action_proposal": action_proposal,
                 "conversation_id": str(conversation.id),
                 "decision": decision,
                 "plan_reason": plan.reasoning,
             }
         )
+        if action_proposal:
+            response.message = (
+                f"{response.message}\n\n"
+                f"The backend requires confirmation before {action_proposal['action'].replace('_', ' ')}."
+            )
 
         # Persist the answer before optional enrichment so transient optimizer
         # failures never erase an otherwise successful conversation turn.

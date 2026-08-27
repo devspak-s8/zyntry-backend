@@ -6,7 +6,11 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from app.schemas.onboarding_intelligence import ApplicationRequirements, RuntimePlan
+from app.schemas.onboarding_intelligence import (
+    ApplicationRequirements,
+    ClarificationQuestion,
+    RuntimePlan,
+)
 
 
 class OnboardingSessionCreate(BaseModel):
@@ -29,6 +33,7 @@ class OnboardingSessionRead(BaseModel):
     updated_at: datetime | None = None
     application_requirements: ApplicationRequirements | None = None
     runtime_plan: RuntimePlan | None = None
+    clarification_question: ClarificationQuestion | None = None
 
 
 class OnboardingMessageRequest(BaseModel):
@@ -46,6 +51,7 @@ class OnboardingMessageResponse(BaseModel):
     proposed_runtime: dict[str, Any] | None = None
     application_requirements: ApplicationRequirements | None = None
     runtime_plan: RuntimePlan | None = None
+    clarification_question: ClarificationQuestion | None = None
 
 
 class OnboardingCompleteRequest(BaseModel):
