@@ -20,6 +20,7 @@ from app.core.redis import redis_client
 from app.events import NotificationEvent
 from app.models.organizations import Organization
 from app.models.projects import Project
+from app.models.runtimes import Runtime
 from app.models.users import User
 from app.repositories import UnitOfWork
 from app.schemas.projects import ProjectConfigUpdate, ProjectCreate, ProjectRead, ProjectUpdate
@@ -45,7 +46,7 @@ async def _deliver_project_created_email(event: NotificationEvent, project_id: u
     return False
 
 
-def _to_read(p: Project) -> ProjectRead:
+def _to_read(p: Project, runtime_id: uuid.UUID | None = None) -> ProjectRead:
     return ProjectRead(
         id=p.id,
         name=p.name,
@@ -57,6 +58,7 @@ def _to_read(p: Project) -> ProjectRead:
         status=p.status or "ready",
         connected_providers=[pr.name for pr in p.providers] if p.providers else [],
         hasBuiltRuntime=p.has_built_runtime,
+        runtime_id=runtime_id,
     )
 
 
@@ -96,7 +98,18 @@ async def list_projects(
         .order_by(Project.created_at.desc())
     )
     result = await db.execute(stmt)
-    projects = [_to_read(p) for p in result.scalars().all()]
+    project_models = list(result.scalars().all())
+    runtime_result = await db.execute(
+        select(Runtime.project_id, Runtime.id).where(
+            Runtime.project_id.in_([project.id for project in project_models])
+        )
+    ) if project_models else None
+    runtime_ids = {
+        project_id: runtime_id
+        for project_id, runtime_id in (runtime_result.all() if runtime_result else [])
+        if project_id is not None
+    }
+    projects = [_to_read(project, runtime_ids.get(project.id)) for project in project_models]
 
     await redis_client.set(
         cache_key, json.dumps([p.model_dump(mode="json") for p in projects]), ex=30
@@ -221,6 +234,7 @@ async def create_project(
         status=proj.status or "ready",
         connected_providers=[],
         hasBuiltRuntime=proj.has_built_runtime,
+        runtime_id=None,
     )
     try:
         if idempotency_cache_key:
@@ -257,7 +271,8 @@ async def get_project(
     if proj is None or proj.organization_id != current_user.organization_id:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    return _to_read(proj)
+    runtime_id = await db.scalar(select(Runtime.id).where(Runtime.project_id == proj.id))
+    return _to_read(proj, runtime_id)
 
 
 @router.post(
@@ -409,7 +424,13 @@ async def update_project(
             if runtime_id is None:
                 raise HTTPException(status_code=422, detail="runtime_id cannot be null")
             runtime = await uow.runtimes.get(runtime_id)
-            if runtime is None or runtime.user_id != current_user.id:
+            runtime_belongs_to_user = runtime is not None and runtime.user_id == current_user.id
+            runtime_belongs_to_org = (
+                runtime is not None
+                and current_user.organization_id is not None
+                and runtime.organization_id == current_user.organization_id
+            )
+            if runtime is None or not (runtime_belongs_to_user or runtime_belongs_to_org):
                 raise HTTPException(status_code=404, detail="Runtime not found")
             if runtime.project_id not in (None, pid):
                 raise HTTPException(
@@ -418,7 +439,7 @@ async def update_project(
                 )
             attached = await uow.runtimes.get_by_project(pid)
             if attached is not None and attached.id != runtime.id:
-                raise HTTPException(status_code=409, detail="Project already has another runtime")
+                await uow.runtimes.update(attached, project_id=None)
             await uow.runtimes.update(
                 runtime,
                 project_id=pid,
@@ -444,7 +465,10 @@ async def update_project(
     updated_proj = result.scalar_one_or_none()
     if updated_proj is None:
         raise HTTPException(status_code=404, detail="Project not found")
-    return _to_read(updated_proj)
+    attached_runtime_id = await db.scalar(
+        select(Runtime.id).where(Runtime.project_id == updated_proj.id)
+    )
+    return _to_read(updated_proj, attached_runtime_id)
 
 
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)

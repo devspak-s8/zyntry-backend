@@ -184,3 +184,65 @@ async def test_wizard_attaches_configures_and_builds_the_same_runtime(
 
     assert built["runtime_id"] == str(runtime_id)
     enqueue_build.assert_awaited_once_with(str(runtime_id), trigger="project_wizard")
+
+
+@pytest.mark.asyncio
+async def test_project_runtime_binding_allows_atomic_org_rebind(
+    db_session, monkeypatch
+) -> None:
+    uow = UnitOfWork(db_session)
+    organization = await uow.organizations.create(name="Shared Runtime Org", slug="shared-runtime-org")
+    await uow.commit()
+    owner = await uow.users.create(
+        email="owner-runtime@zyntry.space",
+        name="Runtime Owner",
+        organization_id=organization.id,
+    )
+    collaborator = await uow.users.create(
+        email="collaborator-runtime@zyntry.space",
+        name="Runtime Collaborator",
+        organization_id=organization.id,
+    )
+    project = await uow.projects.create(
+        name="Rebind Project",
+        slug="rebind-project",
+        organization_id=organization.id,
+        settings={},
+        status="ready",
+    )
+    await uow.commit()
+
+    previous_data = await RuntimeService(uow).get_or_create(
+        RuntimeCreate(
+            name="Previous Runtime",
+            project_id=project.id,
+            organization_id=organization.id,
+        ),
+        default_user_id=owner.id,
+    )
+    replacement_data = await RuntimeService(uow).get_or_create(
+        RuntimeCreate(
+            name="Collaborator Runtime",
+            organization_id=organization.id,
+        ),
+        default_user_id=collaborator.id,
+    )
+    previous_id = uuid.UUID(previous_data["id"])
+    replacement_id = uuid.UUID(replacement_data["id"])
+    monkeypatch.setattr(
+        "app.api.v1.projects.router._invalidate_projects_cache",
+        AsyncMock(return_value=None),
+    )
+
+    response = await update_project(
+        str(project.id),
+        ProjectUpdate(runtime_id=replacement_id),
+        owner,
+        db_session,
+    )
+
+    previous = await uow.runtimes.get(previous_id)
+    replacement = await uow.runtimes.get(replacement_id)
+    assert previous.project_id is None
+    assert replacement.project_id == project.id
+    assert response.runtime_id == replacement_id

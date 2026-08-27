@@ -46,3 +46,4 @@ class ProjectRead(ORMModel):
     status: str
     connected_providers: list[str] = []
     hasBuiltRuntime: bool = Field(default=False, alias="has_built_runtime")
+    runtime_id: uuid.UUID | None = None
