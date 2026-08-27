@@ -64,6 +64,8 @@ class AppSettings(BaseSettings):
     OPENROUTER_API_KEY: str = ""
     GROQ_API_KEY: str = ""
     FIREWORKS_API_KEY: str = ""
+    ONBOARDING_PROVIDER: str = "google"
+    ONBOARDING_MODEL: str = "gemini-2.5-flash"
     AZURE_OPENAI_ENDPOINT: str = ""
     AZURE_OPENAI_KEY: str = ""
     AZURE_OPENAI_DEPLOYMENT: str = ""

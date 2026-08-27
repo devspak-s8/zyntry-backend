@@ -29,6 +29,13 @@ from app.schemas.memory import MemoryRecordCreate, MemoryRecordRead
 from app.schemas.models import ModelRead, ProviderConnectionCreate, ProviderConnectionRead
 from app.schemas.notifications import NotificationRead, NotificationUpdate, WebhookSubscriptionCreate, WebhookSubscriptionRead
 from app.schemas.onboarding import OnboardingStateCreate, OnboardingStateRead, OnboardingStateUpdate
+from app.schemas.onboarding_intelligence import (
+    ApplicationIntegrationRequirement,
+    ApplicationRequirements,
+    ClarificationQuestion,
+    RuntimePlan,
+    RuntimePlanComponent,
+)
 from app.schemas.organizations import OrganizationCreate, OrganizationRead, ORMModel
 from app.schemas.projects import ProjectConfigUpdate, ProjectCreate, ProjectRead, ProjectUpdate
 from app.schemas.rag import Citation, RAGQuery, RAGResponse, SourceDocument

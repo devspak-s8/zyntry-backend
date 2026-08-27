@@ -41,6 +41,8 @@ class OnboardingService:
             "completed_at": session.completed_at.isoformat() if session.completed_at else None,
             "created_at": session.created_at.isoformat() if session.created_at else None,
             "updated_at": session.updated_at.isoformat() if session.updated_at else None,
+            "application_requirements": (session.configuration or {}).get("application_requirements"),
+            "runtime_plan": (session.configuration or {}).get("runtime_plan"),
         }
 
     async def send_chat_message(self, user_id: UUID, req: OnboardingMessageRequest) -> OnboardingMessageResponse:
@@ -69,6 +71,8 @@ class OnboardingService:
             "completed_at": session.completed_at.isoformat() if session.completed_at else None,
             "created_at": session.created_at.isoformat() if session.created_at else None,
             "updated_at": session.updated_at.isoformat() if session.updated_at else None,
+            "application_requirements": (session.configuration or {}).get("application_requirements"),
+            "runtime_plan": (session.configuration or {}).get("runtime_plan"),
         }
 
     # Legacy Onboarding Methods (Backwards compatibility)

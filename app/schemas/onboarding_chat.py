@@ -6,6 +6,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from app.schemas.onboarding_intelligence import ApplicationRequirements, RuntimePlan
+
 
 class OnboardingSessionCreate(BaseModel):
     initial_prompt: str | None = None
@@ -25,6 +27,8 @@ class OnboardingSessionRead(BaseModel):
     completed_at: datetime | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    application_requirements: ApplicationRequirements | None = None
+    runtime_plan: RuntimePlan | None = None
 
 
 class OnboardingMessageRequest(BaseModel):
@@ -40,6 +44,8 @@ class OnboardingMessageResponse(BaseModel):
     is_complete: bool = False
     suggested_actions: list[str] = Field(default_factory=list)
     proposed_runtime: dict[str, Any] | None = None
+    application_requirements: ApplicationRequirements | None = None
+    runtime_plan: RuntimePlan | None = None
 
 
 class OnboardingCompleteRequest(BaseModel):
@@ -57,3 +63,5 @@ class OnboardingCompleteResponse(BaseModel):
     status: str
     enabled_integrations: list[dict[str, Any]]
     message: str
+    application_requirements: ApplicationRequirements | None = None
+    runtime_plan: RuntimePlan | None = None

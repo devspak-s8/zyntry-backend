@@ -15,9 +15,19 @@ from app.schemas.onboarding_chat import (
     OnboardingMessageRequest,
     OnboardingMessageResponse,
 )
+from app.schemas.onboarding_intelligence import ApplicationRequirements
 from app.services.integrations.definitions import integration_registry
 from app.services.integrations.service import IntegrationService
-from app.services.onboarding.models import OnboardingModelProvider, default_onboarding_model_provider
+from app.services.onboarding.intelligence import (
+    AdaptiveClarificationService,
+    ModelBackedRequirementsExtractor,
+    RuntimePlanGenerator,
+)
+from app.services.onboarding.models import (
+    OnboardingModelProvider,
+    OnboardingModelResponse,
+    default_onboarding_model_provider,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +35,7 @@ VALID_STATES = [
     "onboarding_started",
     "discovering_use_case",
     "discovering_application_type",
+    "clarifying_requirements",
     "selecting_integrations",
     "selecting_capabilities",
     "configuring_runtime",
@@ -43,6 +54,9 @@ class OnboardingEngine:
         self.uow = uow
         self.model_provider = model_provider or default_onboarding_model_provider
         self.integration_service = IntegrationService(uow)
+        self.requirements_extractor = ModelBackedRequirementsExtractor()
+        self.clarification_service = AdaptiveClarificationService()
+        self.runtime_plan_generator = RuntimePlanGenerator()
 
     async def get_or_create_session(
         self, user_id: UUID, initial_prompt: str | None = None, reset: bool = False
@@ -119,12 +133,20 @@ class OnboardingEngine:
                 current_config={},
                 history=messages,
             )
+            ai_resp, _ = await self._apply_requirements_intelligence(
+                ai_resp=ai_resp,
+                message=initial_prompt,
+                current_state="onboarding_started",
+                current_config={},
+                history=messages,
+            )
             config, next_state = self._authorize_and_transition(
                 current_state="onboarding_started",
                 current_config={},
                 proposed_intent=ai_resp.proposed_intent,
                 proposed_data=ai_resp.proposed_data,
             )
+            config = self._attach_runtime_plan(config, previous_plan=None)
             messages.append({
                 "role": "assistant",
                 "content": ai_resp.text,
@@ -170,6 +192,8 @@ class OnboardingEngine:
                         "action": "navigate_console",
                         "redirect_url": f"/runtimes/{rt_id}" if rt_id else "/runtimes",
                     },
+                    application_requirements=session.configuration.get("application_requirements"),
+                    runtime_plan=session.configuration.get("runtime_plan"),
                 )
             if any(k in msg_lower for k in ["api key", "key", "generate"]):
                 return OnboardingMessageResponse(
@@ -184,6 +208,8 @@ class OnboardingEngine:
                         "action": "navigate_apikeys",
                         "redirect_url": "/apikeys",
                     },
+                    application_requirements=session.configuration.get("application_requirements"),
+                    runtime_plan=session.configuration.get("runtime_plan"),
                 )
             return OnboardingMessageResponse(
                 session_id=str(session.id),
@@ -196,6 +222,8 @@ class OnboardingEngine:
                     "runtime_id": rt_id,
                     "redirect_url": f"/runtimes/{rt_id}" if rt_id else "/runtimes",
                 },
+                application_requirements=session.configuration.get("application_requirements"),
+                runtime_plan=session.configuration.get("runtime_plan"),
             )
 
         # Append user message
@@ -211,6 +239,13 @@ class OnboardingEngine:
         # Step 1: LLM interprets user message and proposes actions
         ai_resp = await self.model_provider.generate_step_response(
             user_message=req.message,
+            current_state=session.state,
+            current_config=current_config,
+            history=messages,
+        )
+        ai_resp, _ = await self._apply_requirements_intelligence(
+            ai_resp=ai_resp,
+            message=req.message,
             current_state=session.state,
             current_config=current_config,
             history=messages,
@@ -265,6 +300,8 @@ class OnboardingEngine:
                     "environment": complete_res.environment,
                     "enabled_integrations": complete_res.enabled_integrations,
                 },
+                application_requirements=complete_res.application_requirements,
+                runtime_plan=complete_res.runtime_plan,
             )
 
         # Step 3: Backend Authorizes & Validates LLM Proposals
@@ -273,6 +310,10 @@ class OnboardingEngine:
             current_config=current_config,
             proposed_intent=ai_resp.proposed_intent,
             proposed_data=ai_resp.proposed_data,
+        )
+        validated_config = self._attach_runtime_plan(
+            validated_config,
+            previous_plan=current_config.get("runtime_plan"),
         )
 
         # Append assistant response
@@ -301,7 +342,146 @@ class OnboardingEngine:
             is_complete=(next_state == "completed"),
             suggested_actions=ai_resp.suggested_actions or self.get_suggested_actions_for_state(next_state),
             proposed_runtime=validated_config if is_ready_to_provision else None,
+            application_requirements=validated_config.get("application_requirements"),
+            runtime_plan=validated_config.get("runtime_plan"),
         )
+
+    async def _apply_requirements_intelligence(
+        self,
+        *,
+        ai_resp: OnboardingModelResponse,
+        message: str,
+        current_state: str,
+        current_config: dict[str, Any],
+        history: list[dict[str, Any]],
+    ) -> tuple[OnboardingModelResponse, ApplicationRequirements]:
+        stored_requirements = current_config.get("application_requirements")
+        # The connection mode is kept in the onboarding configuration while
+        # the typed requirements intentionally stay provider-agnostic. Pass
+        # the mode through as ownership context so extraction/planning does
+        # not silently revert an already selected OAuth policy.
+        if isinstance(stored_requirements, dict) and not stored_requirements.get("connection_ownership"):
+            configured_mode = current_config.get("integration_mode")
+            ownership = {
+                "zyntry_managed": "company",
+                "end_user_oauth": "end_user",
+                "hybrid": "hybrid",
+            }.get(configured_mode)
+            if ownership:
+                stored_requirements = {**stored_requirements, "connection_ownership": ownership}
+        requirements = await self.requirements_extractor.extract(
+            message=message,
+            current_data=stored_requirements,
+            history=history,
+            pending_requirement=current_config.get("pending_requirement"),
+        )
+        ai_resp.proposed_data = {
+            **ai_resp.proposed_data,
+            "application_requirements": requirements.model_dump(mode="json"),
+        }
+
+        question = self.clarification_service.next_question(requirements)
+        if self._should_prioritize_clarification(current_state, requirements, question):
+            if question:
+                ai_resp.text = (
+                    "I’ve captured the requirements you provided. "
+                    f"{question.question}"
+                )
+                ai_resp.proposed_intent = "clarify_requirements"
+                ai_resp.proposed_data["pending_requirement"] = question.requirement
+                ai_resp.suggested_actions = question.suggested_answers
+            else:
+                ready_data = self._requirements_configuration(requirements)
+                ai_resp.text = (
+                    "I have enough information to generate the runtime plan.\n\n"
+                    "Choose the routing preference: low latency, balanced, or maximum quality."
+                )
+                ai_resp.proposed_intent = "requirements_ready"
+                ai_resp.proposed_data = {
+                    **ai_resp.proposed_data,
+                    **ready_data,
+                    "pending_requirement": None,
+                }
+                ai_resp.suggested_actions = ["Low latency", "Balanced", "Maximum quality"]
+        return ai_resp, requirements
+
+    @staticmethod
+    def _should_prioritize_clarification(
+        current_state: str,
+        requirements: ApplicationRequirements,
+        question: Any,
+    ) -> bool:
+        if current_state == "clarifying_requirements":
+            return True
+        if current_state != "onboarding_started" or question is None:
+            return False
+        if requirements.application_type == "general_ai_application":
+            return True
+        return question.requirement in {
+            "document_formats",
+            "external_source_types",
+            "memory_scope",
+        }
+
+    @staticmethod
+    def _requirements_configuration(
+        requirements: ApplicationRequirements,
+    ) -> dict[str, Any]:
+        ownership_mode = {
+            "company": "zyntry_managed",
+            "end_user": "end_user_oauth",
+            "hybrid": "hybrid",
+        }.get(requirements.connection_ownership or "company", "zyntry_managed")
+        integrations = requirements.integration_slugs()
+        capabilities: dict[str, list[str]] = {}
+        for requested in requirements.integrations:
+            defn = integration_registry.get(requested.slug)
+            if not defn:
+                continue
+            capabilities[defn.slug] = requested.capabilities or [
+                item.slug for item in defn.capabilities
+                if requested.write_access or not item.is_write
+            ]
+        return {
+            "use_case": requirements.application_type or "general_ai_application",
+            "application_type": requirements.application_type or "general_ai_application",
+            "integration_mode": ownership_mode,
+            "integrations": integrations,
+            "capabilities": capabilities,
+        }
+
+    def _attach_runtime_plan(
+        self,
+        configuration: dict[str, Any],
+        previous_plan: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        requirements_data = configuration.get("application_requirements")
+        if not requirements_data:
+            return configuration
+        try:
+            requirements = ApplicationRequirements.model_validate(requirements_data)
+        except Exception:
+            logger.warning("Skipping runtime plan generation for invalid requirements")
+            return configuration
+        plan = self.runtime_plan_generator.generate(
+            requirements=requirements,
+            configuration=configuration,
+            previous_plan=previous_plan,
+        )
+        result = {**configuration, "runtime_plan": plan.model_dump(mode="json")}
+        integrations = list(result.get("integrations", []))
+        capabilities = dict(result.get("capabilities", {}))
+        integration_modes = dict(result.get("integration_modes", {}))
+        for policy in plan.integration_policies:
+            slug = policy["integration_slug"]
+            if slug not in integrations:
+                integrations.append(slug)
+            capabilities[slug] = policy.get("enabled_capabilities", [])
+            integration_modes[slug] = policy.get("connection_mode", "zyntry_managed")
+        result["integrations"] = integrations
+        result["capabilities"] = capabilities
+        result["integration_modes"] = integration_modes
+        return result
 
     def _authorize_and_transition(
         self,
@@ -312,6 +492,34 @@ class OnboardingEngine:
     ) -> tuple[dict[str, Any], str]:
         """Backend authorization: strictly validate proposed changes and compute next state."""
         config = dict(current_config)
+
+        if proposed_data.get("application_requirements"):
+            requirements = ApplicationRequirements.model_validate(
+                proposed_data["application_requirements"]
+            )
+            config["application_requirements"] = requirements.model_dump(mode="json")
+        if "pending_requirement" in proposed_data:
+            if proposed_data["pending_requirement"]:
+                config["pending_requirement"] = proposed_data["pending_requirement"]
+            else:
+                config.pop("pending_requirement", None)
+
+        if proposed_intent == "clarify_requirements":
+            return config, "clarifying_requirements"
+
+        if proposed_intent == "requirements_ready":
+            config.update({
+                key: value
+                for key, value in proposed_data.items()
+                if key in {
+                    "use_case",
+                    "application_type",
+                    "integration_mode",
+                    "runtime_name",
+                }
+                and value is not None
+            })
+            return self._validate_integrations_and_transition(config, proposed_data)
 
         if proposed_intent == "set_use_case":
             config["use_case"] = proposed_data.get("use_case", "general_ai_application")
@@ -468,6 +676,7 @@ class OnboardingEngine:
         # Onboarding is non-provisioning: it stores a configuration draft.
         if session.state == "completed":
             config = session.configuration or {}
+            original_config = config
             existing_policies = config.get("integration_policies", [])
             normalized_policies: list[dict[str, Any]] = []
             for policy in existing_policies:
@@ -487,6 +696,11 @@ class OnboardingEngine:
                 })
             if normalized_policies and normalized_policies != existing_policies:
                 config = {**config, "integration_policies": normalized_policies}
+            config = self._attach_runtime_plan(
+                config,
+                previous_plan=config.get("runtime_plan"),
+            )
+            if config != original_config:
                 await self.uow.onboarding_sessions.update(session, configuration=config)
                 await self.uow.commit()
             return OnboardingCompleteResponse(
@@ -497,6 +711,8 @@ class OnboardingEngine:
                 status="draft",
                 enabled_integrations=normalized_policies,
                 message="Configuration draft already saved. Create a project to provision the runtime.",
+                application_requirements=config.get("application_requirements"),
+                runtime_plan=config.get("runtime_plan"),
             )
 
         config = session.configuration or {}
@@ -534,6 +750,10 @@ class OnboardingEngine:
             })
 
         config["integration_policies"] = enabled_integrations_list
+        config = self._attach_runtime_plan(
+            config,
+            previous_plan=config.get("runtime_plan"),
+        )
 
         # 3. Mark session completed (API Key generation is decoupled and user-requested)
         await self.uow.onboarding_sessions.update(
@@ -574,4 +794,6 @@ class OnboardingEngine:
             status="draft",
             enabled_integrations=enabled_integrations_list,
             message=message_markdown,
+            application_requirements=config.get("application_requirements"),
+            runtime_plan=config.get("runtime_plan"),
         )
