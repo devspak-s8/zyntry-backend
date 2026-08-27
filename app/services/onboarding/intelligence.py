@@ -278,7 +278,11 @@ class GeminiLLMProvider(BaseLLMProvider):
         existing: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         by_slug = {item.get("slug"): dict(item) for item in existing if item.get("slug")}
+        # File formats are document metadata, not external integrations.
+        non_integration_slugs = {"pdf", "docx", "txt", "csv", "markdown", "html", "document_storage"}
         for slug in integration_registry.list_slugs():
+            if slug in non_integration_slugs:
+                continue
             defn = integration_registry.get(slug)
             aliases = {slug, slug.replace("_", " ")}
             if defn:
@@ -294,6 +298,9 @@ class GeminiLLMProvider(BaseLLMProvider):
                         "required": True,
                     },
                 )
+                if defn and defn.slug == "slack" and any(term in text for term in ("post approved repl", "send approved repl", "post replies", "send replies", "send messages")):
+                    by_slug[defn.slug]["capabilities"] = ["send_messages"]
+                    by_slug[defn.slug]["write_access"] = True
         if "postgres" in text or "sql database" in text:
             by_slug.setdefault("postgresql", {"slug": "postgresql", "purpose": "Structured data access"})
         if "web crawl" in text or "website crawl" in text:
@@ -631,23 +638,6 @@ class RuntimePlanGenerator:
         }.get(requirements.connection_ownership or "company", "zyntry_managed")
         planned_integrations = list(requirements.integrations)
         planned_slugs = {item.slug for item in planned_integrations}
-        if requirements.requires_documents and "document_storage" not in planned_slugs:
-            planned_integrations.append(
-                ApplicationIntegrationRequirement(
-                    slug="document_storage",
-                    purpose="Accept and index application documents",
-                    ownership="company",
-                )
-            )
-        if requirements.requires_external_data and "website" not in planned_slugs:
-            planned_integrations.append(
-                ApplicationIntegrationRequirement(
-                    slug="website",
-                    purpose="Retrieve content from approved public websites",
-                    ownership="company",
-                )
-            )
-
         for integration in planned_integrations:
             defn = integration_registry.get(integration.slug)
             if not defn:
@@ -665,10 +655,13 @@ class RuntimePlanGenerator:
                 mode = "zyntry_managed"
             elif mode not in defn.supported_connection_modes and mode != "hybrid":
                 mode = defn.supported_connection_modes[0]
-            capabilities = integration.capabilities or [
-                capability.slug for capability in defn.capabilities
-                if integration.write_access or not capability.is_write
+            default_read_capabilities = [
+                capability.slug for capability in defn.capabilities if not capability.is_write
             ]
+            capabilities = list(dict.fromkeys([
+                *default_read_capabilities,
+                *integration.capabilities,
+            ]))
             write_capability_slugs = {
                 capability.slug for capability in defn.capabilities if capability.is_write
             }
