@@ -442,9 +442,17 @@ class OnboardingEngine:
             "end_user": "end_user_oauth",
             "hybrid": "hybrid",
         }.get(requirements.connection_ownership or "company", "zyntry_managed")
-        integrations = requirements.integration_slugs()
+        document_resource_slugs = {
+            "pdf", "docx", "txt", "csv", "markdown", "html", "json", "document_storage"
+        }
+        integrations = [
+            slug for slug in requirements.integration_slugs()
+            if slug not in document_resource_slugs
+        ]
         capabilities: dict[str, list[str]] = {}
         for requested in requirements.integrations:
+            if requested.slug in document_resource_slugs:
+                continue
             defn = integration_registry.get(requested.slug)
             if not defn:
                 continue
@@ -479,7 +487,13 @@ class OnboardingEngine:
             previous_plan=previous_plan,
         )
         result = {**configuration, "runtime_plan": plan.model_dump(mode="json")}
-        integrations = list(result.get("integrations", []))
+        document_resource_slugs = {
+            "pdf", "docx", "txt", "csv", "markdown", "html", "json", "document_storage"
+        }
+        integrations = [
+            slug for slug in result.get("integrations", [])
+            if slug not in document_resource_slugs
+        ]
         capabilities = dict(result.get("capabilities", {}))
         integration_modes = dict(result.get("integration_modes", {}))
         for policy in plan.integration_policies:
@@ -688,10 +702,13 @@ class OnboardingEngine:
             config = session.configuration or {}
             original_config = config
             existing_policies = config.get("integration_policies", [])
+            document_resource_slugs = {
+                "pdf", "docx", "txt", "csv", "markdown", "html", "json", "document_storage"
+            }
             normalized_policies: list[dict[str, Any]] = []
             for policy in existing_policies:
                 slug = policy.get("integration_slug")
-                if not slug:
+                if not slug or slug in document_resource_slugs:
                     continue
                 requested = policy.get(
                     "requested_connection_mode",
@@ -733,7 +750,13 @@ class OnboardingEngine:
 
         # Record intended integrations in the draft; provision them later.
         enabled_integrations_list: list[dict[str, Any]] = []
-        integrations = config.get("integrations", [])
+        document_resource_slugs = {
+            "pdf", "docx", "txt", "csv", "markdown", "html", "json", "document_storage"
+        }
+        integrations = [
+            slug for slug in config.get("integrations", [])
+            if slug not in document_resource_slugs
+        ]
         capabilities_map = config.get("capabilities", {})
         integration_mode = config.get("integration_mode", "zyntry_managed")
         integration_modes = {
