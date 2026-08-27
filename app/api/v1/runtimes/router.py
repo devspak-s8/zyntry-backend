@@ -323,7 +323,8 @@ async def disable_runtime_integration(
     await service.disable_runtime_integration(rid, integration_slug)
 
 
-@router.post("/{runtime_id}/rebuild", response_model=dict)
+@router.post("/{runtime_id}/build", response_model=dict)
+@router.post("/{runtime_id}/rebuild", response_model=dict, include_in_schema=False)
 async def rebuild_runtime(
     runtime_id: str,
     current_user: Annotated[User, Depends(get_current_user)],
