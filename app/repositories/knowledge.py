@@ -48,6 +48,15 @@ class DocumentRepository:
         )
         return list(result.scalars().all())
 
+    async def get_by_project(self, project_id: UUID) -> list[Document]:
+        result = await self.session.execute(
+            select(Document)
+            .join(KnowledgeBase, KnowledgeBase.id == Document.knowledge_base_id)
+            .where(KnowledgeBase.project_id == project_id)
+            .order_by(Document.created_at.desc())
+        )
+        return list(result.scalars().all())
+
     async def count_by_project(self, project_id: UUID) -> int:
         result = await self.session.execute(
             select(func.count(Document.id))

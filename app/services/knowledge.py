@@ -128,6 +128,21 @@ class KnowledgeService:
             for d in docs
         ]
 
+    async def list_project_documents(self, project_id: str) -> list[dict]:
+        docs = await self.uow.documents.get_by_project(uuid.UUID(project_id))
+        return [
+            {
+                "id": str(d.id),
+                "title": d.title,
+                "source": d.source,
+                "knowledge_base_id": str(d.knowledge_base_id),
+                "chunk_count": d.chunk_count,
+                "created_at": d.created_at.isoformat() if d.created_at else None,
+                "updated_at": d.updated_at.isoformat() if d.updated_at else None,
+            }
+            for d in docs
+        ]
+
     async def list_sources(self, project_id: str) -> list[dict]:
         sources = await self.uow.knowledge_sources.get_by_project(project_id)
         return [

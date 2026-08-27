@@ -93,6 +93,33 @@ async def upload_document(
     )
 
 
+@router.get("/documents", response_model=list[DocumentRead])
+async def list_project_documents(
+    current_user: Annotated[User, Depends(get_current_user)],
+    project_id: str,
+    db: AsyncSession = Depends(get_session),
+) -> list[DocumentRead]:
+    uow = UnitOfWork(db)
+    service = KnowledgeService(uow)
+    try:
+        docs = await service.list_project_documents(project_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid project ID") from None
+    return [
+        DocumentRead(
+            id=d["id"],
+            title=d["title"],
+            content=None,
+            source=d.get("source"),
+            knowledge_base_id=d["knowledge_base_id"],
+            chunk_count=d.get("chunk_count", 0),
+            created_at=d.get("created_at", datetime.now()),
+            updated_at=d.get("updated_at", datetime.now()),
+        )
+        for d in docs
+    ]
+
+
 @router.post("/documents/upload", response_model=DocumentRead, status_code=status.HTTP_201_CREATED)
 async def upload_document_file(
     file: Annotated[UploadFile, File()],
