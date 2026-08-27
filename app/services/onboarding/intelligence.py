@@ -636,7 +636,11 @@ class RuntimePlanGenerator:
             "end_user": "end_user_oauth",
             "hybrid": "hybrid",
         }.get(requirements.connection_ownership or "company", "zyntry_managed")
-        planned_integrations = list(requirements.integrations)
+        non_integration_slugs = {"pdf", "docx", "txt", "csv", "markdown", "html", "json", "document_storage"}
+        planned_integrations = [
+            item for item in requirements.integrations
+            if item.slug not in non_integration_slugs
+        ]
         planned_slugs = {item.slug for item in planned_integrations}
         # For legacy/document-only drafts with no requested integrations, keep
         # the document storage component discoverable. Explicit integration
