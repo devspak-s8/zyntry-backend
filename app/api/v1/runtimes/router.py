@@ -92,7 +92,7 @@ async def create_runtime(
     return RuntimeRead(**runtime)
 
 
-@router.get("/{runtime_id}", response_model=RuntimeRead)
+@router.get("/{runtime_id:uuid}", response_model=RuntimeRead)
 async def get_runtime(
     runtime_id: str,
     current_user: Annotated[User, Depends(get_current_user)],
