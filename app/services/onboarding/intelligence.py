@@ -174,7 +174,16 @@ class RuleBasedRequirementsExtractor:
             data["connection_ownership"] = "hybrid"
         elif any(term in lowered for term in ("my users", "end users", "their own", "user oauth")):
             data["connection_ownership"] = "end_user"
-        elif any(term in lowered for term in ("company data", "our data", "my organization", "internal data")):
+        elif any(term in lowered for term in (
+            "company data",
+            "our data",
+            "my organization",
+            "internal data",
+            "company-managed",
+            "company managed",
+            "zyntry-managed",
+            "zyntry managed",
+        )):
             data["connection_ownership"] = "company"
 
         # Preserve an ownership decision already made in the onboarding flow
@@ -286,9 +295,13 @@ class GeminiLLMProvider(BaseLLMProvider):
         text: str,
         existing: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        by_slug = {item.get("slug"): dict(item) for item in existing if item.get("slug")}
         # File formats are document metadata, not external integrations.
         non_integration_slugs = {"pdf", "docx", "txt", "csv", "markdown", "html", "document_storage"}
+        by_slug = {
+            item.get("slug"): dict(item)
+            for item in existing
+            if item.get("slug") and item.get("slug") not in non_integration_slugs
+        }
         for slug in integration_registry.list_slugs():
             if slug in non_integration_slugs:
                 continue
@@ -418,7 +431,13 @@ class ModelBackedRequirementsExtractor:
         if not data:
             return None
         try:
-            return ApplicationRequirements.model_validate(data)
+            current = ApplicationRequirements.model_validate(data)
+            non_integration_slugs = {"pdf", "docx", "txt", "csv", "markdown", "html", "json", "document_storage"}
+            current.integrations = [
+                item for item in current.integrations
+                if item.slug not in non_integration_slugs
+            ]
+            return current
         except ValidationError:
             logger.warning("Ignoring invalid stored application requirements")
             return None
@@ -461,7 +480,10 @@ class ModelBackedRequirementsExtractor:
                     result[key] = list(dict.fromkeys([*result.get(key, []), *value]))
             elif key == "integrations":
                 by_slug = {item["slug"]: item for item in result.get("integrations", [])}
+                non_integration_slugs = {"pdf", "docx", "txt", "csv", "markdown", "html", "json", "document_storage"}
                 for item in value or []:
+                    if item.get("slug", "") in non_integration_slugs:
+                        continue
                     defn = integration_registry.get(item.get("slug", ""))
                     if defn:
                         item["slug"] = defn.slug
