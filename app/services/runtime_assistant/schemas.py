@@ -67,6 +67,7 @@ class RuntimeContext(BaseModel):
     providers: list[dict[str, Any]] = Field(default_factory=list)
     models: list[dict[str, Any]] = Field(default_factory=list)
     knowledge_sources: list[dict[str, Any]] = Field(default_factory=list)
+    integrations: list[dict[str, Any]] = Field(default_factory=list)
     tools: list[dict[str, Any]] = Field(default_factory=list)
     logs: list[dict[str, Any]] = Field(default_factory=list)
     analytics: dict[str, Any] = Field(default_factory=dict)
@@ -76,6 +77,8 @@ class RuntimeContext(BaseModel):
     external_sources: dict[str, Any] = Field(default_factory=dict)
     security: dict[str, Any] = Field(default_factory=dict)
     deployment: dict[str, Any] = Field(default_factory=dict)
+    snapshot_sources: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    observed_at: datetime | None = None
 
 
 class RuntimeSummary(BaseModel):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 from app.repositories import UnitOfWork
@@ -33,17 +34,66 @@ class RuntimeContextBuilder:
         if not runtime:
             raise ValueError(f"Runtime {self.runtime_id} not found")
 
-        project_id = runtime.get("project_id", "")
-        organization_id = runtime.get("organization_id", "")
+        project_id = runtime.get("project_id") or ""
+        organization_id = runtime.get("organization_id") or ""
+        if project_id and not organization_id:
+            project = await self.uow.projects.get(uuid.UUID(project_id))
+            if project is not None:
+                organization_id = str(project.organization_id)
 
-        providers = await self.provider_service.list_providers(project_id)
-        knowledge_sources = await self.knowledge_service.list_sources(project_id)
-        tools = await self.tool_service.list_tools(project_id)
-        health = await self.health_service.get_runtime_health(self.runtime_id)
-        analytics = await self.analytics_service.get_summary(project_id)
-        billing_summary = await self.billing_service.get_usage_summary(
-            uuid.UUID(self.user_id) if self.user_id else None
+        source_status: dict[str, dict[str, Any]] = {}
+
+        async def collect(name: str, factory: Any, default: Any) -> Any:
+            started = datetime.now(UTC)
+            try:
+                value = await factory()
+                source_status[name] = {
+                    "status": "available",
+                    "observed_at": datetime.now(UTC).isoformat(),
+                }
+                return value
+            except Exception as exc:
+                source_status[name] = {
+                    "status": "unavailable",
+                    "observed_at": datetime.now(UTC).isoformat(),
+                    "error_type": type(exc).__name__,
+                    "duration_ms": round((datetime.now(UTC) - started).total_seconds() * 1000, 2),
+                }
+                return default
+
+        async def project_value(factory: Any, default: Any) -> Any:
+            if not project_id:
+                return default
+            return await factory()
+
+        providers = await collect("providers", lambda: project_value(lambda: self.provider_service.list_providers(project_id), []), [])
+        knowledge_sources = await collect("knowledge_sources", lambda: project_value(lambda: self.knowledge_service.list_sources(project_id), []), [])
+        tools = await collect("tools", lambda: project_value(lambda: self.tool_service.list_tools(project_id), []), [])
+        health = await collect("health", lambda: self.health_service.get_runtime_health(self.runtime_id), {})
+        analytics = await collect("analytics", lambda: project_value(lambda: self.analytics_service.get_summary(project_id), {}), {})
+        billing_summary = await collect(
+            "billing",
+            lambda: self.billing_service.get_usage_summary(uuid.UUID(self.user_id) if self.user_id else None),
+            {},
         )
+        integration_models = await collect(
+            "integrations",
+            lambda: self.uow.runtime_integrations.get_by_runtime(uuid.UUID(self.runtime_id)),
+            [],
+        )
+        integrations = [
+            {
+                "integration_slug": item.integration_slug,
+                "status": item.connection_status,
+                "connection_required": item.connection_required,
+                "connection_status": item.connection_status,
+                "is_enabled": item.is_enabled,
+                "enabled_capabilities": item.enabled_capabilities or [],
+            }
+            for item in integration_models
+        ]
+        logs = await collect("logs", lambda: project_value(lambda: self._get_recent_logs(project_id), []), [])
+        security = await collect("security", self._get_security_settings, {"api_keys_count": 0, "keys": []})
 
         return RuntimeContext(
             runtime_id=self.runtime_id,
@@ -55,15 +105,18 @@ class RuntimeContextBuilder:
             providers=providers,
             models=self._build_models(providers),
             knowledge_sources=knowledge_sources,
+            integrations=integrations,
             tools=tools,
-            logs=await self._get_recent_logs(project_id),
+            logs=logs,
             analytics=self._serialize_analytics(analytics),
             billing=self._serialize_billing(billing_summary),
             health=health,
             config=runtime.get("config", {}),
             external_sources=runtime.get("config", {}).get("external_sources", {}),
-            security=await self._get_security_settings(),
+            security=security,
             deployment=self._get_deployment_status(runtime),
+            snapshot_sources=source_status,
+            observed_at=datetime.now(UTC),
         )
 
     def _build_models(self, providers: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -150,11 +203,14 @@ class RuntimeContextBuilder:
             return {"api_keys_count": 0, "keys": []}
 
     def _get_deployment_status(self, runtime: dict[str, Any]) -> dict[str, Any]:
+        config = runtime.get("config", {}) or {}
         return {
-            "status": runtime.get("status", "unknown"),
+            "desired_status": config.get("desired_status", "active"),
+            "observed_status": runtime.get("status", "unknown"),
             "version": runtime.get("version", "unknown"),
             "last_build_completed": runtime.get("last_build_completed"),
             "last_propagated": runtime.get("last_propagated"),
             "health": runtime.get("health", 0.0),
             "error_message": runtime.get("error_message"),
+            "control_plane_available": True,
         }

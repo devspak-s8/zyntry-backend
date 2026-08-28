@@ -44,6 +44,8 @@ async def _authorize_runtime(
     runtime = await session.get(Runtime, parsed_id)
     if runtime is None:
         raise HTTPException(status_code=404, detail="Runtime not found")
+    if not runtime.project_id:
+        raise HTTPException(status_code=409, detail="Attach this runtime to a project before using Runtime Assistant")
     await require_project_membership(str(runtime.project_id), current_user, session)
     return runtime
 

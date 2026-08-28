@@ -127,7 +127,23 @@ class RuntimeAssistantService:
 
         response = executor.build_response(message, tool_results)
         response.context = context
+        control_plane_diagnostics = _diagnose_control_plane_state(context)
+        if control_plane_diagnostics:
+            response.diagnostics = [*control_plane_diagnostics, *response.diagnostics]
+            response.message = (
+                _format_control_plane_diagnostics(control_plane_diagnostics, context)
+                + (f"\n\n{response.message}" if response.message else "")
+            )
         evidence = evidence_from_tool_results(tool_results)
+        evidence.insert(0, {
+            "source": "control_plane_snapshot",
+            "reference_id": runtime_id,
+            "observed_at": context.observed_at.isoformat() if context.observed_at else None,
+            "data": {
+                "deployment": context.deployment,
+                "snapshot_sources": context.snapshot_sources,
+            },
+        })
         response.metadata.update(
             {
                 "assistant": "runtime_assistant",
@@ -320,3 +336,80 @@ async def get_runtime_assistant_service(
     session: AsyncSession = Depends(get_session),
 ) -> RuntimeAssistantService:
     return RuntimeAssistantService(session)
+
+
+def _diagnose_control_plane_state(context: RuntimeContext) -> list[DiagnosticResult]:
+    status = str(context.deployment.get("observed_status") or context.runtime.get("status") or "unknown").lower()
+    diagnostics: list[DiagnosticResult] = []
+    required_connections = [
+        item.get("integration_slug", "integration")
+        for item in context.integrations
+        if item.get("is_enabled")
+        and item.get("connection_required")
+        and item.get("connection_status") != "connected"
+    ]
+
+    if status == "awaiting_connections":
+        names = ", ".join(required_connections) if required_connections else "one or more required integrations"
+        diagnostics.append(DiagnosticResult(
+            issue="Runtime is waiting for connections",
+            severity="warning",
+            description=f"Provisioning cannot continue until {names} are connected.",
+            affected_components=["runtime", "integrations"],
+            recommendations=["Connect the required integration credentials, then rebuild the runtime."],
+            metrics={"observed_status": status, "required_connections": required_connections},
+        ))
+    elif status == "awaiting_documents":
+        diagnostics.append(DiagnosticResult(
+            issue="Runtime is waiting for documents",
+            severity="warning",
+            description="Provisioning cannot continue because its required document collection is empty.",
+            affected_components=["runtime", "knowledge"],
+            recommendations=["Upload or connect at least one required document source, then rebuild the runtime."],
+            metrics={"observed_status": status, "documents": context.runtime.get("documents", 0)},
+        ))
+    elif status in {"preconfigured", "queued", "validating", "discovering", "extracting", "cleaning", "chunking", "embedding", "indexing", "building", "provisioning"}:
+        diagnostics.append(DiagnosticResult(
+            issue="Runtime is not active yet",
+            severity="info",
+            description=f"The control plane reports the runtime in the {status} stage.",
+            affected_components=["runtime", "deployment"],
+            recommendations=["Wait for the current stage to finish or inspect the latest build log if progress has stopped."],
+            metrics={"observed_status": status, "desired_status": context.deployment.get("desired_status")},
+        ))
+    elif status in {"failed", "cancelled", "inactive", "paused", "stopped"}:
+        reason = context.deployment.get("error_message") or f"The runtime is currently {status}."
+        diagnostics.append(DiagnosticResult(
+            issue="Runtime is not running",
+            severity="error" if status == "failed" else "warning",
+            description=str(reason),
+            affected_components=["runtime", "deployment"],
+            recommendations=["Review the latest build and error evidence before proposing a restart or rebuild."],
+            metrics={"observed_status": status, "desired_status": context.deployment.get("desired_status")},
+        ))
+
+    unavailable = sorted(
+        name for name, state in context.snapshot_sources.items()
+        if state.get("status") == "unavailable"
+    )
+    if unavailable:
+        diagnostics.append(DiagnosticResult(
+            issue="Some control-plane evidence is unavailable",
+            severity="info",
+            description=f"The assistant could not read: {', '.join(unavailable)}. Other evidence was still evaluated.",
+            affected_components=unavailable,
+            recommendations=["Retry the investigation if one of these sources is required for a conclusive answer."],
+            metrics={"unavailable_sources": unavailable},
+        ))
+    return diagnostics
+
+
+def _format_control_plane_diagnostics(
+    diagnostics: list[DiagnosticResult], context: RuntimeContext
+) -> str:
+    observed_at = context.observed_at.isoformat() if context.observed_at else "the latest snapshot"
+    lines = [f"Control-plane diagnosis (observed {observed_at}):"]
+    for diagnostic in diagnostics:
+        lines.append(f"- {diagnostic.issue}: {diagnostic.description}")
+    lines.append("This diagnosis does not require the runtime process itself to be running.")
+    return "\n".join(lines)
