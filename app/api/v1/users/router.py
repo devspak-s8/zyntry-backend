@@ -178,15 +178,21 @@ async def enable_two_factor(
     from app.admin.auth import generate_totp_secret, generate_totp_uri
     from app.services.encryption import encrypt_value
 
+    # Session users may be reconstructed from Redis without sensitive 2FA
+    # fields. Reload the persisted row before creating a setup challenge.
+    user = await db.get(User, current_user.id)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
     secret = generate_totp_secret()
     uow = UnitOfWork(db)
     try:
-        await uow.users.update(current_user, two_factor_secret=encrypt_value(secret), two_factor_enabled=False)
+        await uow.users.update(user, two_factor_secret=encrypt_value(secret), two_factor_enabled=False)
         await uow.commit()
     except Exception as exc:
         await uow.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to enable 2FA: {exc}")
-    return {"secret": secret, "otpauth_uri": generate_totp_uri(secret, current_user.email), "status": "pending_verification"}
+    return {"secret": secret, "otpauth_uri": generate_totp_uri(secret, user.email), "status": "pending_verification"}
 
 
 @router.post("/me/2fa/verify")
@@ -198,13 +204,16 @@ async def verify_two_factor_setup(
     from app.admin.auth import verify_totp
     from app.services.encryption import decrypt_value
 
-    if not current_user.two_factor_secret:
+    user = await db.get(User, current_user.id)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if not user.two_factor_secret:
         raise HTTPException(status_code=400, detail="Start 2FA setup first")
-    secret = decrypt_value(current_user.two_factor_secret)
+    secret = decrypt_value(user.two_factor_secret)
     if not verify_totp(secret, code.strip().replace(" ", "")):
         raise HTTPException(status_code=400, detail="Invalid authentication code")
     uow = UnitOfWork(db)
-    await uow.users.update(current_user, two_factor_enabled=True)
+    await uow.users.update(user, two_factor_enabled=True)
     await uow.commit()
     return {"status": "enabled"}
 
@@ -218,13 +227,16 @@ async def disable_two_factor(
     from app.admin.auth import verify_totp
     from app.services.encryption import decrypt_value
 
-    if not current_user.two_factor_secret or not verify_totp(
-        decrypt_value(current_user.two_factor_secret), code.strip().replace(" ", "")
+    user = await db.get(User, current_user.id)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if not user.two_factor_secret or not verify_totp(
+        decrypt_value(user.two_factor_secret), code.strip().replace(" ", "")
     ):
         raise HTTPException(status_code=400, detail="Invalid authentication code")
     uow = UnitOfWork(db)
     try:
-        await uow.users.update(current_user, two_factor_secret=None, two_factor_enabled=False)
+        await uow.users.update(user, two_factor_secret=None, two_factor_enabled=False)
         await uow.commit()
     except Exception as exc:
         await uow.rollback()

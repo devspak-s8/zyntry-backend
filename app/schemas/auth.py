@@ -46,3 +46,4 @@ class AuthMeResponse(BaseModel):
     organization_id: uuid.UUID | None
     is_active: bool
     email_verified: bool = False
+    two_factor_enabled: bool = False

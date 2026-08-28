@@ -198,6 +198,7 @@ async def register(
         organization_id=user.organization_id,
         is_active=user.is_active,
         email_verified=user.email_verified,
+        two_factor_enabled=user.two_factor_enabled,
     )
 
 
@@ -240,6 +241,7 @@ async def login(
         organization_id=user.organization_id,
         is_active=user.is_active,
         email_verified=user.email_verified,
+        two_factor_enabled=user.two_factor_enabled,
     )
 
 
@@ -324,6 +326,7 @@ async def refresh(
         organization_id=user.organization_id,
         is_active=user.is_active,
         email_verified=user.email_verified,
+        two_factor_enabled=user.two_factor_enabled,
     )
 
 
@@ -356,6 +359,7 @@ async def me(
         organization_id=user.organization_id,
         is_active=user.is_active,
         email_verified=user.email_verified,
+        two_factor_enabled=user.two_factor_enabled,
     )
 
 
