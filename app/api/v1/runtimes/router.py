@@ -131,9 +131,22 @@ async def update_runtime(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> RuntimeRead:
+    try:
+        rid = uuid.UUID(runtime_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid runtime_id format") from None
+
     uow = UnitOfWork(db)
+    existing = await uow.runtimes.get(rid)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Runtime not found")
+    if existing.project_id:
+        await require_project_membership(str(existing.project_id), current_user, db)
+    elif existing.user_id != current_user.id and not current_user.is_superuser:
+        raise HTTPException(status_code=403, detail="Unauthorized")
+
     service = RuntimeService(uow)
-    runtime = await service.update(runtime_id, body)
+    runtime = await service.update(str(rid), body)
     return RuntimeRead(**runtime)
 
 
@@ -661,6 +674,19 @@ async def delete_runtime(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> None:
+    try:
+        rid = uuid.UUID(runtime_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid runtime_id format") from None
+
     uow = UnitOfWork(db)
+    existing = await uow.runtimes.get(rid)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Runtime not found")
+    if existing.project_id:
+        await require_project_membership(str(existing.project_id), current_user, db)
+    elif existing.user_id != current_user.id and not current_user.is_superuser:
+        raise HTTPException(status_code=403, detail="Unauthorized")
+
     service = RuntimeService(uow)
-    await service.delete(runtime_id)
+    await service.delete(str(rid))

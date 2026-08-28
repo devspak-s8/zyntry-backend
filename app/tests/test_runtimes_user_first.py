@@ -3,16 +3,17 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.runtimes.router import list_runtimes
+from app.api.v1.runtimes.router import delete_runtime, list_runtimes, update_runtime
 from app.repositories import UnitOfWork
 from app.schemas.apikeys import ApiKeyCreate
 from app.schemas.integrations import (
     RuntimeIntegrationCreate,
     RuntimeIntegrationUpdate,
 )
-from app.schemas.runtimes import RuntimeCreate
+from app.schemas.runtimes import RuntimeCreate, RuntimeUpdate
 from app.services.apikeys import ApiKeyService
 from app.services.integrations.service import IntegrationService
 from app.services.runtimes import RuntimeService
@@ -128,3 +129,32 @@ async def test_user_first_runtime_and_capabilities(db_session: AsyncSession) -> 
     # 7. Disable integration
     await integration_service.disable_runtime_integration(runtime_id, "github")
     assert await integration_service.is_capability_enabled(runtime_id, "github", "file_retrieval") is False
+
+
+@pytest.mark.asyncio
+async def test_runtime_configuration_mutations_require_owner_access(db_session: AsyncSession) -> None:
+    uow = UnitOfWork(db_session)
+    owner = await uow.users.create(email="runtime_owner@zyntry.space", name="Owner")
+    outsider = await uow.users.create(email="runtime_outsider@zyntry.space", name="Outsider")
+    await uow.commit()
+    runtime = await RuntimeService(uow).get_or_create(
+        RuntimeCreate(name="Protected Runtime"),
+        default_user_id=owner.id,
+    )
+
+    with pytest.raises(HTTPException) as update_error:
+        await update_runtime(
+            runtime_id=runtime["id"],
+            body=RuntimeUpdate(name="Unauthorized Rename"),
+            current_user=outsider,
+            db=db_session,
+        )
+    assert update_error.value.status_code == 403
+
+    with pytest.raises(HTTPException) as delete_error:
+        await delete_runtime(
+            runtime_id=runtime["id"],
+            current_user=outsider,
+            db=db_session,
+        )
+    assert delete_error.value.status_code == 403
