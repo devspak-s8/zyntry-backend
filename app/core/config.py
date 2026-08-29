@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -27,6 +28,8 @@ class AppSettings(BaseSettings):
     ENCRYPTION_KEY: str = ""
     JWT_SECRET: str = ""
     JWT_ALGORITHM: str = "HS256"
+    ADMIN_JWT_ISSUER: str = "zyntra-admin"
+    ADMIN_JWT_AUDIENCE: str = "zyntra-admin-api"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     SESSION_TOKEN_TTL_MINUTES: int = 60
@@ -121,6 +124,10 @@ class AppSettings(BaseSettings):
     RATE_LIMIT_API_PER_MINUTE: int = 60
     RATE_LIMIT_LOGIN_MAX_ATTEMPTS: int = 5
 
+    # Upload safety limits (enforced before document parsing)
+    MAX_UPLOAD_SIZE_BYTES: int = 10 * 1024 * 1024
+    ALLOWED_UPLOAD_EXTENSIONS: str = ".pdf,.docx,.txt,.md,.csv,.json"
+
     # Feature Flags
     ENABLE_MEMORY: bool = True
     ENABLE_RAG: bool = True
@@ -137,6 +144,12 @@ class AppSettings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.APP_ENV.lower() == "production"
+
+    @model_validator(mode="after")
+    def validate_environment(self) -> "AppSettings":
+        if self.is_production and self.APP_DEBUG:
+            raise ValueError("APP_DEBUG must be false when APP_ENV=production")
+        return self
 
     @property
     def redis_url(self) -> str:

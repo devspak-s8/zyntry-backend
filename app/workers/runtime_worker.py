@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import random
-import string
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -13,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_session
+from app.core.security import generate_api_key, hash_token
 from app.models.knowledge import Document
 from app.models.runtimes import Runtime, RuntimeBuildChunk
 from app.repositories import UnitOfWork
@@ -91,7 +90,7 @@ class RuntimeWorker:
             await uow.runtime_build_chunks.delete_by_runtime(uuid.UUID(self.runtime_id))
             await uow.session.commit()
             from app.core.runtime_events import publish_runtime_event
-            await publish_runtime_event({"type": "RuntimeStarted", "runtime_id": str(self._runtime.id)})
+            await publish_runtime_event({"type": "RuntimeStarted", "runtime_id": str(self._runtime.id), "user_id": str(self._runtime.user_id)})
             for stage in RUNTIME_STAGES:
                 if self._runtime.status == "cancelled":
                     break
@@ -104,7 +103,7 @@ class RuntimeWorker:
                 if project:
                     await uow.projects.update(project, has_built_runtime=True)
                 await uow.session.commit()
-                await publish_runtime_event({"type": "RuntimeReady", "runtime_id": str(self._runtime.id)})
+                await publish_runtime_event({"type": "RuntimeReady", "runtime_id": str(self._runtime.id), "user_id": str(self._runtime.user_id)})
                 await self._notify_runtime_ready(project)
         except Exception as e:
             if self._runtime:
@@ -116,7 +115,7 @@ class RuntimeWorker:
                     await uow.runtimes.update(self._runtime, status="failed", error_message=str(e))
                 await uow.session.commit()
                 from app.core.runtime_events import publish_runtime_event
-                await publish_runtime_event({"type": "RuntimeFailed", "runtime_id": str(runtime_id), "error": str(e)})
+                await publish_runtime_event({"type": "RuntimeFailed", "runtime_id": str(runtime_id), "user_id": str(self._runtime.user_id) if self._runtime else None, "error": str(e)})
             raise
         finally:
             if self._embedding_provider:
@@ -137,7 +136,7 @@ class RuntimeWorker:
         )
         await self._uow.session.commit()
         from app.core.runtime_events import publish_runtime_event
-        await publish_runtime_event({"type": _stage_event(stage), "runtime_id": str(self._runtime.id), "stage": stage})
+        await publish_runtime_event({"type": _stage_event(stage), "runtime_id": str(self._runtime.id), "user_id": str(self._runtime.user_id), "stage": stage})
         stage_method = getattr(self, f"_stage_{stage}", None)
         if stage_method:
             try:
@@ -394,20 +393,24 @@ class RuntimeWorker:
         await self._update_runtime_status("provisioning")
 
     async def _stage_generate_api_key(self) -> None:
-        raw_key = "zyntra_" + "".join(random.choices(string.ascii_letters + string.digits, k=32))
-        hashed_key = hashlib.sha256(raw_key.encode()).hexdigest()
+        raw_key = generate_api_key(
+            "sk_live" if self._runtime.environment == "production" else "sk_test"
+        )
+        hashed_key = hash_token(raw_key)
         api_key = await self._uow.api_keys.create(
             name=f"Runtime API Key - {self._runtime.project_id}",
             hashed_key=hashed_key,
             prefix=raw_key[:12],
+            user_id=self._runtime.user_id,
             organization_id=self._runtime.organization_id,
             project_id=self._runtime.project_id,
+            runtime_id=self._runtime.id,
+            environment=self._runtime.environment or "development",
+            scopes=["read", "write"],
         )
         await self._uow.commit()
         self._runtime.api_key_id = api_key.id
         await self._uow.runtimes.update(self._runtime, api_key_id=api_key.id)
-        self._runtime.config["api_key"] = raw_key
-        await self._uow.runtimes.update(self._runtime, config=self._runtime.config)
 
     async def _stage_activate_runtime(self) -> None:
         self._runtime.last_build_completed = datetime.now(UTC)

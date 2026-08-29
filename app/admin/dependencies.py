@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request, status
@@ -15,9 +16,10 @@ from app.admin.auth import (
     get_client_ip,
 )
 from app.admin.constants import ROLE_PERMISSIONS, AdminRole, Permission
-from app.admin.models import AdminUser, IPAllowList, IPRecord
+from app.admin.models import AdminSession, AdminUser, IPAllowList, IPRecord
 from app.core.config import settings
 from app.core.database import get_session
+from app.core.security import hash_token, now
 from app.models.users import User
 
 
@@ -41,18 +43,45 @@ class AdminContext:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
 
 
+def _claim_uuid(payload: dict, name: str) -> uuid.UUID:
+    try:
+        return uuid.UUID(str(payload[name]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin token") from exc
+
+
+async def _require_admin_session(token: str, payload: dict, db: AsyncSession) -> tuple[uuid.UUID, uuid.UUID, AdminSession]:
+    """Validate the JWT *and* its revocable database session.
+
+    A signed JWT is not sufficient for admin access: logout, role changes and
+    incident response must be able to revoke an already-issued token.
+    """
+    if payload.get("type") != "admin_access":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token type")
+    admin_id = _claim_uuid(payload, "admin_id")
+    user_id = _claim_uuid(payload, "user_id")
+    result = await db.execute(select(AdminSession).where(AdminSession.token_hash == hash_token(token)))
+    session = result.scalar_one_or_none()
+    expires_at = getattr(session, "expires_at", None)
+    if (
+        session is None
+        or session.revoked
+        or expires_at is None
+        or (expires_at.replace(tzinfo=UTC) if expires_at.tzinfo is None else expires_at) <= now()
+        or session.admin_user_id != admin_id
+        or session.user_id != user_id
+    ):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired or revoked")
+    return admin_id, user_id, session
+
+
 async def get_admin_context(request: Request, db: AsyncSession = Depends(get_session)) -> AdminContext:
     token = extract_token_from_request(request)
     if not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
 
     payload = decode_token(token)
-    if payload.get("type") != "admin_access":
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token type")
-
-    admin_id = uuid.UUID(payload["admin_id"])
-    user_id = uuid.UUID(payload["user_id"])
-    role = AdminRole(payload["role"])
+    admin_id, user_id, admin_session = await _require_admin_session(token, payload, db)
     mfa_verified = payload.get("mfa_verified", False)
 
     result = await db.execute(select(AdminUser).where(AdminUser.id == admin_id))
@@ -65,6 +94,15 @@ async def get_admin_context(request: Request, db: AsyncSession = Depends(get_ses
     if user is None or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Admin user inactive")
 
+    # Roles are authoritative in the database. A still-valid token may carry
+    # a stale role claim after an administrator's role is changed, so never
+    # derive permissions from the claim alone.
+    try:
+        role = AdminRole(admin_user.role)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin role") from exc
+    if admin_user.user_id != user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin token subject")
     permissions = ROLE_PERMISSIONS.get(role, set())
 
     if settings.ADMIN_IP_ALLOWLIST:
@@ -81,7 +119,14 @@ async def get_admin_context(request: Request, db: AsyncSession = Depends(get_ses
         if not check_ip_not_banned(client_ip, ip_record):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="IP is banned")
 
-    return AdminContext(admin_id=admin_id, user_id=user_id, role=role, email=user.email, permissions=permissions, mfa_verified=mfa_verified)
+    return AdminContext(
+        admin_id=admin_id,
+        user_id=user_id,
+        role=role,
+        email=user.email,
+        permissions=permissions,
+        mfa_verified=bool(mfa_verified and admin_user.mfa_verified and admin_session.mfa_verified),
+    )
 
 
 def require_permission(permission: Permission):
@@ -117,13 +162,19 @@ async def get_current_super_admin(request: Request, db: AsyncSession = Depends(g
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
 
     payload = decode_token(token)
-    admin_id = uuid.UUID(payload["admin_id"])
+    admin_id, user_id, _ = await _require_admin_session(token, payload, db)
 
     result = await db.execute(select(AdminUser).where(AdminUser.id == admin_id))
     admin_user = result.scalar_one_or_none()
     if admin_user is None or not admin_user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Admin user not found")
-    if not admin_user.is_super_admin:
+    if admin_user.user_id != user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin token subject")
+    try:
+        role = AdminRole(admin_user.role)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin role") from exc
+    if role != AdminRole.SUPER_ADMIN:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Super admin access required")
     return admin_user
 
@@ -137,11 +188,13 @@ async def get_current_mfa_verified(request: Request, db: AsyncSession = Depends(
     if not payload.get("mfa_verified", False):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="MFA verification required")
 
-    admin_id = uuid.UUID(payload["admin_id"])
+    admin_id, user_id, admin_session = await _require_admin_session(token, payload, db)
     result = await db.execute(select(AdminUser).where(AdminUser.id == admin_id))
     admin_user = result.scalar_one_or_none()
     if admin_user is None or not admin_user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Admin user not found")
+    if admin_user.user_id != user_id or not admin_user.mfa_verified or not admin_session.mfa_verified:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="MFA verification required")
     return admin_user
 
 

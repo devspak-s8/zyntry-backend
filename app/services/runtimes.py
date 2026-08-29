@@ -227,6 +227,8 @@ class RuntimeService:
         await self.uow.commit()
 
     def _to_read(self, runtime: Any) -> dict[str, Any]:
+        from app.services.security.secrets import default_secret_manager
+
         return {
             "id": str(runtime.id),
             "user_id": str(runtime.user_id),
@@ -255,9 +257,11 @@ class RuntimeService:
             "error_message": runtime.error_message,
             "api_key_id": str(runtime.api_key_id) if runtime.api_key_id else None,
             "system_instructions": getattr(runtime, "system_instructions", None),
-            "security_policies": getattr(runtime, "security_policies", {}) or {},
-            "config": getattr(runtime, "config", None) or {},
-            "metadata": getattr(runtime, "metadata_", None) or {},
+            "security_policies": default_secret_manager.redact(
+                getattr(runtime, "security_policies", {}) or {}
+            ),
+            "config": default_secret_manager.redact(getattr(runtime, "config", None) or {}),
+            "metadata": default_secret_manager.redact(getattr(runtime, "metadata_", None) or {}),
             "created_at": runtime.created_at.isoformat() if runtime.created_at else None,
             "updated_at": runtime.updated_at.isoformat() if runtime.updated_at else None,
         }

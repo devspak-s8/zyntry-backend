@@ -92,7 +92,7 @@ async def get_organization(
         raise HTTPException(status_code=400, detail="Invalid organization id")
 
     org = await db.get(Organization, oid)
-    if org is None:
+    if org is None or org.id != current_user.organization_id:
         raise HTTPException(status_code=404, detail="Organization not found")
 
     return OrganizationRead(
@@ -118,7 +118,7 @@ async def update_organization(
         raise HTTPException(status_code=400, detail="Invalid organization id")
 
     org = await db.get(Organization, oid)
-    if org is None:
+    if org is None or org.id != current_user.organization_id:
         raise HTTPException(status_code=404, detail="Organization not found")
 
     uow = UnitOfWork(db)
@@ -154,7 +154,7 @@ async def delete_organization(
         raise HTTPException(status_code=400, detail="Invalid organization id")
 
     org = await db.get(Organization, oid)
-    if org is None:
+    if org is None or org.id != current_user.organization_id:
         raise HTTPException(status_code=404, detail="Organization not found")
 
     uow = UnitOfWork(db)

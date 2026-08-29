@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.admin.auth import AdminAuth
+from app.admin.auth import AdminAuth, extract_token_from_request
 from app.admin.constants import Permission
 from app.admin.dependencies import (
     AdminContext,
@@ -44,11 +44,15 @@ async def admin_refresh_token(
 
 @router.post("/auth/logout")
 async def admin_logout(
+    request: Request,
     ctx: AdminContext = Depends(require_permission(Permission.AUTH_LOGOUT)),
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
+    token = extract_token_from_request(request)
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
     auth = AdminAuth(db)
-    result = await auth.logout("")
+    result = await auth.logout(token)
     return result
 
 

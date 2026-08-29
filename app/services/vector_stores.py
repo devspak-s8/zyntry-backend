@@ -3,11 +3,27 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import re
 from abc import ABC, abstractmethod
 from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?$")
+
+
+def _safe_identifier(value: str) -> str:
+    """Validate a configured SQL identifier before interpolation.
+
+    SQL parameters cannot represent table names, so reject anything other
+    than a plain table or schema.table identifier. Values and filters remain
+    bound parameters below.
+    """
+    if not isinstance(value, str) or not _IDENTIFIER_RE.fullmatch(value):
+        raise ValueError("Invalid vector table identifier")
+    return ".".join(f'"{part}"' for part in value.split("."))
 
 
 class BaseVectorStore(ABC):
@@ -35,14 +51,14 @@ class BaseVectorStore(ABC):
 class PgVectorStore(BaseVectorStore):
     def __init__(self, session: AsyncSession, table_name: str = "embeddings") -> None:
         self._session = session
-        self._table_name = table_name
+        self._table_name = _safe_identifier(table_name)
 
     async def upsert(self, vectors: list[dict[str, Any]]) -> None:
         if not vectors:
             return
         for vec in vectors:
             await self._session.execute(
-                text(
+                text(  # nosec B608 - table identifier is validated in _safe_identifier
                     f"""
                     INSERT INTO {self._table_name} (id, project_id, document_id, vector, vector_native, model, dimensions, metadata, external_id)
                     VALUES (:id, :project_id, :document_id, CAST(:vector_json AS jsonb), CAST(:vector_text AS vector), :model, :dimensions, CAST(:metadata AS jsonb), :external_id)
@@ -80,7 +96,7 @@ class PgVectorStore(BaseVectorStore):
         if not vectors:
             return
         await self._session.execute(
-            text(
+            text(  # nosec B608 - table identifier is validated in _safe_identifier
                 f"""
                 INSERT INTO {self._table_name} (id, project_id, document_id, vector, vector_native, model, dimensions, metadata, external_id)
                 VALUES (:id, :project_id, :document_id, CAST(:vector_json AS jsonb), CAST(:vector_text AS vector), :model, :dimensions, CAST(:metadata AS jsonb), :external_id)
@@ -112,7 +128,7 @@ class PgVectorStore(BaseVectorStore):
         if not ids:
             return
         await self._session.execute(
-            text(f"DELETE FROM {self._table_name} WHERE id = ANY(:ids)"),
+            text(f"DELETE FROM {self._table_name} WHERE id = ANY(:ids)"),  # nosec B608 - validated identifier
             {"ids": ids},
         )
 
@@ -142,7 +158,7 @@ class PgVectorStore(BaseVectorStore):
         # uncommon dimensions still use pgvector's exact native scan.
         cast = f"vector({dimension})" if dimension in {768, 1024, 1536} else "vector"
         result = await self._session.execute(
-            text(
+            text(  # nosec B608 - table and cast are validated/derived values
                 f"""
                 SELECT id, project_id, document_id, metadata,
                        1 - (vector_native::{cast} <=> CAST(:query AS {cast})) AS similarity
@@ -182,7 +198,7 @@ class PgVectorStore(BaseVectorStore):
             if conditions:
                 filter_clause = "WHERE " + " AND ".join(conditions)
         result = await self._session.execute(
-            text(f"SELECT COUNT(*) FROM {self._table_name} {filter_clause}"),
+            text(f"SELECT COUNT(*) FROM {self._table_name} {filter_clause}"),  # nosec B608 - validated identifier and fixed predicates
             params,
         )
         row = result.fetchone()

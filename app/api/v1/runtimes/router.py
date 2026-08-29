@@ -10,7 +10,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
-from app.api.v1.dependencies_tenant import require_project_membership
+from app.api.v1.dependencies_tenant import (
+    require_organization_membership,
+    require_project_membership,
+    require_runtime_access,
+)
 from app.api.v1.features.dependencies import require_feature
 from app.api.v1.invoke.router import InvokeRequest, InvokeResponse, invoke
 from app.core.database import get_session
@@ -44,9 +48,14 @@ from app.services.apikeys import ApiKeyService
 from app.services.health import HealthService
 from app.services.integrations.service import IntegrationService
 from app.services.runtimes import RuntimeService
+from app.services.security.secrets import default_secret_manager
 
 router = APIRouter(prefix="/runtimes", tags=["runtimes"])
 OBSERVABILITY_GUARD = [Depends(require_feature("observability"))]
+
+
+def _safe_integration_config(value: dict | None) -> dict:
+    return default_secret_manager.redact(value or {})
 
 
 @router.get("", response_model=list[RuntimeRead])
@@ -59,9 +68,11 @@ async def list_runtimes(
     uow = UnitOfWork(db)
     service = RuntimeService(uow)
     if project_id:
+        await require_project_membership(project_id, current_user, db)
         runtime = await service.get_by_project(project_id)
         return [runtime] if runtime else []
     if organization_id:
+        await require_organization_membership(organization_id, current_user, db)
         return await service.list_by_organization(organization_id)
 
     # Include both directly owned runtimes and runtimes owned by the user's
@@ -83,6 +94,14 @@ async def create_runtime(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> RuntimeRead:
+    if body.project_id is not None:
+        await require_project_membership(str(body.project_id), current_user, db)
+    body = body.model_copy(
+        update={
+            "user_id": current_user.id,
+            "organization_id": current_user.organization_id,
+        }
+    )
     uow = UnitOfWork(db)
     service = RuntimeService(uow)
     try:
@@ -100,10 +119,8 @@ async def get_runtime(
 ) -> RuntimeRead:
     uow = UnitOfWork(db)
     service = RuntimeService(uow)
-    runtime = await service.get(str(runtime_id))
-    if not runtime:
-        raise HTTPException(status_code=404, detail="Runtime not found")
-    return RuntimeRead(**runtime)
+    runtime_obj = await require_runtime_access(runtime_id, current_user, db)
+    return RuntimeRead(**service._to_read(runtime_obj))
 
 
 @router.get("/project/{project_id}", response_model=RuntimeRead)
@@ -118,6 +135,7 @@ async def get_runtime_by_project(
         raise HTTPException(status_code=400, detail="Invalid project_id format")
     uow = UnitOfWork(db)
     service = RuntimeService(uow)
+    await require_project_membership(project_id, current_user, db)
     runtime = await service.get_by_project(project_id)
     if not runtime:
         raise HTTPException(status_code=404, detail="Runtime not found")
@@ -164,11 +182,7 @@ async def configure_external_sources(
         raise HTTPException(status_code=400, detail="Invalid runtime_id format") from None
 
     uow = UnitOfWork(db)
-    runtime = await uow.runtimes.get(rid)
-    if runtime is None:
-        raise HTTPException(status_code=404, detail="Runtime not found")
-    if runtime.user_id != current_user.id and not current_user.is_superuser:
-        raise HTTPException(status_code=403, detail="Unauthorized")
+    runtime = await require_runtime_access(rid, current_user, db)
 
     config = dict(runtime.config or {})
     config["external_sources"] = body.model_dump()
@@ -190,16 +204,19 @@ async def create_runtime_api_key(
         raise HTTPException(status_code=400, detail="Invalid runtime_id format") from None
 
     uow = UnitOfWork(db)
-    runtime = await uow.runtimes.get(rid)
-    if runtime is None:
-        raise HTTPException(status_code=404, detail="Runtime not found")
-    if runtime.user_id != current_user.id and not current_user.is_superuser:
-        raise HTTPException(status_code=403, detail="Unauthorized to create API keys for this runtime")
+    runtime = await require_runtime_access(rid, current_user, db)
 
     service = ApiKeyService(db)
-    body.runtime_id = rid
-    if not body.environment:
-        body.environment = runtime.environment
+    # Runtime-scoped keys inherit the runtime's project and environment. A
+    # caller must not mint a development key that can be presented to a
+    # production runtime (or attach the key to a different project).
+    body = body.model_copy(
+        update={
+            "runtime_id": rid,
+            "project_id": runtime.project_id,
+            "environment": runtime.environment or "development",
+        }
+    )
     result = await service.create_key(
         user_id=current_user.id,
         data=body,
@@ -224,6 +241,7 @@ async def list_runtime_integrations(
 
     uow = UnitOfWork(db)
     service = IntegrationService(uow)
+    await require_runtime_access(rid, current_user, db)
     items = await service.list_runtime_integrations(rid)
     return [
         RuntimeIntegrationRead(
@@ -236,7 +254,7 @@ async def list_runtime_integrations(
             connection_required=i.connection_required,
             connection_status=i.connection_status,
             connection_id=i.connection_id,
-            config=i.config or {},
+            config=_safe_integration_config(i.config),
             created_at=i.created_at,
             updated_at=i.updated_at,
         )
@@ -257,11 +275,7 @@ async def enable_runtime_integration(
         raise HTTPException(status_code=400, detail="Invalid runtime_id format") from None
 
     uow = UnitOfWork(db)
-    runtime = await uow.runtimes.get(rid)
-    if runtime is None:
-        raise HTTPException(status_code=404, detail="Runtime not found")
-    if runtime.user_id != current_user.id and not current_user.is_superuser:
-        raise HTTPException(status_code=403, detail="Unauthorized")
+    runtime = await require_runtime_access(rid, current_user, db)
 
     service = IntegrationService(uow)
     try:
@@ -276,7 +290,7 @@ async def enable_runtime_integration(
             connection_required=item.connection_required,
             connection_status=item.connection_status,
             connection_id=item.connection_id,
-            config=item.config or {},
+            config=_safe_integration_config(item.config),
             created_at=item.created_at,
             updated_at=item.updated_at,
         )
@@ -299,6 +313,7 @@ async def update_runtime_integration(
 
     uow = UnitOfWork(db)
     service = IntegrationService(uow)
+    await require_runtime_access(rid, current_user, db)
     try:
         item = await service.update_runtime_integration(rid, integration_slug, body)
         return RuntimeIntegrationRead(
@@ -311,7 +326,7 @@ async def update_runtime_integration(
             connection_required=item.connection_required,
             connection_status=item.connection_status,
             connection_id=item.connection_id,
-            config=item.config or {},
+            config=_safe_integration_config(item.config),
             created_at=item.created_at,
             updated_at=item.updated_at,
         )
@@ -333,6 +348,7 @@ async def disable_runtime_integration(
 
     uow = UnitOfWork(db)
     service = IntegrationService(uow)
+    await require_runtime_access(rid, current_user, db)
     await service.disable_runtime_integration(rid, integration_slug)
 
 
@@ -345,6 +361,7 @@ async def rebuild_runtime(
 ) -> dict:
     uow = UnitOfWork(db)
     service = RuntimeService(uow)
+    await require_runtime_access(runtime_id, current_user, db)
     result = await service.enqueue_build(runtime_id, trigger="manual")
     return result
 
@@ -367,14 +384,7 @@ async def invoke_runtime_console(
         raise HTTPException(status_code=400, detail="Invalid runtime_id format") from None
 
     uow = UnitOfWork(db)
-    runtime = await uow.runtimes.get(runtime_uuid)
-    if runtime is None:
-        raise HTTPException(status_code=404, detail="Runtime not found")
-
-    if runtime.project_id:
-        await require_project_membership(str(runtime.project_id), current_user, db)
-    elif runtime.user_id != current_user.id and not current_user.is_superuser:
-        raise HTTPException(status_code=403, detail="Unauthorized access to runtime")
+    runtime = await require_runtime_access(runtime_uuid, current_user, db)
 
     safe_body = body.model_copy(
         update={
@@ -393,6 +403,7 @@ async def propagate_runtime(
 ) -> dict:
     uow = UnitOfWork(db)
     service = RuntimeService(uow)
+    await require_runtime_access(runtime_id, current_user, db)
     result = await service.enqueue_build(runtime_id, trigger="propagation")
     return result
 
@@ -405,6 +416,7 @@ async def cancel_runtime(
 ) -> dict:
     uow = UnitOfWork(db)
     service = RuntimeService(uow)
+    await require_runtime_access(runtime_id, current_user, db)
     result = await service.cancel(runtime_id)
     return result
 
@@ -414,14 +426,7 @@ async def _runtime_for_topology(runtime_id: str, current_user: User, db: AsyncSe
         rid = uuid.UUID(runtime_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid runtime_id format") from None
-    runtime = await db.scalar(select(Runtime).where(Runtime.id == rid))
-    if runtime is None:
-        raise HTTPException(status_code=404, detail="Runtime not found")
-    if runtime.project_id:
-        await require_project_membership(str(runtime.project_id), current_user, db)
-    elif runtime.user_id != current_user.id and not current_user.is_superuser:
-        raise HTTPException(status_code=403, detail="Unauthorized access to runtime")
-    return runtime
+    return await require_runtime_access(rid, current_user, db)
 
 
 async def _build_topology(runtime: Runtime, db: AsyncSession, *, simulation: str | None = None) -> dict:
@@ -562,6 +567,7 @@ async def get_runtime_health(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> RuntimeHealthResponse:
+    await require_runtime_access(runtime_id, current_user, db)
     uow = UnitOfWork(db)
     health_service = HealthService(uow)
     health = await health_service.get_runtime_health(runtime_id)
@@ -575,11 +581,16 @@ async def get_runtime_metrics(
     hours: Annotated[int, Query(ge=1, le=168)] = 24,
     db: AsyncSession = Depends(get_session),
 ) -> dict:
+    try:
+        rid = uuid.UUID(runtime_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid runtime_id format") from None
+    await require_runtime_access(rid, current_user, db)
     uow = UnitOfWork(db)
     from app.services.observability import ObservabilityService
 
     obs_service = ObservabilityService(uow)
-    summary = await obs_service.get_observability_summary(runtime_id, hours=hours)
+    summary = await obs_service.get_observability_summary(str(rid), hours=hours)
     return summary
 
 
@@ -594,13 +605,7 @@ async def list_runtime_logs(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid runtime_id format") from None
     uow = UnitOfWork(db)
-    runtime = await uow.runtimes.get(rid)
-    if runtime is None:
-        raise HTTPException(status_code=404, detail="Runtime not found")
-    if runtime.project_id:
-        await require_project_membership(str(runtime.project_id), current_user, db)
-    elif runtime.user_id != current_user.id and not current_user.is_superuser:
-        raise HTTPException(status_code=403, detail="Unauthorized")
+    await require_runtime_access(rid, current_user, db)
 
     result = await db.execute(
         select(RuntimeBuildLog)
@@ -638,13 +643,7 @@ async def list_runtime_chunks(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid runtime_id format") from None
     uow = UnitOfWork(db)
-    runtime = await uow.runtimes.get(rid)
-    if runtime is None:
-        raise HTTPException(status_code=404, detail="Runtime not found")
-    if runtime.project_id:
-        await require_project_membership(str(runtime.project_id), current_user, db)
-    elif runtime.user_id != current_user.id and not current_user.is_superuser:
-        raise HTTPException(status_code=403, detail="Unauthorized")
+    await require_runtime_access(rid, current_user, db)
 
     result = await db.execute(
         select(RuntimeBuildChunk).where(RuntimeBuildChunk.runtime_id == rid)

@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
+from app.api.v1.dependencies_tenant import require_api_key_access, require_project_membership
 from app.core.database import get_session
 from app.events import NotificationEvent
 from app.models.apikeys import ApiKey
@@ -37,6 +38,11 @@ async def list_api_keys(
     runtime_id: Annotated[str | None, Query()] = None,
     db: AsyncSession = Depends(get_session),
 ) -> list[ApiKeyRead]:
+    if project_id is not None:
+        await require_project_membership(project_id, current_user, db)
+    if runtime_id is not None:
+        from app.api.v1.dependencies_tenant import require_runtime_access
+        await require_runtime_access(runtime_id, current_user, db)
     service = ApiKeyService(db)
     keys = await service.list_keys(
         project_id=project_id,
@@ -59,12 +65,7 @@ async def get_api_key(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid api key id")
 
-    key = await db.get(ApiKey, kid)
-    if key is None:
-        raise HTTPException(status_code=404, detail="API key not found")
-
-    if key.user_id and key.user_id != current_user.id and not current_user.is_superuser:
-        raise HTTPException(status_code=403, detail="Unauthorized")
+    key = await require_api_key_access(kid, current_user, db)
 
     return ApiKeyRead(
         id=key.id,
@@ -93,6 +94,7 @@ async def create_api_key(
 
     org_id = current_user.organization_id
     proj_id = body.project_id
+    runtime = None
 
     if proj_id is not None:
         try:
@@ -102,8 +104,30 @@ async def create_api_key(
         proj = await db.get(Project, pid)
         if proj is None:
             raise HTTPException(status_code=404, detail="Project not found")
-        if org_id is None:
-            org_id = proj.organization_id
+        if proj.organization_id != current_user.organization_id and not current_user.is_superuser:
+            raise HTTPException(status_code=403, detail="Cannot create an API key for another organization")
+        org_id = proj.organization_id
+
+    if body.runtime_id is not None:
+        from app.api.v1.dependencies_tenant import require_runtime_access
+
+        runtime = await require_runtime_access(body.runtime_id, current_user, db)
+        if runtime.project_id is not None:
+            if proj_id is not None and runtime.project_id != uuid.UUID(str(proj_id)):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Runtime does not belong to the selected project",
+                )
+            if proj_id is None:
+                proj_id = runtime.project_id
+        if runtime.organization_id is not None:
+            org_id = runtime.organization_id
+        body = body.model_copy(
+            update={"environment": runtime.environment or "development"}
+        )
+
+    if proj_id is not None and body.project_id != proj_id:
+        body = body.model_copy(update={"project_id": proj_id})
 
     service = ApiKeyService(db)
     try:
@@ -143,6 +167,7 @@ async def rotate_api_key(
 ) -> ApiKeyRotateResponse:
     service = ApiKeyService(db)
     try:
+        await require_api_key_access(key_id, current_user, db)
         result = await service.rotate_key(key_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -180,9 +205,7 @@ async def expire_api_key(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid api key id")
 
-    key = await db.get(ApiKey, kid)
-    if key is None:
-        raise HTTPException(status_code=404, detail="API key not found")
+    key = await require_api_key_access(kid, current_user, db)
 
     uow = UnitOfWork(db)
     try:
@@ -217,6 +240,7 @@ async def revoke_api_key(
 ) -> None:
     service = ApiKeyService(db)
     try:
+        await require_api_key_access(key_id, current_user, db)
         key = await service.revoke_key(key_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -248,9 +272,7 @@ async def delete_api_key(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid api key id")
 
-    key = await db.get(ApiKey, kid)
-    if key is None:
-        raise HTTPException(status_code=404, detail="API key not found")
+    key = await require_api_key_access(kid, current_user, db)
 
     uow = UnitOfWork(db)
     try:
@@ -269,6 +291,7 @@ async def get_api_key_usage(
 ) -> ApiKeyUsageResponse:
     service = ApiKeyService(db)
     try:
+        await require_api_key_access(key_id, current_user, db)
         result = await service.get_usage(key_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
@@ -285,6 +308,7 @@ async def update_api_key_scopes(
 ) -> ApiKeyRead:
     service = ApiKeyService(db)
     try:
+        await require_api_key_access(key_id, current_user, db)
         result = await service.update_scopes(key_id, body.scopes)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

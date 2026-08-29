@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
+from app.api.v1.dependencies_tenant import require_project_membership
 from app.core.database import get_session
 from app.models.users import User
 from app.models.billing import TransactionType
@@ -38,6 +39,14 @@ async def create_embeddings(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_session)],
 ) -> EmbeddingResponse:
+    project_uuid: uuid.UUID | None = None
+    if body.project_id:
+        try:
+            project_uuid = uuid.UUID(body.project_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid project id") from exc
+        await require_project_membership(body.project_id, current_user, db)
+
     texts = body.input if isinstance(body.input, list) else [body.input]
     token_count = sum(len(t.split()) for t in texts)
 
@@ -86,7 +95,7 @@ async def create_embeddings(
         request_id=request_id,
         idempotency_key=f"embedding:{request_id}",
         organization_id=current_user.organization_id,
-        project_id=uuid.UUID(body.project_id) if body.project_id else None,
+        project_id=project_uuid,
         resource_type="embedding",
         metadata={"model": body.model, "provider": body.provider, "texts_count": len(texts)},
     )
@@ -104,7 +113,7 @@ async def create_embeddings(
             operation="embeddings",
             cost=estimated_cost,
             organization_id=current_user.organization_id,
-            project_id=uuid.UUID(body.project_id) if body.project_id else None,
+            project_id=project_uuid,
             request_id=request_id,
             input_tokens=token_count,
             embedding_tokens=token_count,

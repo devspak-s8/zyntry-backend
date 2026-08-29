@@ -22,6 +22,7 @@ class SourceDocument(BaseModel):
 class RAGQuery(BaseModel):
     question: str
     project_id: str
+    user_id: str | None = None
     runtime_id: str | None = None
     top_k: int = Field(default=5, ge=1, le=20)
     filters: dict | None = None

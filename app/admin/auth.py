@@ -78,6 +78,8 @@ def create_access_token(admin_id: uuid.UUID, user_id: uuid.UUID, role: AdminRole
         "exp": now + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES),
         "type": "admin_access",
         "jti": str(uuid.uuid4()),
+        "iss": settings.ADMIN_JWT_ISSUER,
+        "aud": settings.ADMIN_JWT_AUDIENCE,
     }
     return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
@@ -91,13 +93,21 @@ def create_refresh_token(admin_id: uuid.UUID, user_id: uuid.UUID) -> str:
         "exp": now + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
         "type": "admin_refresh",
         "jti": str(uuid.uuid4()),
+        "iss": settings.ADMIN_JWT_ISSUER,
+        "aud": settings.ADMIN_JWT_AUDIENCE,
     }
     return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
 
 def decode_token(token: str) -> dict[str, Any]:
     try:
-        return jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
+        return jwt.decode(
+            token,
+            settings.JWT_SECRET,
+            algorithms=[settings.JWT_ALGORITHM],
+            audience=settings.ADMIN_JWT_AUDIENCE,
+            issuer=settings.ADMIN_JWT_ISSUER,
+        )
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired")
     except jwt.InvalidTokenError:
@@ -169,8 +179,23 @@ class AdminAuth:
             ip_address=ip_address,
             user_agent=user_agent,
             expires_at=datetime.now(UTC) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES),
+            mfa_verified=admin_user.mfa_verified,
         )
         self.db.add(session)
+        # Persist the refresh token as a one-time, revocable session record as
+        # well. This enables rotation and prevents refresh-token reuse after
+        # logout or a security incident.
+        self.db.add(
+            AdminSession(
+                user_id=user.id,
+                admin_user_id=admin_user.id,
+                token_hash=hash_token(refresh_token),
+                ip_address=ip_address,
+                user_agent=user_agent,
+                expires_at=datetime.now(UTC) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+                mfa_verified=admin_user.mfa_verified,
+            )
+        )
         await self.db.flush()
 
         return {
@@ -187,7 +212,10 @@ class AdminAuth:
         if payload.get("type") != "admin_access":
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token type")
 
-        admin_id = uuid.UUID(payload["admin_id"])
+        try:
+            admin_id = uuid.UUID(str(payload["admin_id"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin token") from exc
         token_hash = hash_token(token)
 
         result = await self.db.execute(select(AdminSession).where(AdminSession.token_hash == token_hash))
@@ -200,21 +228,77 @@ class AdminAuth:
         if admin_user is None or not admin_user.is_active:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Admin user inactive")
 
-        return {"admin_id": admin_id, "user_id": uuid.UUID(payload["user_id"]), "role": AdminRole(admin_user.role), "mfa_verified": payload.get("mfa_verified", False)}
+        try:
+            user_id = uuid.UUID(str(payload["user_id"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin token") from exc
+        if admin_user.user_id != user_id or session.admin_user_id != admin_id or session.user_id != user_id:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid admin token subject")
+        return {"admin_id": admin_id, "user_id": user_id, "role": AdminRole(admin_user.role), "mfa_verified": payload.get("mfa_verified", False)}
 
     async def refresh_access(self, refresh_token_str: str) -> dict[str, Any]:
         payload = decode_token(refresh_token_str)
         if payload.get("type") != "admin_refresh":
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token type")
 
-        admin_id = uuid.UUID(payload["admin_id"])
+        try:
+            admin_id = uuid.UUID(str(payload["admin_id"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token") from exc
+        refresh_hash = hash_token(refresh_token_str)
+        session_result = await self.db.execute(
+            select(AdminSession).where(AdminSession.token_hash == refresh_hash)
+        )
+        refresh_session = session_result.scalar_one_or_none()
+        refresh_expires_at = getattr(refresh_session, "expires_at", None)
+        if refresh_expires_at is not None and refresh_expires_at.tzinfo is None:
+            refresh_expires_at = refresh_expires_at.replace(tzinfo=UTC)
+        if (
+            refresh_session is None
+            or refresh_session.revoked
+            or refresh_expires_at is None
+            or refresh_expires_at <= datetime.now(UTC)
+            or refresh_session.admin_user_id != admin_id
+        ):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh session expired or revoked")
+
         result = await self.db.execute(select(AdminUser).where(AdminUser.id == admin_id))
         admin_user = result.scalar_one_or_none()
         if admin_user is None or not admin_user.is_active:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Admin user not found")
 
-        access_token = create_access_token(admin_user.id, uuid.UUID(payload["user_id"]), AdminRole(admin_user.role), admin_user.mfa_verified)
-        new_refresh = create_refresh_token(admin_user.id, uuid.UUID(payload["user_id"]))
+        try:
+            refresh_user_id = uuid.UUID(str(payload["user_id"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token") from exc
+        if admin_user.user_id != refresh_user_id:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token subject")
+
+        refresh_session.revoked = True
+
+        access_token = create_access_token(admin_user.id, refresh_user_id, AdminRole(admin_user.role), admin_user.mfa_verified)
+        new_refresh = create_refresh_token(admin_user.id, refresh_user_id)
+        # Refreshed access tokens must be represented by a revocable session,
+        # otherwise the admin dependencies correctly reject them as unknown.
+        self.db.add(
+            AdminSession(
+                user_id=refresh_user_id,
+                admin_user_id=admin_user.id,
+                token_hash=hash_token(access_token),
+                expires_at=datetime.now(UTC) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES),
+                mfa_verified=admin_user.mfa_verified,
+            )
+        )
+        self.db.add(
+            AdminSession(
+                user_id=refresh_user_id,
+                admin_user_id=admin_user.id,
+                token_hash=hash_token(new_refresh),
+                expires_at=datetime.now(UTC) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+                mfa_verified=admin_user.mfa_verified,
+            )
+        )
+        await self.db.flush()
         return {"access_token": access_token, "refresh_token": new_refresh, "token_type": "bearer", "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60, "role": AdminRole(admin_user.role).value, "mfa_verified": admin_user.mfa_verified}
 
     async def logout(self, token: str) -> dict[str, str]:
@@ -260,6 +344,14 @@ class AdminAuth:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid MFA code")
 
         admin_user.mfa_verified = True
+        active_sessions = await self.db.execute(
+            select(AdminSession).where(
+                AdminSession.admin_user_id == admin_id,
+                AdminSession.revoked == False,
+            )
+        )
+        for session in active_sessions.scalars().all():
+            session.mfa_verified = True
         await self.db.flush()
         return {"message": "MFA verified successfully"}
 

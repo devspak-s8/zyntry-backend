@@ -14,9 +14,17 @@ from app.models.webhook_subscriptions import WebhookSubscription
 from app.repositories import UnitOfWork
 from app.schemas.webhooks import WebhookDeliveryRead, WebhookSubscriptionCreate, WebhookSubscriptionRead
 from app.services.webhooks import WebhookService
+from app.api.v1.dependencies_tenant import require_project_membership
+from app.services.security.outbound import validate_outbound_url
 import uuid
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
+
+
+def _safe_secret(value: str | None) -> None:
+    # Webhook signing material is write-only. The caller receives it only
+    # during creation through a separate secure channel, never from reads.
+    return None
 
 
 @router.get("", response_model=list[WebhookSubscriptionRead])
@@ -29,6 +37,7 @@ async def list_webhooks(
         pid = uuid.UUID(project_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid project id")
+    await require_project_membership(project_id, current_user, db)
     service = WebhookService(db)
     subs = await service.list_subscriptions(pid)
     return [
@@ -37,7 +46,7 @@ async def list_webhooks(
             project_id=s.project_id,
             url=s.url,
             events=s.events,
-            secret=s.secret,
+            secret=_safe_secret(s.secret),
             active=s.active,
             last_delivery_at=s.last_delivery_at,
         )
@@ -56,6 +65,11 @@ async def create_webhook(
         pid = uuid.UUID(project_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid project id")
+    await require_project_membership(project_id, current_user, db)
+    try:
+        validate_outbound_url(body.url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     service = WebhookService(db)
     sub = await service.create_subscription(pid, body.url, body.events, body.secret)
     return WebhookSubscriptionRead(
@@ -63,7 +77,7 @@ async def create_webhook(
         project_id=sub.project_id,
         url=sub.url,
         events=sub.events,
-        secret=sub.secret,
+        secret=_safe_secret(sub.secret),
         active=sub.active,
         last_delivery_at=sub.last_delivery_at,
     )
@@ -80,6 +94,10 @@ async def delete_webhook(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid webhook id")
     service = WebhookService(db)
+    sub = await service.get_subscription(wid)
+    if sub is None:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+    await require_project_membership(str(sub.project_id), current_user, db)
     await service.delete_subscription(wid)
 
 
@@ -136,6 +154,10 @@ async def list_webhook_deliveries(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid webhook id")
     service = WebhookService(db)
+    sub = await service.get_subscription(wid)
+    if sub is None:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+    await require_project_membership(str(sub.project_id), current_user, db)
     deliveries = await service.list_deliveries(wid)
     return [
         WebhookDeliveryRead(
@@ -166,5 +188,9 @@ async def replay_webhook_delivery(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid id")
     service = WebhookService(db)
+    sub = await service.get_subscription(wid)
+    if sub is None:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+    await require_project_membership(str(sub.project_id), current_user, db)
     result = await service.replay_delivery(wid, did)
     return result

@@ -47,6 +47,8 @@ async def get_api_key_user(
     user = await db.get(User, api_key.user_id)
     if user is None or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
+    if api_key.organization_id is not None and api_key.organization_id != user.organization_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
 
     api_key.usage_count = (api_key.usage_count or 0) + 1
     request.state.api_key_id = api_key.id
@@ -77,7 +79,14 @@ async def get_action_auth(
                 and (not api_key.expires_at or api_key.expires_at > datetime.now(UTC))
             ):
                 user = await db.get(User, api_key.user_id)
-                if user and user.is_active:
+                if (
+                    user
+                    and user.is_active
+                    and (
+                        api_key.organization_id is None
+                        or api_key.organization_id == user.organization_id
+                    )
+                ):
                     api_key.usage_count = (api_key.usage_count or 0) + 1
                     await db.commit()
                     return ActionAuthContext(

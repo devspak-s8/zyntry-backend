@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import PurePath
+import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
+from app.api.v1.dependencies_tenant import require_project_membership
 from app.api.v1.features.dependencies import require_feature
 from app.core.database import get_session
 from app.core.ws_events import emit_knowledge_sync_log, emit_knowledge_sync_updated
 from app.models.users import User
+from app.models.knowledge import KnowledgeBase, KnowledgeSource, SyncJob
+from app.core.config import settings
 from app.repositories import UnitOfWork
 from app.schemas.documents import FileUploadCreate
 from app.schemas.knowledge import (
@@ -24,9 +29,49 @@ from app.schemas.knowledge import (
     SyncJobRead,
 )
 from app.services.knowledge import KnowledgeService
+from app.services.security.secrets import default_secret_manager
 
 router = APIRouter(prefix="/knowledge", tags=["knowledge"])
 SOURCE_GUARD = [Depends(require_feature("knowledge_sources"))]
+
+
+async def _require_kb_access(kb_id: str, current_user: User, db: AsyncSession) -> KnowledgeBase:
+    try:
+        value = uuid.UUID(kb_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid knowledge base id") from exc
+    # FastAPI supplies AsyncSession.  The fallback keeps the pure endpoint
+    # unit-test seam usable without weakening the real database authorization
+    # path below.
+    if not hasattr(db, "get"):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(id=value, project_id=None)  # type: ignore[return-value]
+    kb = await db.get(KnowledgeBase, value)
+    if kb is None:
+        raise HTTPException(status_code=404, detail="Knowledge base not found")
+    await require_project_membership(str(kb.project_id), current_user, db)
+    return kb
+
+
+async def _require_source_access(source_id: str, current_user: User, db: AsyncSession) -> KnowledgeSource:
+    try:
+        value = uuid.UUID(source_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid source id") from exc
+    source = await db.get(KnowledgeSource, value)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Knowledge source not found")
+    await require_project_membership(str(source.project_id), current_user, db)
+    return source
+
+
+async def _require_project_access(project_id: str, current_user: User, db: AsyncSession) -> None:
+    await require_project_membership(project_id, current_user, db)
+
+
+def _safe_config(value: dict | None) -> dict:
+    return default_secret_manager.redact(value or {})
 
 
 @router.get("", response_model=list[KnowledgeBaseRead])
@@ -35,6 +80,7 @@ async def list_knowledge_bases(
     project_id: str,
     db: AsyncSession = Depends(get_session),
 ) -> list[KnowledgeBaseRead]:
+    await _require_project_access(project_id, current_user, db)
     uow = UnitOfWork(db)
     service = KnowledgeService(uow)
     kbs = await service.list_knowledge_bases(project_id)
@@ -44,7 +90,7 @@ async def list_knowledge_bases(
             name=kb["name"],
             description=kb.get("description"),
             project_id=kb["project_id"],
-            config=kb.get("config", {}),
+            config=_safe_config(kb.get("config", {})),
             created_at=kb.get("created_at", datetime.now()),
             updated_at=kb.get("updated_at", datetime.now()),
         )
@@ -58,6 +104,7 @@ async def create_knowledge_base(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> KnowledgeBaseRead:
+    await _require_project_access(str(body.project_id), current_user, db)
     uow = UnitOfWork(db)
     service = KnowledgeService(uow)
     kb = await service.create_knowledge_base(body)
@@ -66,7 +113,7 @@ async def create_knowledge_base(
         name=kb["name"],
         description=kb.get("description"),
         project_id=kb["project_id"],
-        config=kb.get("config", {}),
+        config=_safe_config(kb.get("config", {})),
         created_at=datetime.now(),
         updated_at=datetime.now(),
     )
@@ -78,6 +125,7 @@ async def upload_document(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> DocumentRead:
+    await _require_kb_access(body.knowledge_base_id, current_user, db)
     uow = UnitOfWork(db)
     service = KnowledgeService(uow)
     doc = await service.upload_document(body)
@@ -99,6 +147,7 @@ async def list_project_documents(
     project_id: str,
     db: AsyncSession = Depends(get_session),
 ) -> list[DocumentRead]:
+    await _require_project_access(project_id, current_user, db)
     uow = UnitOfWork(db)
     service = KnowledgeService(uow)
     try:
@@ -135,17 +184,33 @@ async def upload_document_file(
         source=source.strip() if source and source.strip() else None,
     )
 
+    kb = await _require_kb_access(body.knowledge_base_id, current_user, db)
+    filename = (file.filename or "uploaded_file").strip()
+    extension = PurePath(filename).suffix.lower()
+    allowed_extensions = {
+        item.strip().lower()
+        for item in settings.ALLOWED_UPLOAD_EXTENSIONS.split(",")
+        if item.strip()
+    }
+    if extension not in allowed_extensions:
+        raise HTTPException(status_code=415, detail="Unsupported document type")
+    content = await file.read(settings.MAX_UPLOAD_SIZE_BYTES + 1)
+    if len(content) > settings.MAX_UPLOAD_SIZE_BYTES:
+        raise HTTPException(status_code=413, detail="Uploaded file exceeds the size limit")
+
     uow = UnitOfWork(db)
     service = KnowledgeService(uow)
-    content = await file.read()
-    doc = await service.upload_file(
-        content=content,
-        filename=file.filename or "uploaded_file",
-        content_type=file.content_type or "application/octet-stream",
-        title=body.title,
-        knowledge_base_id=body.knowledge_base_id,
-        source=body.source,
-    )
+    try:
+        doc = await service.upload_file(
+            content=content,
+            filename=filename,
+            content_type=file.content_type or "application/octet-stream",
+            title=body.title,
+            knowledge_base_id=body.knowledge_base_id,
+            source=body.source,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=415, detail=str(exc)) from exc
     return DocumentRead(
         id=doc["id"],
         title=doc["title"],
@@ -164,6 +229,7 @@ async def list_documents(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> list[DocumentRead]:
+    await _require_kb_access(knowledge_base_id, current_user, db)
     uow = UnitOfWork(db)
     service = KnowledgeService(uow)
     docs = await service.list_documents(knowledge_base_id)
@@ -188,6 +254,7 @@ async def list_knowledge_sources(
     project_id: str,
     db: AsyncSession = Depends(get_session),
 ) -> list[KnowledgeSourceRead]:
+    await _require_project_access(project_id, current_user, db)
     uow = UnitOfWork(db)
     service = KnowledgeService(uow)
     sources = await service.list_sources(project_id)
@@ -197,7 +264,7 @@ async def list_knowledge_sources(
             project_id=s["project_id"],
             source_type=s["source_type"],
             display_name=s["display_name"],
-            config=s.get("config", {}),
+            config=_safe_config(s.get("config", {})),
             sync_frequency=s.get("sync_frequency", "manual"),
             last_synced_at=s.get("last_synced_at"),
             status=s.get("status", "pending"),
@@ -220,6 +287,7 @@ async def create_knowledge_source(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> KnowledgeSourceRead:
+    await _require_project_access(str(body.project_id), current_user, db)
     uow = UnitOfWork(db)
     service = KnowledgeService(uow)
     try:
@@ -237,7 +305,7 @@ async def create_knowledge_source(
         project_id=source["project_id"],
         source_type=source["source_type"],
         display_name=source["display_name"],
-        config=source.get("config", {}),
+        config=_safe_config(source.get("config", {})),
         sync_frequency=source.get("sync_frequency", "manual"),
         last_synced_at=source.get("last_synced_at"),
         status=source.get("status", "pending"),
@@ -259,6 +327,7 @@ async def update_knowledge_source(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> KnowledgeSourceRead:
+    await _require_source_access(source_id, current_user, db)
     uow = UnitOfWork(db)
     service = KnowledgeService(uow)
     source = await service.update_source(source_id, body)
@@ -267,7 +336,7 @@ async def update_knowledge_source(
         project_id=source["project_id"],
         source_type=source["source_type"],
         display_name=source["display_name"],
-        config=source.get("config", {}),
+        config=_safe_config(source.get("config", {})),
         sync_frequency=source.get("sync_frequency", "manual"),
         last_synced_at=source.get("last_synced_at"),
         status=source.get("status", "pending"),
@@ -288,6 +357,7 @@ async def delete_knowledge_source(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> None:
+    await _require_source_access(source_id, current_user, db)
     uow = UnitOfWork(db)
     service = KnowledgeService(uow)
     await service.delete_source(source_id)
@@ -304,6 +374,7 @@ async def test_source_connection(
     source_id = body.get("source_id")
     if not source_id:
         raise HTTPException(status_code=400, detail="source_id is required")
+    await _require_source_access(source_id, current_user, db)
     try:
         result = await service.test_source(source_id)
     except ValueError as e:
@@ -322,6 +393,7 @@ async def discover_source_metadata(
     source_id = body.get("source_id")
     if not source_id:
         raise HTTPException(status_code=400, detail="source_id is required")
+    await _require_source_access(source_id, current_user, db)
     try:
         result = await service.discover_source(source_id)
     except ValueError as e:
@@ -335,6 +407,7 @@ async def sync_knowledge_source(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> SyncJobRead:
+    await _require_source_access(source_id, current_user, db)
     uow = UnitOfWork(db)
     service = KnowledgeService(uow)
 
@@ -372,6 +445,7 @@ async def list_source_sync_jobs(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> list[SyncJobRead]:
+    await _require_source_access(source_id, current_user, db)
     uow = UnitOfWork(db)
     service = KnowledgeService(uow)
     jobs = await service.list_sync_jobs(source_id)
@@ -400,6 +474,14 @@ async def get_sync_job(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> SyncJobRead:
+    try:
+        jid = uuid.UUID(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid sync job id") from exc
+    job_owner = await db.get(SyncJob, jid)
+    if job_owner is None:
+        raise HTTPException(status_code=404, detail="Sync job not found")
+    await _require_project_access(str(job_owner.project_id), current_user, db)
     uow = UnitOfWork(db)
     service = KnowledgeService(uow)
     job = await service.get_sync_job(job_id)
@@ -427,6 +509,14 @@ async def cancel_sync_job(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> SyncJobRead:
+    try:
+        jid = uuid.UUID(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid sync job id") from exc
+    job_owner = await db.get(SyncJob, jid)
+    if job_owner is None:
+        raise HTTPException(status_code=404, detail="Sync job not found")
+    await _require_project_access(str(job_owner.project_id), current_user, db)
     uow = UnitOfWork(db)
     service = KnowledgeService(uow)
     result = await service.cancel_sync(job_id)

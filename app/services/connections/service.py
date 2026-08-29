@@ -163,6 +163,18 @@ class ConnectionService:
         end_user_id = source_config.get("end_user_id")
         connection_mode = state_obj.purpose or source_config.get("connection_mode") or "zyntry_managed"
 
+        if runtime_id:
+            runtime = await self.uow.runtimes.get(runtime_id)
+            owner = await self.uow.users.get(state_obj.user_id) if state_obj.user_id else None
+            if runtime is None or owner is None:
+                raise ValueError("OAuth runtime is no longer available")
+            if runtime.project_id:
+                project = await self.uow.projects.get(runtime.project_id)
+                if project is None or project.organization_id != owner.organization_id:
+                    raise ValueError("OAuth runtime is not authorized for this user")
+            elif runtime.user_id != owner.id:
+                raise ValueError("OAuth runtime is not authorized for this user")
+
         # Encrypt token payload inside structured envelope
         secret_payload = json.dumps({
             "access_token": token_data.get("access_token"),

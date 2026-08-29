@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import json
-import re
 import asyncio
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 
+from app.admin.auth import decode_token as decode_admin_token
 from app.admin.middleware import AdminSecurityMiddleware
+from app.admin.models import AdminSession, AdminUser
 from app.admin.services.feature_seeding import seed_system_feature_flags
 from app.admin.websocket_manager import admin_ws_manager
 from app.api import router as api_router
@@ -36,13 +38,12 @@ def _parse_cors_origins(value: str) -> list[str]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    configure_logging()
-    await init_models()
-    async with async_session_factory() as db:
-        await seed_system_feature_flags(db)
-        await seed_oauth_tool_providers(db)
-        await seed_pricing_catalog(db)
-    if not settings.APP_DEBUG:
+    # Never allow a production process to start with development behaviour.
+    # APP_DEBUG bypassed the secret/database checks below in the past, which
+    # made a mistyped APP_ENV silently expose a development configuration.
+    if settings.is_production and settings.APP_DEBUG:
+        raise RuntimeError("APP_DEBUG must be false when APP_ENV=production")
+    if settings.is_production or not settings.APP_DEBUG:
         missing = []
         if not settings.SECRET_KEY:
             missing.append("SECRET_KEY")
@@ -50,7 +51,9 @@ async def lifespan(app: FastAPI):
             missing.append("JWT_SECRET")
         if not settings.ENCRYPTION_KEY:
             missing.append("ENCRYPTION_KEY")
-        if not settings.DATABASE_URL or settings.DATABASE_URL in ("postgresql+asyncpg://zyntra:zyntra@localhost:5432/zyntra",):
+        if not settings.DATABASE_URL or settings.DATABASE_URL in (
+            "postgresql+asyncpg://zyntra:zyntra@localhost:5432/zyntra",
+        ):
             missing.append("DATABASE_URL")
         if missing:
             msg = (
@@ -58,6 +61,13 @@ async def lifespan(app: FastAPI):
                 f"for production: {', '.join(missing)}"
             )
             raise RuntimeError(msg)
+
+    configure_logging()
+    await init_models()
+    async with async_session_factory() as db:
+        await seed_system_feature_flags(db)
+        await seed_oauth_tool_providers(db)
+        await seed_pricing_catalog(db)
     from app.core.runtime_events import consume_runtime_events
 
     runtime_event_task = asyncio.create_task(consume_runtime_events(manager.broadcast))
@@ -97,6 +107,13 @@ class ConnectionManager:
                 self.disconnect(connection)
 
     async def broadcast(self, message: dict) -> None:
+        # Runtime events carry their owner so a status transition cannot be
+        # observed by every connected tenant. Events without an owner remain
+        # broadcast-compatible for legacy system notifications.
+        owner_user_id = message.get("user_id")
+        if owner_user_id:
+            await self.send_to_user(message, str(owner_user_id))
+            return
         for connections in list(self.active_connections.values()):
             for connection in connections[:]:
                 try:
@@ -155,25 +172,60 @@ def create_app() -> FastAPI:
 
     @app.websocket("/ws/logs")
     async def websocket_logs(websocket: WebSocket):
-        await manager.connect(websocket)
-        try:
-            while True:
-                await websocket.receive_text()
-        except WebSocketDisconnect:
-            manager.disconnect(websocket)
+        await _handle_client_websocket(websocket)
 
     @app.websocket("/ws/runtimes")
     async def websocket_runtimes(websocket: WebSocket):
-        await manager.connect(websocket)
-        try:
-            while True:
-                await websocket.receive_text()
-        except WebSocketDisconnect:
-            manager.disconnect(websocket)
+        await _handle_client_websocket(websocket)
 
     @app.websocket("/ws/admin")
     async def websocket_admin(websocket: WebSocket):
-        await admin_ws_manager.connect(websocket, token="")
+        origin = websocket.headers.get("origin", "")
+        allowed_origins = set(_parse_cors_origins(settings.CORS_ORIGINS))
+        if origin and origin not in allowed_origins:
+            await websocket.close(code=4003, reason="Origin not allowed")
+            return
+
+        auth_header = websocket.headers.get("authorization", "")
+        token = auth_header[7:] if auth_header.startswith("Bearer ") else ""
+        if not token:
+            await websocket.close(code=4001, reason="Not authenticated")
+            return
+        try:
+            payload = decode_admin_token(token)
+            if payload.get("type") != "admin_access":
+                raise ValueError("invalid token type")
+            admin_id = uuid.UUID(str(payload["admin_id"]))
+            user_id = uuid.UUID(str(payload["user_id"]))
+        except (KeyError, TypeError, ValueError, HTTPException):
+            await websocket.close(code=4001, reason="Invalid token")
+            return
+
+        async with async_session_factory() as db:
+            result = await db.execute(
+                select(AdminSession).where(AdminSession.token_hash == hash_token(token))
+            )
+            admin_session = result.scalar_one_or_none()
+            result = await db.execute(select(AdminUser).where(AdminUser.id == admin_id))
+            admin_user = result.scalar_one_or_none()
+            admin_expires_at = getattr(admin_session, "expires_at", None)
+            if admin_expires_at is not None and admin_expires_at.tzinfo is None:
+                from datetime import UTC
+                admin_expires_at = admin_expires_at.replace(tzinfo=UTC)
+            if (
+                admin_session is None
+                or admin_session.revoked
+                or admin_expires_at is None
+                or admin_expires_at <= now()
+                or admin_session.admin_user_id != admin_id
+                or admin_session.user_id != user_id
+                or admin_user is None
+                or not admin_user.is_active
+            ):
+                await websocket.close(code=4001, reason="Invalid session")
+                return
+
+        await admin_ws_manager.connect(websocket, token=token)
         try:
             while True:
                 data = await websocket.receive_text()
@@ -188,12 +240,17 @@ def create_app() -> FastAPI:
 
     async def _handle_client_websocket(websocket: WebSocket):
         origin = websocket.headers.get("origin", "")
-        allowed_regex = re.compile(r"https?://(localhost|zyntry\.space|.*\.zyntry\.space|.*\.railway\.app|.*\.railway\.internal)(:\d+)?")
-        if origin and not allowed_regex.match(origin):
+        allowed_origins = set(_parse_cors_origins(settings.CORS_ORIGINS))
+        if origin and origin not in allowed_origins:
             await websocket.close(code=4003, reason="Origin not allowed")
             return
 
-        session_token = websocket.cookies.get("zyntra_session") or websocket.query_params.get("token")
+        # Tokens in query strings leak through browser history, reverse-proxy
+        # logs and referrers. Browser clients already send the session cookie;
+        # non-browser clients may use the Authorization header.
+        auth_header = websocket.headers.get("authorization", "")
+        bearer_token = auth_header[7:] if auth_header.startswith("Bearer ") else None
+        session_token = websocket.cookies.get("zyntra_session") or bearer_token
         if not session_token:
             await websocket.close(code=4001, reason="Not authenticated")
             return
@@ -205,7 +262,11 @@ def create_app() -> FastAPI:
             )
             session_obj = result.scalar_one_or_none()
 
-            if session_obj is None or session_obj.revoked or session_obj.expires_at <= now():
+            expires_at = getattr(session_obj, "expires_at", None)
+            if expires_at is not None and expires_at.tzinfo is None:
+                from datetime import UTC
+                expires_at = expires_at.replace(tzinfo=UTC)
+            if session_obj is None or session_obj.revoked or expires_at is None or expires_at <= now():
                 await websocket.close(code=4001, reason="Invalid session")
                 return
 

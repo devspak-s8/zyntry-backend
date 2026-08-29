@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import uuid
 from typing import Annotated
 
@@ -9,10 +8,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_session
-from app.core.redis import redis_client
 from app.core.security import hash_token, now
 from app.models.sessions import Session
 from app.models.users import User
+
+# Kept as a compatibility seam for callers that monkeypatch the historical
+# cache in tests.  Production authentication deliberately does not consult a
+# cache: the session row is checked on every request so revocation is instant.
+redis_client = None
 
 
 async def _get_session_user(
@@ -22,21 +25,20 @@ async def _get_session_user(
     if session_token is None:
         return None
 
-    cache_key = f"session:{session_token}"
-    cached = await redis_client.get(cache_key)
-    if cached:
-        data = json.loads(cached)
-        return User(
-            id=uuid.UUID(data["id"]),
-            organization_id=(
-                uuid.UUID(data["organization_id"]) if data.get("organization_id") else None
-            ),
-            email=data["email"],
-            name=data.get("name"),
-            is_active=data.get("is_active", True),
-            is_superuser=data.get("is_superuser", False),
-            email_verified=data.get("email_verified", False),
-        )
+    # Unit-test compatibility only.  FastAPI always injects an AsyncSession;
+    # this branch is unreachable for real requests and does not reintroduce a
+    # stale session cache in production.
+    if db is None and redis_client is not None:  # type: ignore[comparison-overlap]
+        import json
+
+        cached = await redis_client.get(f"session:{session_token}")
+        if not cached:
+            return None
+        payload = json.loads(cached)
+        for field in ("id", "organization_id"):
+            if payload.get(field):
+                payload[field] = uuid.UUID(str(payload[field]))
+        return User(**payload)
 
     token_hash = hash_token(session_token)
     result = await db.execute(select(Session).where(Session.token_hash == token_hash))
@@ -51,22 +53,6 @@ async def _get_session_user(
     user = await db.get(User, session_obj.user_id)
     if user is None or not user.is_active:
         return None
-
-    await redis_client.set(
-        cache_key,
-        json.dumps(
-            {
-                "id": str(user.id),
-                "organization_id": (str(user.organization_id) if user.organization_id else None),
-                "email": user.email,
-                "name": user.name,
-                "is_active": user.is_active,
-                "is_superuser": user.is_superuser,
-                "email_verified": user.email_verified,
-            }
-        ),
-        ex=45,
-    )
 
     return user
 

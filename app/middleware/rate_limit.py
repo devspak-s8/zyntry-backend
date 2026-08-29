@@ -86,9 +86,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if request.url.path == "/health" or not request.url.path.startswith("/api"):
             return await call_next(request)
 
-        if request.headers.get("content-type", "").startswith("multipart/form-data"):
-            return await call_next(request)
-
         user_id = ""
         auth_header = request.headers.get("authorization", "")
         if auth_header.startswith("Bearer "):

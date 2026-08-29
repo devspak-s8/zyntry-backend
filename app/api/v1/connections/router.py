@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
+from app.api.v1.dependencies_tenant import require_runtime_access
 from app.core.database import get_session
 from app.core.ws_events import emit_integration_connection_updated
 from app.models.users import User
@@ -54,6 +55,8 @@ async def authorize_connection(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> ConnectionAuthorizeResponse:
+    if body.runtime_id:
+        await require_runtime_access(body.runtime_id, current_user, db)
     uow = UnitOfWork(db)
     service = ConnectionService(uow)
     try:
@@ -107,6 +110,9 @@ async def create_direct_connection(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> IntegrationConnectionRead:
+    if body.runtime_id:
+        await require_runtime_access(body.runtime_id, current_user, db)
+        body = body.model_copy(update={"end_user_id": body.end_user_id})
     uow = UnitOfWork(db)
     service = ConnectionService(uow)
     try:
@@ -128,6 +134,8 @@ async def list_connections(
     connection_mode: Annotated[str | None, Query()] = None,
     db: AsyncSession = Depends(get_session),
 ) -> list[IntegrationConnectionRead]:
+    if runtime_id:
+        await require_runtime_access(runtime_id, current_user, db)
     uow = UnitOfWork(db)
     service = ConnectionService(uow)
     conns = await service.list_connections(
@@ -157,7 +165,9 @@ async def get_connection(
     if conn is None:
         raise HTTPException(status_code=404, detail="Connection not found")
     if conn.user_id and conn.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Unauthorized access to connection")
+        raise HTTPException(status_code=404, detail="Connection not found")
+    if conn.runtime_id:
+        await require_runtime_access(conn.runtime_id, current_user, db)
 
     return _to_read_dto(conn)
 
@@ -179,6 +189,8 @@ async def delete_connection(
     if conn is None:
         raise HTTPException(status_code=404, detail="Connection not found")
     if conn.user_id and conn.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Unauthorized access to connection")
+        raise HTTPException(status_code=404, detail="Connection not found")
+    if conn.runtime_id:
+        await require_runtime_access(conn.runtime_id, current_user, db)
 
     await service.revoke_connection(cid)

@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
+from app.api.v1.dependencies_tenant import require_project_membership, require_runtime_access
 from app.core.database import get_session
 from app.models.users import User
 from app.models.billing import TransactionType
@@ -65,6 +66,11 @@ async def chat_completions(
     project_id = body.project_id or ""
     if not project_id:
         raise HTTPException(status_code=400, detail="project_id is required for RAG")
+    project = await require_project_membership(project_id, current_user, db)
+    if body.runtime_id:
+        runtime = await require_runtime_access(body.runtime_id, current_user, db)
+        if runtime.project_id != project.id:
+            raise HTTPException(status_code=404, detail="Runtime not found for this project")
 
     input_violations = guardrail_service.validate_input(question, body.json_schema)
     if input_violations:
@@ -73,6 +79,7 @@ async def chat_completions(
     rag_query = RAGQuery(
         question=question,
         project_id=project_id,
+        user_id=str(current_user.id),
         runtime_id=body.runtime_id,
         top_k=body.top_k,
         filters=body.filters,

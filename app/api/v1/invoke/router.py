@@ -27,6 +27,8 @@ from app.services.metered_billing import InsufficientBalanceError, MeteredBillin
 from app.services.guardrails import GuardrailService
 from app.services.model_router import ModelRouter, RoutingGoal, RoutingPreference
 from app.services.oauth.service import OAuthService
+from app.services.security.outbound import validate_outbound_url
+from app.services.security.secrets import default_secret_manager
 
 router = APIRouter()
 guardrail_service = GuardrailService()
@@ -135,15 +137,17 @@ async def _execute_tool(tool: Any, arguments: dict) -> dict:
         return {"name": tool.name, "status": "skipped", "reason": "no_implementation"}
     if impl.startswith("http://") or impl.startswith("https://"):
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.post(impl, json=arguments)
+            url = validate_outbound_url(impl)
+            async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
+                resp = await client.post(url, json=arguments)
                 return {"name": tool.name, "status": "success", "result": resp.json() if resp.headers.get("content-type") == "application/json" else resp.text, "status_code": resp.status_code}
         except Exception as exc:
             return {"name": tool.name, "status": "error", "error": str(exc)}
     if impl.startswith("webhook://"):
         url = impl[len("webhook://"):]
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
+            url = validate_outbound_url(url)
+            async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
                 resp = await client.post(url, json=arguments)
                 return {"name": tool.name, "status": "success", "result": resp.json() if resp.headers.get("content-type") == "application/json" else resp.text, "status_code": resp.status_code}
         except Exception as exc:
@@ -188,6 +192,11 @@ async def invoke(
     api_key = await db.get(ApiKey, api_key_id) if api_key_id else None
     if api_key is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
+    key_scopes = set(api_key.scopes or [])
+    if "read" not in key_scopes and "*" not in key_scopes:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="API key lacks read scope")
+    if body.actions and "write" not in key_scopes and "*" not in key_scopes:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="API key lacks write scope")
     if api_key.project_id and api_key.project_id != project.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="API key is not authorized for this project")
     if api_key.runtime_id and (runtime is None or api_key.runtime_id != runtime.id):
@@ -207,7 +216,10 @@ async def invoke(
             "model": runtime.model,
             "embedding_model": runtime.embedding_model,
             "vector_store": runtime.vector_store,
-            "config": runtime.config,
+            # Runtime configuration can contain legacy/generated credentials.
+            # Invocation telemetry is user-visible, so never echo those
+            # values even when a runtime predates the worker fix.
+            "config": default_secret_manager.redact(runtime.config or {}),
             "status": runtime.status,
         }
         events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Runtime Loaded", "runtime_id": str(runtime.id), "cached": False})

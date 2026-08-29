@@ -330,11 +330,13 @@ class OAuthService:
 
     async def _validate_state(self, provider_name: str, state: str) -> OAuthState:
         result = await self.uow.session.execute(
-            select(OAuthState).where(
+            select(OAuthState)
+            .where(
                 OAuthState.provider == provider_name,
                 OAuthState.state == state,
                 OAuthState.expires_at > datetime.now(UTC),
             )
+            .with_for_update()
         )
         state_obj = result.scalars().first()
         if state_obj is None:

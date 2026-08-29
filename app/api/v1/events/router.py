@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.api.v1.dependencies import get_current_user
+from app.api.v1.dependencies_tenant import require_project_membership
 from app.core.database import get_session
 from app.models.users import User
 from app.models.events import Event
@@ -32,7 +33,14 @@ async def list_events(
             pid = uuid.UUID(project_id)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid project id")
+        await require_project_membership(project_id, current_user, db)
         stmt = stmt.where(Event.project_id == pid)
+    elif current_user.organization_id is not None:
+        # Events are tenant data.  Never expose the global event stream to a
+        # caller who did not explicitly scope it to a project.
+        stmt = stmt.where(Event.organization_id == current_user.organization_id)
+    else:
+        stmt = stmt.where(Event.organization_id.is_(None), Event.project_id.is_(None))
 
     result = await db.execute(stmt)
     events = result.scalars().all()

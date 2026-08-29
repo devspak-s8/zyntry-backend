@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
+from app.api.v1.dependencies_tenant import require_project_membership
 from app.core.database import get_session
 from app.core.ws_events import emit_provider_updated
 from app.events import NotificationEvent
@@ -58,6 +59,11 @@ async def sync_provider(
     db: AsyncSession = Depends(get_session),
 ) -> dict:
     uow = UnitOfWork(db)
+    connection = await uow.providers.get(connection_id)
+    if connection is None:
+        raise HTTPException(status_code=404, detail="Provider connection not found")
+    if connection.project_id:
+        await require_project_membership(str(connection.project_id), current_user, db)
     service = ProviderService(uow)
     result = await service.sync(connection_id)
     return result
@@ -70,6 +76,11 @@ async def refresh_provider_credentials(
     db: AsyncSession = Depends(get_session),
 ) -> dict:
     uow = UnitOfWork(db)
+    connection = await uow.providers.get(connection_id)
+    if connection is None:
+        raise HTTPException(status_code=404, detail="Provider connection not found")
+    if connection.project_id:
+        await require_project_membership(str(connection.project_id), current_user, db)
     service = ProviderService(uow)
     result = await service.refresh(connection_id)
     return result
@@ -82,6 +93,11 @@ async def get_provider_health(
     db: AsyncSession = Depends(get_session),
 ) -> dict:
     uow = UnitOfWork(db)
+    connection = await uow.providers.get(connection_id)
+    if connection is None:
+        raise HTTPException(status_code=404, detail="Provider connection not found")
+    if connection.project_id:
+        await require_project_membership(str(connection.project_id), current_user, db)
     service = ProviderService(uow)
     result = await service.get_health(connection_id)
     return result
@@ -98,9 +114,12 @@ async def list_provider_connections(
             uuid.UUID(project_id)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid project_id format") from None
+        await require_project_membership(project_id, current_user, db)
     uow = UnitOfWork(db)
     service = ProviderService(uow)
-    connections = await service.list_providers(project_id)
+    connections = await service.list_providers(
+        project_id, organization_id=str(current_user.organization_id) if not project_id else None
+    )
     return [
         ProviderConnectionRead(
             id=c["id"],
@@ -129,9 +148,12 @@ async def list_providers_with_models(
             uuid.UUID(project_id)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid project_id format") from None
+        await require_project_membership(project_id, current_user, db)
     uow = UnitOfWork(db)
     service = ProviderService(uow)
-    connections = await service.list_providers(project_id)
+    connections = await service.list_providers(
+        project_id, organization_id=str(current_user.organization_id) if not project_id else None
+    )
     discovery = get_model_discovery()
     all_providers = await discovery.discover_all_models()
     provider_model_map = {p["name"]: p for p in all_providers}
@@ -159,6 +181,10 @@ async def connect_provider(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> dict:
+    if body.project_id:
+        await require_project_membership(body.project_id, current_user, db)
+    if body.organization_id and str(body.organization_id) != str(current_user.organization_id):
+        raise HTTPException(status_code=403, detail="Cannot connect a provider for another organization")
     uow = UnitOfWork(db)
     service = ProviderService(uow)
     api_key = body.api_key
@@ -232,6 +258,8 @@ async def update_provider_connection(
     existing = await uow.providers.get(connection_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Provider connection not found")
+    if existing.project_id:
+        await require_project_membership(str(existing.project_id), current_user, db)
     updated = await uow.providers.update(
         existing, **{k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
     )
@@ -266,6 +294,8 @@ async def disconnect_provider(
     uow = UnitOfWork(db)
     connection = await uow.providers.get(connection_id)
     if connection:
+        if connection.project_id:
+            await require_project_membership(str(connection.project_id), current_user, db)
         project_id = str(connection.project_id) if connection.project_id else ""
         provider_name = connection.provider_name
         display_name = connection.display_name or provider_name

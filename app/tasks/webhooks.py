@@ -16,6 +16,7 @@ from app.core.database import run_async
 from app.models.webhook_deliveries import WebhookDelivery
 from app.models.webhook_subscriptions import WebhookSubscription
 from app.repositories.processed_webhook_events import ProcessedWebhookEventRepository
+from app.services.security.outbound import validate_outbound_url
 
 logger = logging.getLogger(__name__)
 
@@ -36,23 +37,25 @@ def deliver_webhook_task(self, subscription_id: str, event_type: str, data: dict
             if not sub or not sub.active:
                 return {"status": "skipped", "reason": "subscription_inactive"}
 
-            if not event_id:
-                event_id = f"evt_{uuid.uuid4().hex[:12]}"
+            # Keep the task argument immutable; assigning to it inside this
+            # nested coroutine previously made event_id a local variable and
+            # raised UnboundLocalError when callers omitted it.
+            delivery_event_id = event_id or f"evt_{uuid.uuid4().hex[:12]}"
 
             processed_repo = ProcessedWebhookEventRepository(session)
-            existing = await processed_repo.get_by_event_id(event_id)
+            existing = await processed_repo.get_by_event_id(delivery_event_id)
             if existing:
                 if existing.status == "processed":
-                    return {"status": "deduplicated", "event_id": event_id}
+                    return {"status": "deduplicated", "event_id": delivery_event_id}
                 if existing.status == "processing":
-                    return {"status": "in_progress", "event_id": event_id}
+                    return {"status": "in_progress", "event_id": delivery_event_id}
                 if existing.status == "failed":
                     retry_after = existing.received_at.timestamp() + _exponential_backoff(existing.error.count(str(existing.error)) if existing.error else 0)
                     if datetime.now(timezone.utc).timestamp() < retry_after:
-                        return {"status": "backoff", "event_id": event_id}
+                        return {"status": "backoff", "event_id": delivery_event_id}
 
-            processed_repo.create(
-                event_id=event_id,
+            await processed_repo.create(
+                event_id=delivery_event_id,
                 source="internal",
                 event_type=event_type,
                 status="processing",
@@ -62,7 +65,7 @@ def deliver_webhook_task(self, subscription_id: str, event_type: str, data: dict
             await session.commit()
 
             payload = {
-                "id": event_id,
+                "id": delivery_event_id,
                 "type": event_type,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "project_id": str(sub.project_id),
@@ -80,9 +83,17 @@ def deliver_webhook_task(self, subscription_id: str, event_type: str, data: dict
             attempts = self.request.retries + 1
 
             try:
+                # Re-validate at delivery time as well as at creation. This
+                # protects subscriptions created before SSRF validation was
+                # introduced and prevents DNS changes from turning a public
+                # URL into a private destination.
+                target_url = validate_outbound_url(sub.url)
                 start = datetime.now(timezone.utc)
-                async with httpx.AsyncClient(timeout=sub.timeout_seconds) as client:
-                    response = await client.post(sub.url, json=payload)
+                async with httpx.AsyncClient(
+                    timeout=sub.timeout_seconds,
+                    follow_redirects=False,
+                ) as client:
+                    response = await client.post(target_url, json=payload)
                     latency_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
                     response_status = response.status_code
                     response_body = response.text[:4096] if response.text else None
@@ -100,10 +111,10 @@ def deliver_webhook_task(self, subscription_id: str, event_type: str, data: dict
                     session.add(delivery)
 
                     if response.status_code >= 400:
-                        logger.warning("Webhook delivery failed: %s -> %s", sub.url, response.status_code)
+                        logger.warning("Webhook delivery failed for subscription %s -> %s", subscription_id, response.status_code)
                         await session.commit()
                         processed_repo = ProcessedWebhookEventRepository(session)
-                        processed = await processed_repo.get_by_event_id(event_id)
+                        processed = await processed_repo.get_by_event_id(delivery_event_id)
                         if processed:
                             processed.status = "failed"
                             processed.error = f"HTTP {response.status_code}: {response_body[:200]}"
@@ -112,7 +123,7 @@ def deliver_webhook_task(self, subscription_id: str, event_type: str, data: dict
             except Exception as exc:
                 logger.error("Webhook delivery error: %s", exc)
                 processed_repo = ProcessedWebhookEventRepository(session)
-                processed = await processed_repo.get_by_event_id(event_id)
+                processed = await processed_repo.get_by_event_id(delivery_event_id)
                 if processed:
                     processed.status = "failed"
                     processed.error = str(exc)
@@ -120,11 +131,11 @@ def deliver_webhook_task(self, subscription_id: str, event_type: str, data: dict
                 self.retry(exc=exc, countdown=_exponential_backoff(self.request.retries))
 
             processed_repo = ProcessedWebhookEventRepository(session)
-            processed = await processed_repo.get_by_event_id(event_id)
+            processed = await processed_repo.get_by_event_id(delivery_event_id)
             if processed:
                 processed.status = "processed"
                 await session.commit()
 
-            return {"status": "delivered", "event_id": event_id, "attempts": attempts}
+            return {"status": "delivered", "event_id": delivery_event_id, "attempts": attempts}
 
     return run_async(_deliver())

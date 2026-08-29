@@ -16,8 +16,10 @@ class AdminWebSocketManager:
 
     async def connect(self, websocket: WebSocket, token: str) -> None:
         await websocket.accept()
-        query_token = websocket.query_params.get("token", "")
-        auth_token = token or query_token
+        # Admin credentials must arrive in the Authorization header. Query
+        # string tokens are routinely copied into access logs and browser
+        # history, so never accept them here.
+        auth_token = token
 
         if not auth_token:
             await websocket.close(code=4001, reason="Not authenticated")
@@ -25,6 +27,9 @@ class AdminWebSocketManager:
 
         try:
             payload = decode_token(auth_token)
+            if payload.get("type") != "admin_access":
+                await websocket.close(code=4001, reason="Invalid token type")
+                return
             admin_id = payload.get("admin_id")
             if not admin_id:
                 await websocket.close(code=4001, reason="Invalid token")

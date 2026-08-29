@@ -9,6 +9,7 @@ import httpx
 
 from app.services.connectors.base import BaseConnector, ConnectorAuthError, ConnectorDiscoveryError, ConnectorNetworkError, ConnectorRateLimitError
 from app.services.connectors import registry
+from app.services.security.outbound import validate_outbound_url
 
 
 def utcnow() -> datetime:
@@ -18,10 +19,14 @@ def utcnow() -> datetime:
 class MCPConnector(BaseConnector):
     def __init__(self, project_id: str, source_id: str, config: dict, credentials: dict | None = None) -> None:
         super().__init__(project_id, source_id, config, credentials)
-        self._base_url = (config.get("url") or credentials.get("url") or "").rstrip("/")
+        self._base_url = (config.get("url") or self.credentials.get("url") or "").rstrip("/")
         self._api_key = (credentials or {}).get("api_key") or config.get("api_key")
         if not self._base_url:
             raise ConnectorAuthError("MCP server URL is required")
+        try:
+            validate_outbound_url(self._base_url)
+        except ValueError as exc:
+            raise ConnectorAuthError(str(exc)) from exc
 
     async def connect(self) -> dict:
         result = await self.test()
@@ -30,9 +35,10 @@ class MCPConnector(BaseConnector):
 
     async def test(self) -> dict:
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
+            target_url = validate_outbound_url(f"{self._base_url}/health")
+            async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
                 resp = await client.get(
-                    f"{self._base_url}/health",
+                    target_url,
                     headers=self._headers(),
                 )
                 if resp.status_code == 200:
@@ -102,8 +108,9 @@ class MCPConnector(BaseConnector):
         return tools
 
     async def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(f"{self._base_url}{path}", json=payload, headers=self._headers())
+        target_url = validate_outbound_url(f"{self._base_url}{path}")
+        async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
+            resp = await client.post(target_url, json=payload, headers=self._headers())
             resp.raise_for_status()
             return resp.json()
 

@@ -22,13 +22,20 @@ class CSRFMiddleware(BaseHTTPMiddleware):
 
         path = request.url.path
 
-        if path.startswith("/api/v1/auth"):
+        # Public authentication endpoints have no authenticated cookie to
+        # protect. Session/refresh-cookie mutations still require the
+        # double-submit token, including logout and refresh.
+        if path.startswith("/api/v1/auth") and path not in {
+            "/api/v1/auth/logout",
+            "/api/v1/auth/logout-all",
+            "/api/v1/auth/refresh",
+        }:
             return await call_next(request)
 
         if settings.APP_DEBUG:
             return await call_next(request)
 
-        if not request.cookies.get("zyntra_session"):
+        if not request.cookies.get("zyntra_session") and not request.cookies.get("zyntra_refresh"):
             return await call_next(request)
 
         token = request.cookies.get(self.TOKEN_NAME)

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import logging
+import asyncio
+import time
+from collections import defaultdict
 from datetime import timedelta
 from typing import Annotated
 
@@ -34,6 +37,25 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 CSRF_COOKIE_NAME = "zyntra_csrf"
 CSRF_TOKEN_TTL_SECONDS = 3600
+_login_attempts: dict[str, list[float]] = defaultdict(list)
+_login_attempts_lock = asyncio.Lock()
+
+
+async def _check_login_rate_limit(email: str, client_ip: str) -> str:
+    key = f"{email.strip().lower()}:{client_ip or 'unknown'}"
+    cutoff = time.monotonic() - 60
+    async with _login_attempts_lock:
+        attempts = [value for value in _login_attempts[key] if value > cutoff]
+        if len(attempts) >= settings.RATE_LIMIT_LOGIN_MAX_ATTEMPTS:
+            raise HTTPException(status_code=429, detail="Too many login attempts")
+        attempts.append(time.monotonic())
+        _login_attempts[key] = attempts
+    return key
+
+
+async def _clear_login_rate_limit(key: str) -> None:
+    async with _login_attempts_lock:
+        _login_attempts.pop(key, None)
 
 
 async def _get_user_by_email(session: AsyncSession, email: str) -> User | None:
@@ -205,11 +227,13 @@ async def register(
 @router.post("/login")
 async def login(
     response: Response,
+    request: Request,
     email: Annotated[str, Body(embed=True)],
     password: Annotated[str, Body(embed=True)],
     two_factor_code: Annotated[str | None, Body(embed=True)] = None,
     db: AsyncSession = Depends(get_session),
 ) -> AuthMeResponse:
+    login_key = await _check_login_rate_limit(email, request.client.host if request.client else "unknown")
     user = await _get_user_by_email(db, email)
     if user is None or user.hashed_password is None:
         raise HTTPException(status_code=401, detail="Invalid credentials")
@@ -233,6 +257,7 @@ async def login(
     refresh_token = await _create_refresh_token(db, user)
     _set_refresh_cookie(response, refresh_token)
     await db.commit()
+    await _clear_login_rate_limit(login_key)
 
     return AuthMeResponse(
         id=user.id,
@@ -427,6 +452,14 @@ async def reset_password(
 
     user.hashed_password = hash_password(password)
     reset_obj.used = True
+    # A password reset is a credential change: invalidate every existing
+    # browser session and refresh token before committing the new password.
+    sessions_result = await db.execute(select(Session).where(Session.user_id == user.id))
+    for session_obj in sessions_result.scalars().all():
+        session_obj.revoked = True
+    refresh_result = await db.execute(select(RefreshToken).where(RefreshToken.user_id == user.id))
+    for refresh_obj in refresh_result.scalars().all():
+        refresh_obj.revoked = True
     await db.commit()
     try:
         from app.events import NotificationEvent

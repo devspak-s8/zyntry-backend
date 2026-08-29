@@ -17,6 +17,15 @@ celery_app.conf.update(
     accept_content=["json"],
     timezone="UTC",
     enable_utc=True,
+    # Tasks mutate tenant-owned state.  A worker crash must cause redelivery,
+    # and one worker should not reserve an unbounded batch of jobs.  Runtime
+    # builds additionally use a Redis idempotency lock in tasks/runtimes.py.
+    task_acks_late=True,
+    task_reject_on_worker_lost=True,
+    worker_prefetch_multiplier=1,
+    task_track_started=True,
+    broker_transport_options={"visibility_timeout": 3600},
+    result_expires=86400,
     beat_schedule={
         "run-scheduled-syncs": {
             "task": "app.tasks.scheduler.run_scheduled_syncs",

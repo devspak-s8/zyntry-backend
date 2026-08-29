@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
+from app.api.v1.dependencies_tenant import require_project_membership
 from app.core.database import get_session
 from app.models.users import User
 from app.repositories import UnitOfWork
@@ -69,10 +70,15 @@ async def list_models(
     current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_session),
 ) -> list[ModelInfo]:
+    if project_id:
+        await require_project_membership(project_id, current_user, db)
     discovery = get_model_discovery()
     uow = UnitOfWork(db)
     service = ProviderService(uow)
-    connections = await service.list_providers(project_id)
+    connections = await service.list_providers(
+        project_id,
+        organization_id=str(current_user.organization_id) if not project_id else None,
+    )
     connected_names = {c["provider_name"] for c in connections if c.get("status") == "active"}
 
     all_models: list[ModelInfo] = []
@@ -118,11 +124,16 @@ async def list_model_providers(
     current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_session),
 ) -> list[ModelProvider]:
+    if project_id:
+        await require_project_membership(project_id, current_user, db)
     discovery = get_model_discovery()
     all_providers = await discovery.discover_all_models()
     uow = UnitOfWork(db)
     service = ProviderService(uow)
-    connections = await service.list_providers(project_id)
+    connections = await service.list_providers(
+        project_id,
+        organization_id=str(current_user.organization_id) if not project_id else None,
+    )
     connected_names = {c["provider_name"] for c in connections if c.get("status") == "active"}
 
     async def _fetch_provider_models(name: str):
@@ -194,7 +205,9 @@ async def test_model(
     discovery = get_model_discovery()
     uow = UnitOfWork(db)
     service = ProviderService(uow)
-    connections = await service.list_providers()
+    connections = await service.list_providers(
+        organization_id=str(current_user.organization_id) if current_user.organization_id else None
+    )
     connected_names = {c["provider_name"] for c in connections if c.get("status") == "active"}
     for provider_name in connected_names:
         if provider_name.lower() != body.provider.lower():

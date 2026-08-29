@@ -56,13 +56,17 @@ class MemoryRecordRepository:
         return result.scalar_one_or_none()
 
     async def get_by_conversation_id(
-        self, conversation_id: uuid.UUID
+        self,
+        conversation_id: uuid.UUID,
+        project_id: uuid.UUID | None = None,
+        user_id: uuid.UUID | None = None,
     ) -> list[MemoryRecord]:
-        result = await self.session.execute(
-            select(MemoryRecord).where(
-                MemoryRecord.conversation_id == conversation_id
-            )
-        )
+        conditions = [MemoryRecord.conversation_id == conversation_id]
+        if project_id is not None:
+            conditions.append(MemoryRecord.project_id == project_id)
+        if user_id is not None:
+            conditions.append(MemoryRecord.user_id == user_id)
+        result = await self.session.execute(select(MemoryRecord).where(*conditions))
         return list(result.scalars().all())
 
     async def get_by_session_id(self, session_id: str) -> list[MemoryRecord]:

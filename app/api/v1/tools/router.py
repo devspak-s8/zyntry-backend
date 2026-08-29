@@ -74,6 +74,8 @@ async def list_tools(
     project_id: str | None = None,
     db: AsyncSession = Depends(get_session),
 ) -> list[ToolRead]:
+    if project_id:
+        await require_project_membership(project_id, current_user, db)
     uow = UnitOfWork(db)
     service = ToolService(uow)
     tools = await service.list_tools(project_id)
@@ -98,6 +100,7 @@ async def create_tool(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> ToolRead:
+    await require_project_membership(body.project_id, current_user, db)
     uow = UnitOfWork(db)
     service = ToolService(uow)
     tool = await service.create_tool(body)
@@ -121,6 +124,10 @@ async def update_tool(
     db: AsyncSession = Depends(get_session),
 ) -> ToolRead:
     uow = UnitOfWork(db)
+    existing = await uow.tools.get(tool_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Tool not found")
+    await require_project_membership(str(existing.project_id), current_user, db)
     service = ToolService(uow)
     tool = await service.update_tool(tool_id, body)
     return ToolRead(
@@ -142,5 +149,9 @@ async def delete_tool(
     db: AsyncSession = Depends(get_session),
 ) -> None:
     uow = UnitOfWork(db)
+    existing = await uow.tools.get(tool_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Tool not found")
+    await require_project_membership(str(existing.project_id), current_user, db)
     service = ToolService(uow)
     await service.delete_tool(tool_id)

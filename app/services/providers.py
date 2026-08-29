@@ -6,6 +6,7 @@ from typing import Any
 from sqlalchemy import select
 
 from app.models.oauth import OAuthProvider
+from app.models.onboarding import ProviderConnection
 from app.repositories import UnitOfWork
 from app.schemas.providers import ProviderConnectionCreate
 
@@ -14,10 +15,21 @@ class ProviderService:
     def __init__(self, uow: UnitOfWork) -> None:
         self.uow = uow
 
-    async def list_providers(self, project_id: str | None = None) -> list[dict]:
+    async def list_providers(
+        self,
+        project_id: str | None = None,
+        organization_id: str | None = None,
+    ) -> list[dict]:
         connections = []
         if project_id:
             connections = await self.uow.providers.get_by_project(project_id)
+        elif organization_id:
+            result = await self.uow.session.execute(
+                select(ProviderConnection).where(
+                    ProviderConnection.organization_id == uuid.UUID(str(organization_id))
+                )
+            )
+            connections = list(result.scalars().all())
         else:
             connections = await self.uow.providers.list()
         return [

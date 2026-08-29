@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import ipaddress
-import socket
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -13,6 +11,7 @@ from bs4 import BeautifulSoup
 
 from app.services.connectors import registry
 from app.services.connectors.base import BaseConnector
+from app.services.security.outbound import validate_outbound_url
 
 
 class WebsiteConnector(BaseConnector):
@@ -27,24 +26,13 @@ class WebsiteConnector(BaseConnector):
         return value.strip() if isinstance(value, str) and value.strip() else None
 
     async def _validate_public_url(self, url: str) -> None:
-        parsed = urlparse(url)
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-            raise ValueError("Website URL must use http or https")
-
         try:
-            addresses = await asyncio.to_thread(
-                socket.getaddrinfo,
-                parsed.hostname,
-                parsed.port or (443 if parsed.scheme == "https" else 80),
-                type=socket.SOCK_STREAM,
-            )
-        except socket.gaierror as exc:
-            raise ValueError("Website hostname could not be resolved") from exc
-
-        for address in addresses:
-            ip = ipaddress.ip_address(address[4][0])
-            if not ip.is_global:
-                raise ValueError("Private or local website addresses are not allowed")
+            await asyncio.to_thread(validate_outbound_url, url)
+        except ValueError as exc:
+            message = str(exc)
+            if "Private outbound destinations" in message:
+                message = "Private or local website addresses are not allowed"
+            raise ValueError(message) from exc
 
     async def _fetch(self, client: httpx.AsyncClient, url: str) -> httpx.Response:
         current = url

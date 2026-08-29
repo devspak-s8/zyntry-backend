@@ -2,11 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from abc import ABC, abstractmethod
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+_POSTGRES_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?$")
+
+
+def _safe_postgres_identifier(value: object) -> str | None:
+    """Return a quoted table identifier or reject user-controlled SQL text."""
+    if not isinstance(value, str) or not _POSTGRES_IDENTIFIER_RE.fullmatch(value):
+        return None
+    return ".".join(f'"{part}"' for part in value.split("."))
 
 
 async def _emit_change(project_id: str, organization_id: str | None, source_id: str, event_type: str, data: dict) -> None:
@@ -434,12 +444,16 @@ class PostgresWatcher(BaseWatcher):
 
             tables = self.connector.config.get("tables", [])
             since = self._since()
-            for table in tables:
+            for configured_table in tables:
+                table = _safe_postgres_identifier(configured_table)
+                if table is None:
+                    logger.warning("PostgresWatcher: ignoring invalid table identifier")
+                    continue
                 if since:
-                    query = f"SELECT * FROM {table} WHERE updated_at > $1"
+                    query = f"SELECT * FROM {table} WHERE updated_at > $1"  # nosec B608 - table is validated and quoted above
                     rows = await conn.fetch(query, since)
                 else:
-                    query = f"SELECT * FROM {table} LIMIT 100"
+                    query = f"SELECT * FROM {table} LIMIT 100"  # nosec B608 - table is validated and quoted above
                     rows = await conn.fetch(query)
 
                 for row in rows:
@@ -452,7 +466,7 @@ class PostgresWatcher(BaseWatcher):
                         getattr(self.connector, "organization_id", None),
                         self.connector.source_id,
                         "source.postgres.row.updated",
-                        {"table": table, "row": row_dict},
+                        {"table": configured_table, "row": row_dict},
                     )
 
         except Exception as exc:

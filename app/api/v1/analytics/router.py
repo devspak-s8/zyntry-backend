@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
+from app.api.v1.dependencies_tenant import require_project_membership
 from app.core.database import get_session
 from app.models.users import User
 from app.repositories import UnitOfWork
@@ -24,6 +25,7 @@ async def list_usage_events(
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_session),
 ) -> list[UsageEventRead]:
+    await require_project_membership(project_id, current_user, db)
     uow = UnitOfWork(db)
     service = AnalyticsService(uow)
     events = await service.list_events(project_id, limit=limit, offset=offset)
@@ -48,6 +50,7 @@ async def create_usage_event(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> UsageEventRead:
+    await require_project_membership(str(body.project_id), current_user, db)
     uow = UnitOfWork(db)
     service = AnalyticsService(uow)
     event = await service.create_event(body)
@@ -69,6 +72,7 @@ async def get_usage_summary(
     project_id: str,
     db: AsyncSession = Depends(get_session),
 ) -> UsageSummary:
+    await require_project_membership(project_id, current_user, db)
     uow = UnitOfWork(db)
     service = AnalyticsService(uow)
     summary = await service.get_summary(project_id)

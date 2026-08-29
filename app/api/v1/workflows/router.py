@@ -6,9 +6,11 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
+from app.api.v1.dependencies_tenant import require_project_membership
 from app.core.database import get_session
 from app.models.users import User
 from app.repositories import UnitOfWork
@@ -24,6 +26,7 @@ from app.schemas.workflows import (
     WorkflowValidationResult,
 )
 from app.models.workflows import Workflow, WorkflowExecution
+from app.models.projects import Project
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
 
@@ -40,9 +43,15 @@ async def list_workflows(
             pid = uuid.UUID(project_id)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid project id")
+        await require_project_membership(project_id, current_user, db)
         workflows = await uow.workflows.get_by_project(pid)
     else:
-        workflows = await uow.workflows.list_active()
+        result = await db.execute(
+            select(Workflow)
+            .join(Project, Project.id == Workflow.project_id)
+            .where(Project.organization_id == current_user.organization_id, Workflow.status == "active")
+        )
+        workflows = list(result.scalars().all())
     return [
         WorkflowRead(
             id=w.id,
@@ -64,6 +73,7 @@ async def create_workflow(
     current_user: Annotated[User, Depends(get_current_user)] = None,
     db: AsyncSession = Depends(get_session),
 ) -> WorkflowRead:
+    await require_project_membership(str(body.project_id), current_user, db)
     uow = UnitOfWork(db)
     workflow = await uow.workflows.create(
         name=body.name,
@@ -99,6 +109,7 @@ async def get_workflow(
     workflow = await uow.workflows.get(wid)
     if not workflow:
         raise HTTPException(status_code=404, detail="Workflow not found")
+    await require_project_membership(str(workflow.project_id), current_user, db)
     return WorkflowRead(
         id=workflow.id,
         name=workflow.name,
@@ -126,6 +137,7 @@ async def update_workflow(
     workflow = await uow.workflows.get(wid)
     if not workflow:
         raise HTTPException(status_code=404, detail="Workflow not found")
+    await require_project_membership(str(workflow.project_id), current_user, db)
     update_data = body.model_dump(exclude_unset=True)
     updated = await uow.workflows.update(workflow, **update_data)
     await uow.commit()
@@ -155,6 +167,7 @@ async def delete_workflow(
     workflow = await uow.workflows.get(wid)
     if not workflow:
         raise HTTPException(status_code=404, detail="Workflow not found")
+    await require_project_membership(str(workflow.project_id), current_user, db)
     await uow.workflows.delete(workflow)
     await uow.commit()
 
@@ -169,6 +182,7 @@ async def run_workflow(
     workflow = await uow.workflows.get(body.workflow_id)
     if not workflow:
         raise HTTPException(status_code=404, detail="Workflow not found")
+    await require_project_membership(str(workflow.project_id), current_user, db)
     execution = await uow.workflow_executions.create(
         workflow_id=workflow.id,
         project_id=workflow.project_id,
@@ -272,6 +286,10 @@ async def list_workflow_executions(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid workflow id")
     executions = await uow.workflow_executions.get_by_workflow(wid, limit=limit, offset=offset)
+    workflow = await uow.workflows.get(wid)
+    if workflow is None:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    await require_project_membership(str(workflow.project_id), current_user, db)
     return [
         WorkflowExecutionRead(
             id=e.id,

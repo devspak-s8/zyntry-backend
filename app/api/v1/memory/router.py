@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
+from app.api.v1.dependencies_tenant import require_project_membership
 from app.core.database import get_session
 from app.models.users import User
 from app.repositories import UnitOfWork
@@ -21,6 +22,7 @@ async def list_memory_records(
     project_id: str,
     db: AsyncSession = Depends(get_session),
 ) -> list[MemoryRecordRead]:
+    await require_project_membership(project_id, current_user, db)
     uow = UnitOfWork(db)
     service = MemoryService(uow)
     records = await service.list_records(project_id)
@@ -45,6 +47,10 @@ async def create_memory_record(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> MemoryRecordRead:
+    await require_project_membership(body.project_id, current_user, db)
+    if body.user_id and body.user_id != str(current_user.id) and not current_user.is_superuser:
+        raise HTTPException(status_code=403, detail="Cannot write memory for another user")
+    body.user_id = body.user_id or str(current_user.id)
     uow = UnitOfWork(db)
     service = MemoryService(uow)
     record = await service.create_record(body)
@@ -66,6 +72,7 @@ async def toggle_project_memory(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> dict:
+    await require_project_membership(body.project_id, current_user, db)
     uow = UnitOfWork(db)
     service = MemoryService(uow)
     result = await service.toggle_project_memory(body)

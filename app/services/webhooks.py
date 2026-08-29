@@ -12,6 +12,7 @@ from app.models.webhook_deliveries import WebhookDelivery
 from app.models.webhook_subscriptions import WebhookSubscription
 from app.repositories import UnitOfWork
 from app.services.base import BaseService
+from app.services.security.outbound import validate_outbound_url
 
 
 class WebhookService(BaseService):
@@ -21,6 +22,7 @@ class WebhookService(BaseService):
         self.uow = UnitOfWork(session)
 
     async def create_subscription(self, project_id: uuid.UUID, url: str, events: list[str], secret: str | None = None) -> WebhookSubscription:
+        validate_outbound_url(url)
         sub = await self.uow.webhook_subscriptions.create(
             project_id=project_id,
             url=url,

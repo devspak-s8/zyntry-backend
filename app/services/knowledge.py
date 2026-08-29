@@ -5,10 +5,12 @@ import json
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from pathlib import PurePath
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from app.repositories import UnitOfWork
+from app.core.config import settings
 from app.schemas.knowledge import (
     DocumentCreate,
     KnowledgeBaseCreate,
@@ -19,6 +21,7 @@ from app.services.chunking import chunk_document
 from app.services.connectors import registry
 from app.services.document_processor import build_metadata, extract_text
 from app.services.encryption import decrypt_value, encrypt_value
+from app.services.security.outbound import validate_outbound_url
 
 
 class KnowledgeService:
@@ -90,6 +93,22 @@ class KnowledgeService:
         knowledge_base_id: str,
         source: str | None = None,
     ) -> dict:
+        if len(content) > settings.MAX_UPLOAD_SIZE_BYTES:
+            raise ValueError("Uploaded file exceeds the size limit")
+        extension = PurePath(filename).suffix.lower()
+        allowed_extensions = {
+            item.strip().lower()
+            for item in settings.ALLOWED_UPLOAD_EXTENSIONS.split(",")
+            if item.strip()
+        }
+        if extension not in allowed_extensions:
+            raise ValueError("Unsupported document type")
+        if content_type.lower() in {
+            "application/x-msdownload",
+            "application/x-dosexec",
+            "application/vnd.microsoft.portable-executable",
+        }:
+            raise ValueError("Executable uploads are not allowed")
         text = extract_text(content, filename, content_type)
         metadata = build_metadata(filename, content_type, len(content))
         doc = await self.uow.documents.create(
@@ -170,11 +189,15 @@ class KnowledgeService:
     async def create_source(self, data: KnowledgeSourceCreate) -> dict:
         config = dict(data.config)
         source_type = data.source_type.lower().strip()
-        if source_type in {"website", "crawler"}:
+        if source_type in {"website", "crawler", "mcp"}:
             raw_url = config.get("url") or config.get("input")
             if not isinstance(raw_url, str) or not raw_url.strip():
-                raise ValueError("Website URL is required")
-            normalized_url = self._normalize_website_url(raw_url)
+                raise ValueError("Source URL is required")
+            if source_type in {"website", "crawler"}:
+                normalized_url = self._normalize_website_url(raw_url)
+            else:
+                normalized_url = raw_url.strip()
+            validate_outbound_url(normalized_url)
             config["url"] = normalized_url
             config.pop("input", None)
             existing_sources = await self.uow.knowledge_sources.get_by_project(data.project_id)
@@ -241,6 +264,23 @@ class KnowledgeService:
         if not source:
             raise ValueError("Knowledge source not found")
         update_data = data.model_dump(exclude_unset=True)
+        if "config" in update_data and isinstance(update_data["config"], dict):
+            source_type = str(getattr(source, "source_type", "")).lower()
+            if source_type in {"website", "crawler", "mcp"}:
+                raw_url = update_data["config"].get("url") or update_data["config"].get("input")
+                if not isinstance(raw_url, str) or not raw_url.strip():
+                    raise ValueError("Source URL is required")
+                normalized_url = (
+                    self._normalize_website_url(raw_url)
+                    if source_type in {"website", "crawler"}
+                    else raw_url.strip()
+                )
+                validate_outbound_url(normalized_url)
+                update_data["config"] = {
+                    **update_data["config"],
+                    "url": normalized_url,
+                }
+                update_data["config"].pop("input", None)
         if "metadata" in update_data:
             update_data["metadata_"] = update_data.pop("metadata")
         if "credentials" in update_data:
@@ -303,7 +343,20 @@ class KnowledgeService:
                 connection = await self.uow.oauth_connections.get(
                     uuid.UUID(oauth_connection_id)
                 )
-                if connection is None or connection.status != "active":
+                source_project_id = getattr(source, "project_id", None)
+                connection_project_id = getattr(connection, "project_id", None)
+                if (
+                    connection is None
+                    or connection.status != "active"
+                    # Persisted KnowledgeSource/OAuthConnection rows always
+                    # carry project ids.  Require them to match; tolerate
+                    # legacy test doubles that predate that column.
+                    or (
+                        source_project_id is not None
+                        and connection_project_id is not None
+                        and connection_project_id != source_project_id
+                    )
+                ):
                     return None
                 from app.services.oauth.service import OAuthService
 

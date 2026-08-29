@@ -10,6 +10,7 @@ from starlette.responses import StreamingResponse
 
 from app.api.v1.dependencies import get_current_user
 from app.api.v1.dependencies_api_key import ActionAuthContext, get_action_auth
+from app.api.v1.dependencies_tenant import require_project_membership
 from app.core.database import get_session
 from app.models.actions import ActionExecution
 from app.models.users import User
@@ -42,6 +43,8 @@ async def execute_action(
     auth: Annotated[ActionAuthContext, Depends(get_action_auth)],
     db: AsyncSession = Depends(get_session),
 ) -> ActionResponse:
+    if auth.api_key and "write" not in set(auth.api_key.scopes or []) and "*" not in set(auth.api_key.scopes or []):
+        raise HTTPException(status_code=403, detail="API key lacks write scope")
     uow = UnitOfWork(db)
     executor = ActionExecutor(uow)
 
@@ -52,6 +55,9 @@ async def execute_action(
         raise HTTPException(status_code=400, detail=error)
 
     project_id = auth.project_id or uuid.UUID(body.project_id)
+    project = await require_project_membership(str(project_id), auth.user, db)
+    if auth.project_id is not None and auth.project_id != project.id:
+        raise HTTPException(status_code=403, detail="API key is not authorized for this project")
     user_id = auth.user.id
 
     risk_actions = {"delete", "remove", "archive", "merge", "close", "cancel", "expire", "revoke"}
@@ -84,6 +90,12 @@ async def execute_workflow(
     auth: Annotated[ActionAuthContext, Depends(get_action_auth)],
     db: AsyncSession = Depends(get_session),
 ) -> StreamingResponse:
+    if auth.api_key and "write" not in set(auth.api_key.scopes or []) and "*" not in set(auth.api_key.scopes or []):
+        raise HTTPException(status_code=403, detail="API key lacks write scope")
+    project_id = auth.project_id or uuid.UUID(body.project_id)
+    project = await require_project_membership(str(project_id), auth.user, db)
+    if auth.project_id is not None and auth.project_id != project.id:
+        raise HTTPException(status_code=403, detail="API key is not authorized for this project")
     uow = UnitOfWork(db)
     executor = ActionExecutor(uow)
 
@@ -109,6 +121,9 @@ async def list_executions(
 ) -> list[ActionExecutionRead]:
     stmt = select(ActionExecution).where(ActionExecution.user_id == auth.user.id)
     if project_id:
+        await require_project_membership(project_id, auth.user, db)
+        if auth.project_id and uuid.UUID(project_id) != auth.project_id:
+            raise HTTPException(status_code=403, detail="API key is not authorized for this project")
         stmt = stmt.where(ActionExecution.project_id == uuid.UUID(project_id))
     elif auth.project_id:
         stmt = stmt.where(ActionExecution.project_id == auth.project_id)
@@ -141,10 +156,19 @@ async def approve_confirmation(
     auth: Annotated[ActionAuthContext, Depends(get_action_auth)],
     db: AsyncSession = Depends(get_session),
 ) -> ActionResponse:
+    if auth.api_key and "write" not in set(auth.api_key.scopes or []) and "*" not in set(auth.api_key.scopes or []):
+        raise HTTPException(status_code=403, detail="API key lacks write scope")
     uow = UnitOfWork(db)
     service = ConfirmationService(uow)
     try:
-        confirmation = await service.approve(uuid.UUID(confirmation_id))
+        confirmation_id_uuid = uuid.UUID(confirmation_id)
+        pending = await uow.action_confirmations.get(confirmation_id_uuid)
+        if pending is None:
+            raise ValueError("Confirmation not found")
+        if pending.user_id != auth.user.id and not auth.user.is_superuser:
+            raise HTTPException(status_code=404, detail="Confirmation not found")
+        await require_project_membership(str(pending.project_id), auth.user, db)
+        confirmation = await service.approve(confirmation_id_uuid)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -165,9 +189,18 @@ async def reject_confirmation(
     auth: Annotated[ActionAuthContext, Depends(get_action_auth)],
     db: AsyncSession = Depends(get_session),
 ) -> None:
+    if auth.api_key and "write" not in set(auth.api_key.scopes or []) and "*" not in set(auth.api_key.scopes or []):
+        raise HTTPException(status_code=403, detail="API key lacks write scope")
     uow = UnitOfWork(db)
     service = ConfirmationService(uow)
     try:
-        await service.reject(uuid.UUID(confirmation_id))
+        confirmation_id_uuid = uuid.UUID(confirmation_id)
+        pending = await uow.action_confirmations.get(confirmation_id_uuid)
+        if pending is None:
+            raise ValueError("Confirmation not found")
+        if pending.user_id != auth.user.id and not auth.user.is_superuser:
+            raise HTTPException(status_code=404, detail="Confirmation not found")
+        await require_project_membership(str(pending.project_id), auth.user, db)
+        confirmation = await service.reject(confirmation_id_uuid)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
