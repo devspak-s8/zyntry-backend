@@ -144,12 +144,12 @@ jobs:
           DEPLOY_PUBLIC_API_URL: ${{ github.ref_name == 'main' && 'https://api.zyntry.space' || 'https://staging-api.zyntry.space' }}
           DEPLOY_PUBLIC_FRONTEND_URL: ${{ github.ref_name == 'main' && 'https://zyntry.space' || 'https://staging.zyntry.space' }}
           DEPLOY_ENV: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
-          DEPLOY_OAUTH_GITHUB_CLIENT_ID: ${{ secrets.GITHB_CLIENT_ID }}
-          DEPLOY_OAUTH_GITHUB_CLIENT_SECRET: ${{ secrets.GITHB_CLIENT_SECRET }}
-          DEPLOY_OAUTH_NOTION_CLIENT_ID: ${{ secrets.NOTION_CLIENT_ID }}
-          DEPLOY_OAUTH_NOTION_CLIENT_SECRET: ${{ secrets.NOTION_CLIENT_SECRET }}
-          DEPLOY_OAUTH_SLACK_CLIENT_ID: ${{ secrets.SLACK_CLIENT_ID }}
-          DEPLOY_OAUTH_SLACK_CLIENT_SECRET: ${{ secrets.SLACK_CLIENT_SECRET }}
+          DEPLOY_OAUTH_GITHUB_CLIENT_ID: ${{ secrets.DEPLOY_OAUTH_GITHUB_CLIENT_ID || secrets.GITHB_CLIENT_ID }}
+          DEPLOY_OAUTH_GITHUB_CLIENT_SECRET: ${{ secrets.DEPLOY_OAUTH_GITHUB_CLIENT_SECRET || secrets.GITHB_CLIENT_SECRET }}
+          DEPLOY_OAUTH_NOTION_CLIENT_ID: ${{ secrets.DEPLOY_OAUTH_NOTION_CLIENT_ID || secrets.NOTION_CLIENT_ID }}
+          DEPLOY_OAUTH_NOTION_CLIENT_SECRET: ${{ secrets.DEPLOY_OAUTH_NOTION_CLIENT_SECRET || secrets.NOTION_CLIENT_SECRET }}
+          DEPLOY_OAUTH_SLACK_CLIENT_ID: ${{ secrets.DEPLOY_OAUTH_SLACK_CLIENT_ID || secrets.SLACK_CLIENT_ID }}
+          DEPLOY_OAUTH_SLACK_CLIENT_SECRET: ${{ secrets.DEPLOY_OAUTH_SLACK_CLIENT_SECRET || secrets.SLACK_CLIENT_SECRET }}
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
