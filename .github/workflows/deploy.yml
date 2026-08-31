@@ -181,6 +181,8 @@ jobs:
             export NOTION_CLIENT_SECRET="$DEPLOY_OAUTH_NOTION_CLIENT_SECRET"
             export SLACK_CLIENT_ID="$DEPLOY_OAUTH_SLACK_CLIENT_ID"
             export SLACK_CLIENT_SECRET="$DEPLOY_OAUTH_SLACK_CLIENT_SECRET"
+            export APP_ENV="$DEPLOY_ENV"
+            export APP_DEBUG=false
             export APP_URL="$DEPLOY_PUBLIC_API_URL"
             export FRONTEND_URL="$DEPLOY_PUBLIC_FRONTEND_URL"
 
