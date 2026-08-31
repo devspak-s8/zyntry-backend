@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.constants import Permission
@@ -51,36 +51,6 @@ async def admin_list_fingerprints(
     ]
 
 
-@router.get("/fingerprints/{fingerprint_hash}", response_model=FingerprintDetailRead)
-async def admin_get_fingerprint(
-    fingerprint_hash: str,
-    ctx: AdminContext = Depends(require_permission(Permission.FINGERPRINTS_READ)),
-    db: AsyncSession = Depends(get_session),
-) -> FingerprintDetailRead:
-    service = FingerprintingService(db)
-    fp = await service.get_or_create_fingerprint(fingerprint_hash)
-    return FingerprintDetailRead(
-        id=str(fp.id) if fp.id else None,
-        user_id=str(fp.user_id) if fp.user_id else None,
-        organization_id=str(fp.organization_id) if fp.organization_id else None,
-        fingerprint_hash=fp.fingerprint_hash,
-        browser=fp.browser,
-        os_name=fp.os_name,
-        device=fp.device,
-        timezone=fp.timezone,
-        language=fp.language,
-        screen_resolution=fp.screen_resolution,
-        canvas_fingerprint=fp.canvas_fingerprint,
-        webgl_fingerprint=fp.webgl_fingerprint,
-        tls_signature=fp.tls_signature,
-        is_trusted=fp.is_trusted,
-        risk_score=fp.risk_score,
-        first_seen=fp.first_seen.isoformat() if fp.first_seen else "",
-        last_seen=fp.last_seen.isoformat() if fp.last_seen else "",
-        metadata_=fp.metadata_,
-    )
-
-
 @router.get("/fingerprints/user/{user_id}", response_model=list[FingerprintDetailRead])
 async def admin_user_fingerprints(
     user_id: str,
@@ -124,7 +94,9 @@ async def admin_update_fingerprint_trust(
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
     service = FingerprintingService(db)
-    await service.update_fingerprint_trust(fingerprint_hash, body.is_trusted)
+    if await service.update_fingerprint_trust(fingerprint_hash, body.is_trusted) is None:
+        raise HTTPException(status_code=404, detail="Fingerprint not found")
+    await db.commit()
     return {"message": "Fingerprint trust updated"}
 
 
@@ -136,7 +108,9 @@ async def admin_flag_fingerprint(
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
     service = FingerprintingService(db)
-    await service.flag_fingerprint(fingerprint_hash, body.risk_score)
+    if await service.flag_fingerprint(fingerprint_hash, body.risk_score) is None:
+        raise HTTPException(status_code=404, detail="Fingerprint not found")
+    await db.commit()
     return {"message": "Fingerprint flagged"}
 
 
@@ -173,3 +147,35 @@ async def admin_flagged_fingerprints(
         )
         for fp in fingerprints
     ]
+
+
+@router.get("/fingerprints/{fingerprint_hash}", response_model=FingerprintDetailRead)
+async def admin_get_fingerprint(
+    fingerprint_hash: str,
+    ctx: AdminContext = Depends(require_permission(Permission.FINGERPRINTS_READ)),
+    db: AsyncSession = Depends(get_session),
+) -> FingerprintDetailRead:
+    service = FingerprintingService(db)
+    fp = await service.get_fingerprint(fingerprint_hash)
+    if fp is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Fingerprint not found")
+    return FingerprintDetailRead(
+        id=str(fp.id) if fp.id else None,
+        user_id=str(fp.user_id) if fp.user_id else None,
+        organization_id=str(fp.organization_id) if fp.organization_id else None,
+        fingerprint_hash=fp.fingerprint_hash,
+        browser=fp.browser,
+        os_name=fp.os_name,
+        device=fp.device,
+        timezone=fp.timezone,
+        language=fp.language,
+        screen_resolution=fp.screen_resolution,
+        canvas_fingerprint=fp.canvas_fingerprint,
+        webgl_fingerprint=fp.webgl_fingerprint,
+        tls_signature=fp.tls_signature,
+        is_trusted=fp.is_trusted,
+        risk_score=fp.risk_score,
+        first_seen=fp.first_seen.isoformat() if fp.first_seen else "",
+        last_seen=fp.last_seen.isoformat() if fp.last_seen else "",
+        metadata_=fp.metadata_,
+    )

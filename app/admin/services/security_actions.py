@@ -43,9 +43,10 @@ class SecurityActionsService:
         from app.models.apikeys import ApiKey
         result = await self.db.execute(select(ApiKey).where(ApiKey.id == api_key_id))
         key = result.scalar_one_or_none()
-        if key:
-            key.is_active = False
-            await self.db.flush()
+        if key is None:
+            return False
+        key.revoked = True
+        await self.db.flush()
         return True
 
     async def freeze_wallet(self, user_id: str, reason: str | None = None) -> bool:
@@ -83,6 +84,18 @@ class SecurityActionsService:
         return bool(await self._repo.update_status(alert_id, AlertStatus.RESOLVED))
 
     async def apply_action(self, alert_id: str, action: str, reason: str | None = None) -> dict[str, Any]:
+        # The admin console also uses this endpoint for direct resource actions
+        # from the API-key and runtime inventories. Those resources are not
+        # security alerts, so handle them before looking up an alert record.
+        if action == "revoke_key":
+            success = await self.disable_api_key(alert_id, reason)
+            return {"success": success, "action": action, "resource_id": alert_id}
+        if action == "disable_runtime":
+            from app.admin.services.runtime_monitor import RuntimeMonitorService
+
+            success = await RuntimeMonitorService(self.db).disable_runtime(alert_id)
+            return {"success": success, "action": action, "resource_id": alert_id}
+
         alert = await self._repo.get_by_id(alert_id)
         if alert is None:
             return {"success": False, "error": "Alert not found"}
@@ -96,7 +109,8 @@ class SecurityActionsService:
         elif action == AlertActionType.SUSPEND_USER.value and alert.user_id:
             await self.suspend_user(str(alert.user_id), reason)
         elif action == AlertActionType.DISABLE_API_KEY.value:
-            pass
+            if alert.metadata_ and alert.metadata_.get("api_key_id"):
+                await self.disable_api_key(str(alert.metadata_["api_key_id"]), reason)
         elif action == AlertActionType.FREEZE_WALLET.value and alert.user_id:
             await self.freeze_wallet(str(alert.user_id), reason)
         elif action == AlertActionType.LOCK_ORGANIZATION.value and alert.organization_id:

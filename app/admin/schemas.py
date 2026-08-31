@@ -281,8 +281,8 @@ class DashboardLiveMetricsRead(BaseModel):
 
 class RuntimeDetailRead(BaseModel):
     id: str
-    project_id: str
-    organization_id: str
+    project_id: str | None = None
+    organization_id: str | None = None
     name: str
     status: str
     provider: str

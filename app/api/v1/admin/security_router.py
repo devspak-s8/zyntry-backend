@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.constants import Permission
@@ -17,7 +18,9 @@ from app.admin.schemas import (
     SecurityAlertRead,
 )
 from app.admin.services.security_actions import SecurityActionsService
+from app.admin.services.audit_log import AuditLogService
 from app.admin.services.security_engine import SecurityEngine
+from app.admin.models import SecurityAlert
 from app.core.database import get_session
 
 router = APIRouter(prefix="/admin", tags=["admin-security"])
@@ -70,6 +73,40 @@ async def admin_list_alerts(
     ]
 
 
+@router.get("/security/alerts/summary")
+async def admin_alert_summary(
+    ctx: AdminContext = Depends(require_permission(Permission.SECURITY_READ)),
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, int]:
+    counts = await db.execute(
+        select(SecurityAlert.status, SecurityAlert.risk_level, func.count(SecurityAlert.id))
+        .group_by(SecurityAlert.status, SecurityAlert.risk_level)
+    )
+    total = open_count = critical = high = medium = low = 0
+    for alert_status, risk_level, count in counts.all():
+        count = int(count or 0)
+        total += count
+        if str(alert_status) == "open":
+            open_count += count
+        level = str(risk_level).lower()
+        if level == "critical":
+            critical += count
+        elif level == "high":
+            high += count
+        elif level == "medium":
+            medium += count
+        elif level == "low":
+            low += count
+    return {
+        "total_alerts": total,
+        "open_alerts": open_count,
+        "critical_alerts": critical,
+        "high_alerts": high,
+        "medium_alerts": medium,
+        "low_alerts": low,
+    }
+
+
 @router.get("/security/alerts/{alert_id}", response_model=SecurityAlertRead)
 async def admin_get_alert(
     alert_id: str,
@@ -102,23 +139,6 @@ async def admin_get_alert(
     )
 
 
-@router.get("/security/alerts/summary")
-async def admin_alert_summary(
-    ctx: AdminContext = Depends(require_permission(Permission.SECURITY_READ)),
-    db: AsyncSession = Depends(get_session),
-) -> dict[str, int]:
-    engine = SecurityEngine(db)
-    open_count = await engine._alert_repo.get_open_count()
-    return {
-        "total_alerts": open_count,
-        "open_alerts": open_count,
-        "critical_alerts": 0,
-        "high_alerts": 0,
-        "medium_alerts": 0,
-        "low_alerts": 0,
-    }
-
-
 @router.post("/security/alerts/{alert_id}/action")
 async def admin_alert_action(
     alert_id: str,
@@ -128,6 +148,20 @@ async def admin_alert_action(
 ) -> dict[str, Any]:
     actions = SecurityActionsService(db)
     result = await actions.apply_action(alert_id, body.action, body.reason)
+    if not result.get("success"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=result.get("error", "Action failed"))
+    await AuditLogService(db).log_action(
+        admin_user_id=str(ctx.admin_id),
+        action=body.action,
+        resource_type="security_alert" if body.action != "revoke_key" else "api_key",
+        resource_id=alert_id,
+        previous_value=None,
+        new_value={"action": body.action},
+        ip_address=None,
+        user_agent=None,
+        reason=body.reason,
+    )
+    await db.commit()
     return result
 
 
@@ -146,5 +180,6 @@ async def admin_alert_timeline(
 async def admin_security_scan(
     ctx: AdminContext = Depends(require_super_admin),
     db: AsyncSession = Depends(get_session),
-) -> dict[str, str]:
-    return {"message": "Security scan initiated"}
+) -> dict[str, Any]:
+    engine = SecurityEngine(db)
+    return await engine.run_security_scan()

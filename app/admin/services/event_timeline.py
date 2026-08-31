@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 from typing import Any
 
@@ -138,12 +139,21 @@ class EventTimelineService:
         date_to: datetime | None = None,
         event_type: str | None = None,
     ) -> list[AdminEventTimeline]:
+        def parse_uuid(value: str | None) -> uuid.UUID | None:
+            if not value:
+                return None
+            try:
+                return uuid.UUID(value)
+            except ValueError:
+                return None
+
         return await self._repo.list_all(
             limit=limit,
             offset=offset,
-            organization_id=organization_id,
-            user_id=user_id,
-            runtime_id=runtime_id,
+            organization_id=parse_uuid(organization_id),
+            user_id=parse_uuid(user_id),
+            runtime_id=parse_uuid(runtime_id),
             date_from=date_from,
             date_to=date_to,
+            event_type=event_type,
         )

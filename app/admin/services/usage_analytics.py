@@ -85,38 +85,42 @@ class UsageAnalyticsService:
         for row in top_runtimes_result:
             top_runtimes.append({"runtime_id": str(row[0]) if row[0] else "", "request_count": row[1] or 0, "total_cost": float(row[2] or 0)})
 
-        top_knowledge_result = await self.db.execute(
-            select(UsageLog.knowledge_source_id, func.count(), func.sum(UsageLog.cost))
-            .where(UsageLog.created_at >= since, UsageLog.knowledge_source_id.is_not(None))
-            .group_by(UsageLog.knowledge_source_id)
-            .order_by(func.count().desc())
-            .limit(10)
+        # These dimensions are optional in the usage schema and are recorded
+        # in metadata by runtimes that support them. Read them defensively so
+        # analytics still works for older usage rows.
+        metadata_result = await self.db.execute(
+            select(UsageLog.metadata_, UsageLog.requests, UsageLog.cost)
+            .where(UsageLog.created_at >= since)
         )
-        top_knowledge_sources = []
-        for row in top_knowledge_result:
-            top_knowledge_sources.append({"source_id": str(row[0]) if row[0] else "", "request_count": row[1] or 0, "total_cost": float(row[2] or 0)})
+        dimensions: dict[str, dict[str, list[float]]] = {
+            "knowledge_source_id": {},
+            "tool_id": {},
+            "endpoint": {},
+        }
+        for metadata, requests, cost in metadata_result.all():
+            if not isinstance(metadata, dict):
+                continue
+            for field in dimensions:
+                value = metadata.get(field)
+                if value is None:
+                    continue
+                key = str(value)
+                bucket = dimensions[field].setdefault(key, [0.0, 0.0])
+                bucket[0] += float(requests or 1)
+                bucket[1] += float(cost or 0)
 
-        top_tools_result = await self.db.execute(
-            select(UsageLog.tool_id, func.count(), func.sum(UsageLog.cost))
-            .where(UsageLog.created_at >= since, UsageLog.tool_id.is_not(None))
-            .group_by(UsageLog.tool_id)
-            .order_by(func.count().desc())
-            .limit(10)
-        )
-        top_tools = []
-        for row in top_tools_result:
-            top_tools.append({"tool_id": str(row[0]) if row[0] else "", "request_count": row[1] or 0, "total_cost": float(row[2] or 0)})
-
-        top_endpoints_result = await self.db.execute(
-            select(UsageLog.endpoint, func.count(), func.sum(UsageLog.cost))
-            .where(UsageLog.created_at >= since, UsageLog.endpoint.is_not(None))
-            .group_by(UsageLog.endpoint)
-            .order_by(func.count().desc())
-            .limit(10)
-        )
-        top_endpoints = []
-        for row in top_endpoints_result:
-            top_endpoints.append({"endpoint": row[0] or "", "request_count": row[1] or 0, "total_cost": float(row[2] or 0)})
+        top_knowledge_sources = [
+            {"source_id": key, "request_count": int(values[0]), "total_cost": values[1]}
+            for key, values in sorted(dimensions["knowledge_source_id"].items(), key=lambda item: item[1][0], reverse=True)[:10]
+        ]
+        top_tools = [
+            {"tool_id": key, "request_count": int(values[0]), "total_cost": values[1]}
+            for key, values in sorted(dimensions["tool_id"].items(), key=lambda item: item[1][0], reverse=True)[:10]
+        ]
+        top_endpoints = [
+            {"endpoint": key, "request_count": int(values[0]), "total_cost": values[1]}
+            for key, values in sorted(dimensions["endpoint"].items(), key=lambda item: item[1][0], reverse=True)[:10]
+        ]
 
         avg_tokens_result = await self.db.execute(
             select(func.avg(UsageLog.input_tokens + UsageLog.output_tokens)).where(UsageLog.created_at >= since)

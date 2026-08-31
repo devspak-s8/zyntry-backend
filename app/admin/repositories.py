@@ -331,6 +331,7 @@ class AdminEventTimelineRepository(BaseRepository[AdminEventTimeline]):
         runtime_id: uuid.UUID | None = None,
         date_from: datetime | None = None,
         date_to: datetime | None = None,
+        event_type: str | None = None,
     ) -> list[AdminEventTimeline]:
         stmt = select(AdminEventTimeline).order_by(AdminEventTimeline.created_at.desc())
         if organization_id:
@@ -339,6 +340,8 @@ class AdminEventTimelineRepository(BaseRepository[AdminEventTimeline]):
             stmt = stmt.where(AdminEventTimeline.user_id == user_id)
         if runtime_id:
             stmt = stmt.where(AdminEventTimeline.runtime_id == runtime_id)
+        if event_type:
+            stmt = stmt.where(AdminEventTimeline.event_type == event_type)
         if date_from:
             stmt = stmt.where(AdminEventTimeline.created_at >= date_from)
         if date_to:

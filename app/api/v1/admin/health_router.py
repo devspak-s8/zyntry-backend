@@ -7,8 +7,8 @@ from app.admin.constants import HealthStatus, Permission
 from app.admin.dependencies import AdminContext, require_permission
 from app.admin.schemas import (
     HealthCheckRead,
-    HealthSystemRead,
     ProviderHealthRead,
+    SystemHealthRead,
 )
 from app.admin.services.system_health import SystemHealthService
 from app.core.database import get_session
@@ -16,11 +16,11 @@ from app.core.database import get_session
 router = APIRouter(prefix="/admin", tags=["admin-health"])
 
 
-@router.get("/health/system", response_model=HealthSystemRead)
+@router.get("/health/system", response_model=SystemHealthRead)
 async def admin_system_health(
     ctx: AdminContext = Depends(require_permission(Permission.HEALTH_READ)),
     db: AsyncSession = Depends(get_session),
-) -> HealthSystemRead:
+) -> SystemHealthRead:
     service = SystemHealthService(db)
     health = await service.get_full_health()
     checks = {}
@@ -31,10 +31,8 @@ async def admin_system_health(
             duration_ms=check.get("duration_ms", 0.0),
             details=check.get("details"),
         )
-    providers = []
-    for provider in health.get("providers", []):
-        providers.append(ProviderHealthRead(**provider))
-    return HealthSystemRead(
+    providers = [ProviderHealthRead(**provider) for provider in await service.check_model_providers()]
+    return SystemHealthRead(
         overall=health.get("overall", HealthStatus.HEALTHY.value),
         checks=checks,
         providers=providers,

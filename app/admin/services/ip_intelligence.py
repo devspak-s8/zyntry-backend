@@ -126,7 +126,27 @@ class IPIntelligenceService:
     async def get_ip_stats(self, ip_address: str) -> dict[str, Any]:
         record = await self._repo.get_by_ip(ip_address)
         if record is None:
-            return {"ip_address": ip_address}
+            now = datetime.now(UTC).isoformat()
+            return {
+                "ip_address": ip_address,
+                "country": None,
+                "city": None,
+                "asn": None,
+                "isp": None,
+                "is_vpn": False,
+                "is_proxy": False,
+                "is_tor": False,
+                "total_requests": 0,
+                "failed_requests": 0,
+                "accounts_created": 0,
+                "api_keys_generated": 0,
+                "risk_score": 0,
+                "is_banned": False,
+                "ban_type": None,
+                "ban_reason": None,
+                "first_seen": now,
+                "last_seen": now,
+            }
         return {
             "ip_address": record.ip_address,
             "country": record.country,
@@ -149,7 +169,15 @@ class IPIntelligenceService:
         }
 
     async def list_ips(self, limit: int = 50, offset: int = 0, min_risk: int = 0, is_banned: bool | None = None, country: str | None = None) -> list[IPRecord]:
-        return await self._repo.list_all(limit=limit, offset=offset)
+        stmt = select(IPRecord).order_by(IPRecord.risk_score.desc(), IPRecord.last_seen.desc())
+        if min_risk:
+            stmt = stmt.where(IPRecord.risk_score >= min_risk)
+        if is_banned is not None:
+            stmt = stmt.where(IPRecord.is_banned == is_banned)
+        if country:
+            stmt = stmt.where(IPRecord.country.ilike(country))
+        result = await self.db.execute(stmt.limit(limit).offset(offset))
+        return list(result.scalars().all())
 
     async def get_top_ips_by_risk(self, limit: int = 10) -> list[IPRecord]:
         return await self._repo.list_by_risk(min_score=70, limit=limit)

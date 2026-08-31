@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.constants import Permission
@@ -12,6 +13,7 @@ from app.admin.schemas import (
 )
 from app.admin.services.notifications import AdminNotificationService
 from app.core.database import get_session
+from app.admin.models import AdminEvent
 
 router = APIRouter(prefix="/admin", tags=["admin-notifications"])
 
@@ -54,6 +56,7 @@ async def admin_create_notification_config(
         is_enabled=body.is_enabled,
         config=body.config,
     )
+    await db.commit()
     return NotificationConfigRead(
         id=str(config.id) if config.id else None,
         event_type=config.event_type,
@@ -74,6 +77,7 @@ async def admin_enable_notification_config(
     config = await service.enable_config(config_id)
     if config is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Notification config not found")
+    await db.commit()
     return NotificationConfigRead(
         id=str(config.id) if config.id else None,
         event_type=config.event_type,
@@ -94,6 +98,7 @@ async def admin_disable_notification_config(
     config = await service.disable_config(config_id)
     if config is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Notification config not found")
+    await db.commit()
     return NotificationConfigRead(
         id=str(config.id) if config.id else None,
         event_type=config.event_type,
@@ -111,7 +116,23 @@ async def admin_list_notification_events(
     ctx: AdminContext = Depends(require_permission(Permission.NOTIFICATIONS_READ)),
     db: AsyncSession = Depends(get_session),
 ) -> list[NotificationEventRead]:
-    return []
+    result = await db.execute(
+        select(AdminEvent)
+        .order_by(desc(AdminEvent.created_at))
+        .offset(offset)
+        .limit(limit)
+    )
+    return [
+        NotificationEventRead(
+            id=str(event.id),
+            event_type=event.event_type,
+            title=event.title,
+            description=event.description,
+            is_read=event.is_read,
+            created_at=event.created_at.isoformat() if event.created_at else "",
+        )
+        for event in result.scalars().all()
+    ]
 
 
 @router.post("/notifications/events/{event_id}/read")
@@ -120,6 +141,11 @@ async def admin_mark_notification_read(
     ctx: AdminContext = Depends(require_permission(Permission.NOTIFICATIONS_READ)),
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
+    event = await db.get(AdminEvent, event_id)
+    if event is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Notification not found")
+    event.is_read = True
+    await db.commit()
     return {"message": "Notification marked as read"}
 
 
@@ -128,4 +154,9 @@ async def admin_mark_all_notifications_read(
     ctx: AdminContext = Depends(require_permission(Permission.NOTIFICATIONS_READ)),
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
-    return {"message": "All notifications marked as read"}
+    result = await db.execute(select(AdminEvent).where(AdminEvent.is_read.is_(False)))
+    events = result.scalars().all()
+    for event in events:
+        event.is_read = True
+    await db.commit()
+    return {"message": f"Marked {len(events)} notifications as read"}

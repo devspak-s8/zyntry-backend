@@ -5,7 +5,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.admin.models import NotificationConfig
+from app.admin.models import AdminEvent, NotificationConfig, SecurityAlert
 from app.admin.repositories import NotificationConfigRepository
 
 
@@ -63,4 +63,44 @@ class AdminNotificationService:
             await self._send_notification(config, title, description, severity)
 
     async def _send_notification(self, config: NotificationConfig, title: str, description: str | None, severity: str) -> None:
-        pass
+        event = AdminEvent(
+            event_type=config.event_type,
+            title=title,
+            description=description,
+            severity=severity,
+            category="security" if "security" in config.event_type else "system",
+            source=config.provider_type,
+            data={"notification_config_id": str(config.id) if config.id else None},
+            is_read=False,
+        )
+        self.db.add(event)
+        await self.db.flush()
+
+    async def alert_generated(self, alert: SecurityAlert) -> None:
+        """Fan out a generated alert to enabled admin notification channels.
+
+        Delivery is represented by an AdminEvent so the admin console can show
+        and acknowledge it immediately. Provider-specific delivery workers can
+        consume the same event later without changing the alert pipeline.
+        """
+        configs = await self.list_configs(event_type="security_alert", is_enabled=True)
+        if configs:
+            for config in configs:
+                await self._send_notification(config, alert.title, alert.description, str(alert.risk_level))
+            return
+
+        # Security alerts must remain visible in the admin notification feed
+        # even before an administrator configures an outbound channel.
+        self.db.add(
+            AdminEvent(
+                event_type="security_alert",
+                title=alert.title,
+                description=alert.description,
+                severity=str(alert.risk_level),
+                category="security",
+                source="security_engine",
+                data={"alert_id": str(alert.id) if alert.id else None},
+                is_read=False,
+            )
+        )
+        await self.db.flush()

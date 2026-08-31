@@ -79,6 +79,7 @@ async def admin_ban_ip(
 ) -> dict[str, str]:
     service = IPIntelligenceService(db)
     await service.ban_ip(ip_address, ban_type=body.ban_type, reason=body.reason, duration_hours=body.duration_hours)
+    await db.commit()
     return {"message": f"IP {ip_address} banned"}
 
 
@@ -90,6 +91,7 @@ async def admin_unban_ip(
 ) -> dict[str, str]:
     service = IPIntelligenceService(db)
     await service.unban_ip(ip_address)
+    await db.commit()
     return {"message": f"IP {ip_address} unbanned"}
 
 
@@ -101,6 +103,7 @@ async def admin_whitelist_ip(
 ) -> dict[str, str]:
     service = IPIntelligenceService(db)
     await service.whitelist_ip(ip_address)
+    await db.commit()
     return {"message": f"IP {ip_address} whitelisted"}
 
 
@@ -113,6 +116,7 @@ async def admin_blacklist_ip(
 ) -> dict[str, str]:
     service = IPIntelligenceService(db)
     await service.blacklist_ip(ip_address, body.reason if body else None)
+    await db.commit()
     return {"message": f"IP {ip_address} blacklisted"}
 
 
