@@ -95,7 +95,8 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Scan exact published image
-        uses: aquasecurity/trivy-action@0.28.0
+        # v0.36.0 (a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8)
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8
         with:
           image-ref: ${{ needs.build.outputs.image }}
           format: table
