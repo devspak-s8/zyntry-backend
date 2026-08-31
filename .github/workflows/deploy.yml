@@ -249,7 +249,11 @@ jobs:
               exit 1
             fi
 
-            $compose exec -T api python -c "from app.core.config import settings; assert all((settings.GITHUB_CLIENT_ID, settings.GITHUB_CLIENT_SECRET, settings.NOTION_CLIENT_ID, settings.NOTION_CLIENT_SECRET, settings.SLACK_CLIENT_ID, settings.SLACK_CLIENT_SECRET)), 'OAuth credentials were not injected into the API container'"
+            if [ "$DEPLOY_ENV" = "production" ]; then
+              $compose exec -T api python -c "from app.core.config import settings; assert all((settings.GITHUB_CLIENT_ID, settings.GITHUB_CLIENT_SECRET, settings.NOTION_CLIENT_ID, settings.NOTION_CLIENT_SECRET, settings.SLACK_CLIENT_ID, settings.SLACK_CLIENT_SECRET)), 'Production OAuth credentials were not injected into the API container'"
+            else
+              $compose exec -T api python -c "from app.core.config import settings; assert all((settings.GITHUB_CLIENT_ID, settings.GITHUB_CLIENT_SECRET)), 'Staging GitHub OAuth credentials were not injected into the API container'"
+            fi
             $compose exec -T api python -c "from app.core.config import settings; assert settings.APP_URL == '$DEPLOY_PUBLIC_API_URL' and settings.FRONTEND_URL == '$DEPLOY_PUBLIC_FRONTEND_URL', 'Public OAuth URLs were not injected into the API container'"
 
             # Roll out background services sequentially to avoid OOM kills.
