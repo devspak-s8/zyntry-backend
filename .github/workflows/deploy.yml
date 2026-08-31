@@ -265,3 +265,10 @@ jobs:
             done
 
             docker image prune -f
+
+  staging-security:
+    name: Authorized staging security tests
+    if: github.ref_name == 'staging'
+    needs: deploy
+    uses: ./.github/workflows/staging-security.yml
+    secrets: inherit
