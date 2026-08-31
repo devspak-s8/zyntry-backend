@@ -21,8 +21,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN useradd -m -u 1000 appuser
 
 COPY requirements.txt .
-RUN pip install --upgrade "pip>=26.2" "setuptools>=78.1.1" wheel && \
-    pip install --no-cache-dir -r requirements.txt
+RUN python -m venv /opt/venv && \
+    /opt/venv/bin/python -m pip install --upgrade "pip>=26.2" "setuptools>=78.1.1" wheel && \
+    /opt/venv/bin/python -m pip install --no-cache-dir --upgrade -r requirements.txt && \
+    /opt/venv/bin/python -c "from importlib.metadata import version; from packaging.version import Version; assert Version(version('msgpack')) >= Version('1.2.1'); assert Version(version('setuptools')) >= Version('78.1.1')"
 
 FROM python:3.12-slim AS runtime
 
@@ -31,7 +33,8 @@ WORKDIR /app
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PATH="/opt/venv/bin:$PATH"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
@@ -44,8 +47,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openssl-provider-legacy \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
+# The base Python image includes its own pip/setuptools. They are not needed at
+# runtime, and leaving their metadata beside the application environment can
+# make scanners report packages that are not used by this image.
+RUN find /usr/local/lib/python3.12/site-packages -maxdepth 1 \
+    \( -name 'pip' -o -name 'pip-*.dist-info' \
+       -o -name 'setuptools' -o -name 'setuptools-*.dist-info' \
+       -o -name 'wheel' -o -name 'wheel-*.dist-info' \) \
+    -exec rm -rf {} +
+
+COPY --from=builder /opt/venv /opt/venv
 
 COPY alembic ./alembic
 COPY alembic.ini .
