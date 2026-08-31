@@ -24,7 +24,8 @@ COPY requirements.txt .
 RUN python -m venv /opt/venv && \
     /opt/venv/bin/python -m pip install --upgrade "pip>=26.2" "setuptools>=78.1.1" wheel && \
     /opt/venv/bin/python -m pip install --no-cache-dir --upgrade -r requirements.txt && \
-    /opt/venv/bin/python -c "from importlib.metadata import version; from packaging.version import Version; assert Version(version('msgpack')) >= Version('1.2.1'); assert Version(version('setuptools')) >= Version('78.1.1')"
+    /opt/venv/bin/python -c "from importlib.metadata import version; from packaging.version import Version; assert Version(version('msgpack')) >= Version('1.2.1'); assert Version(version('setuptools')) >= Version('78.1.1')" && \
+    /opt/venv/bin/python -c "import pathlib, pip; [path.unlink() for path in pathlib.Path(pip.__file__).parent.rglob('bom.cdx.json')]"
 
 FROM python:3.12-slim AS runtime
 
