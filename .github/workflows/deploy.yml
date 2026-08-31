@@ -143,6 +143,7 @@ jobs:
           COMPOSE_OVERRIDE_FILE: ${{ secrets.COMPOSE_OVERRIDE_FILE }}
           DEPLOY_PUBLIC_API_URL: ${{ github.ref_name == 'main' && 'https://api.zyntry.space' || 'https://staging-api.zyntry.space' }}
           DEPLOY_PUBLIC_FRONTEND_URL: ${{ github.ref_name == 'main' && 'https://zyntry.space' || 'https://staging.zyntry.space' }}
+          DEPLOY_ENV: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
           DEPLOY_OAUTH_GITHUB_CLIENT_ID: ${{ secrets.GITHB_CLIENT_ID }}
           DEPLOY_OAUTH_GITHUB_CLIENT_SECRET: ${{ secrets.GITHB_CLIENT_SECRET }}
           DEPLOY_OAUTH_NOTION_CLIENT_ID: ${{ secrets.NOTION_CLIENT_ID }}
@@ -153,18 +154,24 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          envs: API_IMAGE,DEPLOY_PATH,GHCR_USERNAME,GHCR_READ_TOKEN,COMPOSE_OVERRIDE_FILE,DEPLOY_PUBLIC_API_URL,DEPLOY_PUBLIC_FRONTEND_URL,DEPLOY_OAUTH_GITHUB_CLIENT_ID,DEPLOY_OAUTH_GITHUB_CLIENT_SECRET,DEPLOY_OAUTH_NOTION_CLIENT_ID,DEPLOY_OAUTH_NOTION_CLIENT_SECRET,DEPLOY_OAUTH_SLACK_CLIENT_ID,DEPLOY_OAUTH_SLACK_CLIENT_SECRET
+          envs: API_IMAGE,DEPLOY_PATH,GHCR_USERNAME,GHCR_READ_TOKEN,COMPOSE_OVERRIDE_FILE,DEPLOY_PUBLIC_API_URL,DEPLOY_PUBLIC_FRONTEND_URL,DEPLOY_ENV,DEPLOY_OAUTH_GITHUB_CLIENT_ID,DEPLOY_OAUTH_GITHUB_CLIENT_SECRET,DEPLOY_OAUTH_NOTION_CLIENT_ID,DEPLOY_OAUTH_NOTION_CLIENT_SECRET,DEPLOY_OAUTH_SLACK_CLIENT_ID,DEPLOY_OAUTH_SLACK_CLIENT_SECRET
           script: |
             set -eu
             cd "$DEPLOY_PATH"
 
             if [ -z "${DEPLOY_OAUTH_GITHUB_CLIENT_ID:-}" ] || \
-               [ -z "${DEPLOY_OAUTH_GITHUB_CLIENT_SECRET:-}" ] || \
-               [ -z "${DEPLOY_OAUTH_NOTION_CLIENT_ID:-}" ] || \
-               [ -z "${DEPLOY_OAUTH_NOTION_CLIENT_SECRET:-}" ] || \
-               [ -z "${DEPLOY_OAUTH_SLACK_CLIENT_ID:-}" ] || \
-               [ -z "${DEPLOY_OAUTH_SLACK_CLIENT_SECRET:-}" ]; then
-              echo "OAuth deployment credentials are missing from the selected GitHub environment"
+               [ -z "${DEPLOY_OAUTH_GITHUB_CLIENT_SECRET:-}" ]; then
+              echo "GitHub OAuth deployment credentials are missing from the selected GitHub environment"
+              exit 1
+            fi
+
+            if [ "$DEPLOY_ENV" = "production" ] && { \
+                 [ -z "${DEPLOY_OAUTH_NOTION_CLIENT_ID:-}" ] || \
+                 [ -z "${DEPLOY_OAUTH_NOTION_CLIENT_SECRET:-}" ] || \
+                 [ -z "${DEPLOY_OAUTH_SLACK_CLIENT_ID:-}" ] || \
+                 [ -z "${DEPLOY_OAUTH_SLACK_CLIENT_SECRET:-}" ]; \
+               }; then
+              echo "Notion and Slack OAuth deployment credentials are required for production"
               exit 1
             fi
 
