@@ -265,9 +265,15 @@ jobs:
             done
 
             # Caddy mounts its configuration from the deployment directory.
-            # Recreate it after uploading Caddyfile so proxy-level security
-            # headers apply to every response, including generated errors.
-            $compose up -d --force-recreate --no-build caddy
+            # Reload the new file in place so the existing TLS listener stays
+            # available while proxy-level security headers are updated.
+            caddy_id=$($compose ps -q caddy || true)
+            caddy_running=$($compose ps --status running -q caddy || true)
+            if [ -n "$caddy_id" ] && [ -n "$caddy_running" ]; then
+              $compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+            else
+              $compose up -d --no-build caddy
+            fi
 
             docker image prune -f
 
