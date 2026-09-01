@@ -178,7 +178,7 @@ async def admin_alert_timeline(
 
 @router.post("/security/scan")
 async def admin_security_scan(
-    ctx: AdminContext = Depends(require_super_admin),
+    ctx: AdminContext = Depends(require_super_admin()),
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     engine = SecurityEngine(db)

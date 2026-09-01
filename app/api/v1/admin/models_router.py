@@ -79,7 +79,7 @@ async def admin_model_recommendations(
 
 @router.post("/models/refresh")
 async def admin_refresh_models(
-    ctx: AdminContext = Depends(require_super_admin),
+    ctx: AdminContext = Depends(require_super_admin()),
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
     return {"message": "Model analytics refreshed"}
