@@ -3,12 +3,6 @@ name: Authorized staging security tests
 on:
   workflow_dispatch:
   workflow_call: {}
-  push:
-    branches:
-      - staging
-    paths:
-      - .github/workflows/staging-security.yml
-      - scripts/security/**
 
 permissions:
   contents: read
