@@ -129,7 +129,7 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          source: docker-compose.yml,docker-compose.deploy.yml
+          source: Caddyfile,docker-compose.yml,docker-compose.deploy.yml
           target: ${{ secrets.DEPLOY_PATH }}
           overwrite: true
 
@@ -263,6 +263,11 @@ jobs:
               $compose up -d --no-build "$service"
               sleep 3
             done
+
+            # Caddy mounts its configuration from the deployment directory.
+            # Recreate it after uploading Caddyfile so proxy-level security
+            # headers apply to every response, including generated errors.
+            $compose up -d --force-recreate --no-build caddy
 
             docker image prune -f
 
