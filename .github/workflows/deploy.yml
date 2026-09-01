@@ -76,9 +76,47 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  scan-image:
+    name: Scan published image with Trivy
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR for image scan
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Scan exact published image
+        # v0.36.0 (a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8)
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8
+        with:
+          image-ref: ${{ needs.build.outputs.image }}
+          format: table
+          output: trivy-image-report.txt
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+
+      - name: Upload Trivy report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-image-report-${{ github.sha }}
+          path: trivy-image-report.txt
+          if-no-files-found: ignore
+
   deploy:
     name: Deploy ${{ github.ref_name }}
-    needs: build
+    needs: [build, scan-image]
     runs-on: ubuntu-latest
     environment: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
     steps:
@@ -91,7 +129,7 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          source: docker-compose.yml,docker-compose.deploy.yml
+          source: Caddyfile,docker-compose.yml,docker-compose.deploy.yml
           target: ${{ secrets.DEPLOY_PATH }}
           overwrite: true
 
@@ -105,28 +143,35 @@ jobs:
           COMPOSE_OVERRIDE_FILE: ${{ secrets.COMPOSE_OVERRIDE_FILE }}
           DEPLOY_PUBLIC_API_URL: ${{ github.ref_name == 'main' && 'https://api.zyntry.space' || 'https://staging-api.zyntry.space' }}
           DEPLOY_PUBLIC_FRONTEND_URL: ${{ github.ref_name == 'main' && 'https://zyntry.space' || 'https://staging.zyntry.space' }}
-          DEPLOY_OAUTH_GITHUB_CLIENT_ID: ${{ secrets.GITHB_CLIENT_ID }}
-          DEPLOY_OAUTH_GITHUB_CLIENT_SECRET: ${{ secrets.GITHB_CLIENT_SECRET }}
-          DEPLOY_OAUTH_NOTION_CLIENT_ID: ${{ secrets.NOTION_CLIENT_ID }}
-          DEPLOY_OAUTH_NOTION_CLIENT_SECRET: ${{ secrets.NOTION_CLIENT_SECRET }}
-          DEPLOY_OAUTH_SLACK_CLIENT_ID: ${{ secrets.SLACK_CLIENT_ID }}
-          DEPLOY_OAUTH_SLACK_CLIENT_SECRET: ${{ secrets.SLACK_CLIENT_SECRET }}
+          DEPLOY_ENV: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
+          DEPLOY_OAUTH_GITHUB_CLIENT_ID: ${{ secrets.DEPLOY_OAUTH_GITHUB_CLIENT_ID || secrets.DEPLOY_OAUTH_GITHB_CLIENT_ID || secrets.GITHB_CLIENT_ID }}
+          DEPLOY_OAUTH_GITHUB_CLIENT_SECRET: ${{ secrets.DEPLOY_OAUTH_GITHUB_CLIENT_SECRET || secrets.DEPLOY_OAUTH_GITHB_CLIENT_SECRET || secrets.GITHB_CLIENT_SECRET }}
+          DEPLOY_OAUTH_NOTION_CLIENT_ID: ${{ secrets.DEPLOY_OAUTH_NOTION_CLIENT_ID || secrets.NOTION_CLIENT_ID }}
+          DEPLOY_OAUTH_NOTION_CLIENT_SECRET: ${{ secrets.DEPLOY_OAUTH_NOTION_CLIENT_SECRET || secrets.NOTION_CLIENT_SECRET }}
+          DEPLOY_OAUTH_SLACK_CLIENT_ID: ${{ secrets.DEPLOY_OAUTH_SLACK_CLIENT_ID || secrets.SLACK_CLIENT_ID }}
+          DEPLOY_OAUTH_SLACK_CLIENT_SECRET: ${{ secrets.DEPLOY_OAUTH_SLACK_CLIENT_SECRET || secrets.SLACK_CLIENT_SECRET }}
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          envs: API_IMAGE,DEPLOY_PATH,GHCR_USERNAME,GHCR_READ_TOKEN,COMPOSE_OVERRIDE_FILE,DEPLOY_PUBLIC_API_URL,DEPLOY_PUBLIC_FRONTEND_URL,DEPLOY_OAUTH_GITHUB_CLIENT_ID,DEPLOY_OAUTH_GITHUB_CLIENT_SECRET,DEPLOY_OAUTH_NOTION_CLIENT_ID,DEPLOY_OAUTH_NOTION_CLIENT_SECRET,DEPLOY_OAUTH_SLACK_CLIENT_ID,DEPLOY_OAUTH_SLACK_CLIENT_SECRET
+          envs: API_IMAGE,DEPLOY_PATH,GHCR_USERNAME,GHCR_READ_TOKEN,COMPOSE_OVERRIDE_FILE,DEPLOY_PUBLIC_API_URL,DEPLOY_PUBLIC_FRONTEND_URL,DEPLOY_ENV,DEPLOY_OAUTH_GITHUB_CLIENT_ID,DEPLOY_OAUTH_GITHUB_CLIENT_SECRET,DEPLOY_OAUTH_NOTION_CLIENT_ID,DEPLOY_OAUTH_NOTION_CLIENT_SECRET,DEPLOY_OAUTH_SLACK_CLIENT_ID,DEPLOY_OAUTH_SLACK_CLIENT_SECRET
           script: |
             set -eu
             cd "$DEPLOY_PATH"
 
             if [ -z "${DEPLOY_OAUTH_GITHUB_CLIENT_ID:-}" ] || \
-               [ -z "${DEPLOY_OAUTH_GITHUB_CLIENT_SECRET:-}" ] || \
-               [ -z "${DEPLOY_OAUTH_NOTION_CLIENT_ID:-}" ] || \
-               [ -z "${DEPLOY_OAUTH_NOTION_CLIENT_SECRET:-}" ] || \
-               [ -z "${DEPLOY_OAUTH_SLACK_CLIENT_ID:-}" ] || \
-               [ -z "${DEPLOY_OAUTH_SLACK_CLIENT_SECRET:-}" ]; then
-              echo "OAuth deployment credentials are missing from the selected GitHub environment"
+               [ -z "${DEPLOY_OAUTH_GITHUB_CLIENT_SECRET:-}" ]; then
+              echo "GitHub OAuth deployment credentials are missing from the selected GitHub environment"
+              exit 1
+            fi
+
+            if [ "$DEPLOY_ENV" = "production" ] && { \
+                 [ -z "${DEPLOY_OAUTH_NOTION_CLIENT_ID:-}" ] || \
+                 [ -z "${DEPLOY_OAUTH_NOTION_CLIENT_SECRET:-}" ] || \
+                 [ -z "${DEPLOY_OAUTH_SLACK_CLIENT_ID:-}" ] || \
+                 [ -z "${DEPLOY_OAUTH_SLACK_CLIENT_SECRET:-}" ]; \
+               }; then
+              echo "Notion and Slack OAuth deployment credentials are required for production"
               exit 1
             fi
 
@@ -136,6 +181,8 @@ jobs:
             export NOTION_CLIENT_SECRET="$DEPLOY_OAUTH_NOTION_CLIENT_SECRET"
             export SLACK_CLIENT_ID="$DEPLOY_OAUTH_SLACK_CLIENT_ID"
             export SLACK_CLIENT_SECRET="$DEPLOY_OAUTH_SLACK_CLIENT_SECRET"
+            export APP_ENV="$DEPLOY_ENV"
+            export APP_DEBUG=false
             export APP_URL="$DEPLOY_PUBLIC_API_URL"
             export FRONTEND_URL="$DEPLOY_PUBLIC_FRONTEND_URL"
 
@@ -204,7 +251,11 @@ jobs:
               exit 1
             fi
 
-            $compose exec -T api python -c "from app.core.config import settings; assert all((settings.GITHUB_CLIENT_ID, settings.GITHUB_CLIENT_SECRET, settings.NOTION_CLIENT_ID, settings.NOTION_CLIENT_SECRET, settings.SLACK_CLIENT_ID, settings.SLACK_CLIENT_SECRET)), 'OAuth credentials were not injected into the API container'"
+            if [ "$DEPLOY_ENV" = "production" ]; then
+              $compose exec -T api python -c "from app.core.config import settings; assert all((settings.GITHUB_CLIENT_ID, settings.GITHUB_CLIENT_SECRET, settings.NOTION_CLIENT_ID, settings.NOTION_CLIENT_SECRET, settings.SLACK_CLIENT_ID, settings.SLACK_CLIENT_SECRET)), 'Production OAuth credentials were not injected into the API container'"
+            else
+              $compose exec -T api python -c "from app.core.config import settings; assert all((settings.GITHUB_CLIENT_ID, settings.GITHUB_CLIENT_SECRET)), 'Staging GitHub OAuth credentials were not injected into the API container'"
+            fi
             $compose exec -T api python -c "from app.core.config import settings; assert settings.APP_URL == '$DEPLOY_PUBLIC_API_URL' and settings.FRONTEND_URL == '$DEPLOY_PUBLIC_FRONTEND_URL', 'Public OAuth URLs were not injected into the API container'"
 
             # Roll out background services sequentially to avoid OOM kills.
@@ -213,4 +264,22 @@ jobs:
               sleep 3
             done
 
+            # Caddy mounts its configuration from the deployment directory.
+            # Reload the new file in place so the existing TLS listener stays
+            # available while proxy-level security headers are updated.
+            caddy_id=$($compose ps -q caddy || true)
+            caddy_running=$($compose ps --status running -q caddy || true)
+            if [ -n "$caddy_id" ] && [ -n "$caddy_running" ]; then
+              $compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+            else
+              $compose up -d --no-build caddy
+            fi
+
             docker image prune -f
+
+  staging-security:
+    name: Authorized staging security tests
+    if: github.ref_name == 'staging'
+    needs: deploy
+    uses: ./.github/workflows/staging-security.yml
+    secrets: inherit

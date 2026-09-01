@@ -7,6 +7,7 @@ from app.admin.constants import Permission
 from app.admin.dependencies import AdminContext, require_permission
 from app.admin.schemas import (
     RuntimeDetailRead,
+    RuntimeUsageRead,
 )
 from app.admin.services.runtime_monitor import RuntimeMonitorService
 from app.core.database import get_session
@@ -46,7 +47,9 @@ async def admin_disable_runtime(
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
     service = RuntimeMonitorService(db)
-    await service.disable_runtime(runtime_id)
+    if not await service.disable_runtime(runtime_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Runtime not found")
+    await db.commit()
     return {"message": "Runtime disabled"}
 
 
@@ -57,7 +60,9 @@ async def admin_restart_runtime(
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
     service = RuntimeMonitorService(db)
-    await service.restart_runtime(runtime_id)
+    if not await service.restart_runtime(runtime_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Runtime not found")
+    await db.commit()
     return {"message": "Runtime restart queued"}
 
 
@@ -68,6 +73,8 @@ async def admin_flush_cache(
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
     service = RuntimeMonitorService(db)
+    if await service.get_runtime_detail(runtime_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Runtime not found")
     await service.flush_cache(runtime_id)
     return {"message": "Cache flushed"}
 
@@ -79,18 +86,20 @@ async def admin_regenerate_runtime(
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
     service = RuntimeMonitorService(db)
+    if await service.get_runtime_detail(runtime_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Runtime not found")
     await service.regenerate_runtime(runtime_id)
     return {"message": "Runtime regeneration queued"}
 
 
-@router.get("/runtimes/{runtime_id}/usage", response_model=RuntimeDetailRead)
+@router.get("/runtimes/{runtime_id}/usage", response_model=RuntimeUsageRead)
 async def admin_runtime_usage(
     runtime_id: str,
     ctx: AdminContext = Depends(require_permission(Permission.RUNTIMES_READ)),
     db: AsyncSession = Depends(get_session),
-) -> RuntimeDetailRead:
+) -> RuntimeUsageRead:
     service = RuntimeMonitorService(db)
-    runtime = await service.get_runtime_detail(runtime_id)
-    if runtime is None:
+    usage = await service.get_runtime_usage(runtime_id)
+    if usage is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Runtime not found")
-    return RuntimeDetailRead(**runtime)
+    return RuntimeUsageRead(**usage)

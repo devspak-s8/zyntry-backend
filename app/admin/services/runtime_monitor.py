@@ -4,12 +4,15 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.repositories import IPRecordRepository
 from app.core.cache import cache as redis_cache
 from app.models.runtimes import Runtime
+from app.models.billing import UsageLog
+from app.models.integrations import RuntimeIntegration
+from app.models.tools import Tool
 
 
 class RuntimeMonitorService:
@@ -30,11 +33,12 @@ class RuntimeMonitorService:
             cache_hit_rate = await self._get_cache_hit_rate(runtime_id)
             queue_time = await self._get_queue_time(runtime_id)
             connected_sources = await self._count_connected_sources(runtime_id)
-            connected_tools = await self._count_connected_tools(runtime_id) if connected_sources > 0 else 0
+            connected_tools = await self._count_connected_tools(str(row.project_id)) if connected_sources > 0 and row.project_id else 0
+            last_invocation = await self._get_last_invocation(runtime_id)
             results.append({
                 "id": runtime_id,
                 "project_id": str(row.project_id) if row.project_id else None,
-                "organization_id": str(row.organization_id) if row.organization_id else None,
+                "organization_id": str(row.organization_id) if row.organization_id else "",
                 "name": row.name,
                 "status": row.status,
                 "provider": row.provider,
@@ -46,7 +50,7 @@ class RuntimeMonitorService:
                 "chunks": row.chunks,
                 "embeddings": row.embeddings,
                 "index_size": row.index_size,
-                "health": row.health,
+                "health": str(row.health),
                 "error_message": row.error_message,
                 "api_key_id": str(row.api_key_id) if row.api_key_id else None,
                 "avg_latency_ms": avg_latency,
@@ -57,20 +61,29 @@ class RuntimeMonitorService:
                 "queue_time_ms": queue_time,
                 "connected_sources": connected_sources,
                 "connected_tools": connected_tools,
+                "created_at": row.created_at.isoformat() if row.created_at else "",
+                "updated_at": row.updated_at.isoformat() if row.updated_at else "",
+                "disabled": bool(getattr(row, "disabled", False) or row.status == "disabled"),
+                "disabled_by_admin": bool(getattr(row, "disabled_by_admin", False)),
+                "last_invocation": last_invocation.isoformat() if last_invocation else None,
             })
         return results
 
     async def _get_avg_latency(self, runtime_id: str) -> float | None:
-        return None
+        result = await self.db.scalar(select(func.avg(UsageLog.latency_ms)).where(UsageLog.runtime_id == runtime_id))
+        return float(result) if result is not None else None
 
     async def _get_avg_cost(self, runtime_id: str) -> Decimal | None:
-        return None
+        result = await self.db.scalar(select(func.avg(UsageLog.cost)).where(UsageLog.runtime_id == runtime_id))
+        return Decimal(str(result)) if result is not None else None
 
     async def _get_invocation_count(self, runtime_id: str) -> int:
-        return 0
+        result = await self.db.scalar(select(func.coalesce(func.sum(UsageLog.requests), 0)).where(UsageLog.runtime_id == runtime_id))
+        return int(result or 0)
 
     async def _get_error_count(self, runtime_id: str) -> int:
-        return 0
+        result = await self.db.execute(select(UsageLog.metadata_).where(UsageLog.runtime_id == runtime_id))
+        return sum(1 for (metadata,) in result.all() if isinstance(metadata, dict) and (metadata.get("error") or metadata.get("success") is False))
 
     async def _get_cache_hit_rate(self, runtime_id: str) -> float:
         return 0.0
@@ -79,13 +92,21 @@ class RuntimeMonitorService:
         return 0.0
 
     async def _count_connected_sources(self, runtime_id: str) -> int:
-        return 0
+        result = await self.db.scalar(
+            select(func.count(RuntimeIntegration.id)).where(
+                RuntimeIntegration.runtime_id == runtime_id,
+                RuntimeIntegration.is_enabled.is_(True),
+                RuntimeIntegration.connection_status.in_(["connected", "active"]),
+            )
+        )
+        return int(result or 0)
 
     async def _count_connected_tools(self, project_id: str) -> int:
-        return 0
+        result = await self.db.scalar(select(func.count(Tool.id)).where(Tool.project_id == project_id))
+        return int(result or 0)
 
     async def _get_last_invocation(self, runtime_id: str) -> datetime | None:
-        return None
+        return await self.db.scalar(select(func.max(UsageLog.created_at)).where(UsageLog.runtime_id == runtime_id))
 
     async def get_runtime_detail(self, runtime_id: str) -> dict[str, Any] | None:
         result = await self.db.execute(select(Runtime).where(Runtime.id == runtime_id))
@@ -95,7 +116,7 @@ class RuntimeMonitorService:
         return {
             "id": str(runtime.id) if runtime.id else None,
             "project_id": str(runtime.project_id) if runtime.project_id else None,
-            "organization_id": str(runtime.organization_id) if runtime.organization_id else None,
+            "organization_id": str(runtime.organization_id) if runtime.organization_id else "",
             "name": runtime.name,
             "status": runtime.status,
             "provider": runtime.provider,
@@ -107,29 +128,53 @@ class RuntimeMonitorService:
             "chunks": runtime.chunks,
             "embeddings": runtime.embeddings,
             "index_size": runtime.index_size,
-            "health": runtime.health,
+            "health": str(runtime.health),
             "error_message": runtime.error_message,
             "created_at": runtime.created_at.isoformat() if runtime.created_at else "",
             "updated_at": runtime.updated_at.isoformat() if runtime.updated_at else "",
-            "disabled": runtime.disabled,
-            "disabled_by_admin": runtime.disabled_by_admin,
+            "disabled": bool(getattr(runtime, "disabled", False) or runtime.status == "disabled"),
+            "disabled_by_admin": bool(getattr(runtime, "disabled_by_admin", False)),
+            "avg_latency_ms": await self._get_avg_latency(runtime_id),
+            "avg_cost": float(await self._get_avg_cost(runtime_id) or 0),
+            "invocation_count": await self._get_invocation_count(runtime_id),
+            "error_count": await self._get_error_count(runtime_id),
+            "cache_hit_rate": await self._get_cache_hit_rate(runtime_id),
+            "queue_time_ms": await self._get_queue_time(runtime_id),
+            "connected_sources": await self._count_connected_sources(runtime_id),
+            "connected_tools": await self._count_connected_tools(str(runtime.project_id)) if runtime.project_id else 0,
+            "last_invocation": (await self._get_last_invocation(runtime_id)).isoformat() if await self._get_last_invocation(runtime_id) else None,
+        }
+
+    async def get_runtime_usage(self, runtime_id: str) -> dict[str, Any] | None:
+        runtime = await self.get_runtime_detail(runtime_id)
+        if runtime is None:
+            return None
+        return {
+            "runtime_id": runtime_id,
+            "invocation_count": runtime["invocation_count"] or 0,
+            "avg_latency_ms": runtime["avg_latency_ms"] or 0.0,
+            "avg_cost": runtime["avg_cost"] or 0.0,
+            "error_count": runtime["error_count"] or 0,
+            "cache_hit_rate": runtime["cache_hit_rate"] or 0.0,
+            "queue_time_ms": runtime["queue_time_ms"] or 0.0,
         }
 
     async def disable_runtime(self, runtime_id: str) -> bool:
         result = await self.db.execute(select(Runtime).where(Runtime.id == runtime_id))
         runtime = result.scalar_one_or_none()
-        if runtime:
-            runtime.disabled = True
-            runtime.disabled_by_admin = True
-            await self.db.flush()
+        if runtime is None:
+            return False
+        runtime.status = "disabled"
+        await self.db.flush()
         return True
 
     async def restart_runtime(self, runtime_id: str) -> bool:
         result = await self.db.execute(select(Runtime).where(Runtime.id == runtime_id))
         runtime = result.scalar_one_or_none()
-        if runtime:
-            runtime.status = "queued"
-            await self.db.flush()
+        if runtime is None:
+            return False
+        runtime.status = "queued"
+        await self.db.flush()
         return True
 
     async def flush_cache(self, runtime_id: str) -> bool:

@@ -15,8 +15,10 @@
     redir https://{host}{uri} permanent
 }
 
-# Main domain
-zyntry.space, www.zyntry.space, *.zyntry.space {
+# API hostnames only. Avoid a wildcard certificate here: wildcard
+# certificates require DNS-01 credentials, while these hosts can use the
+# existing HTTP-01 certificates managed by Caddy.
+api.zyntry.space, staging-api.zyntry.space {
     # Security headers
     header {
         X-Content-Type-Options "nosniff"
@@ -25,6 +27,7 @@ zyntry.space, www.zyntry.space, *.zyntry.space {
         Referrer-Policy "strict-origin-when-cross-origin"
         Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
         Permissions-Policy "geolocation=(), microphone=(), camera=()"
+        Cross-Origin-Resource-Policy "same-site"
         -Server
     }
 
@@ -53,6 +56,7 @@ localhost, 127.0.0.1, ::1 {
         X-Frame-Options "DENY"
         X-XSS-Protection "1; mode=block"
         Referrer-Policy "strict-origin-when-cross-origin"
+        Cross-Origin-Resource-Policy "same-site"
         -Server
     }
 

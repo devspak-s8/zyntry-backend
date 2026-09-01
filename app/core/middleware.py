@@ -26,14 +26,24 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        if request.headers.get("content-type", "").startswith("multipart/form-data"):
-            return await call_next(request)
-
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        # API responses are consumed by same-site browser clients and should
+        # not be embeddable by unrelated origins.
+        response.headers["Cross-Origin-Resource-Policy"] = "same-site"
+
+        # User-specific API responses and operational metadata must not be
+        # stored by browsers or shared proxies.  CSRF already sets this
+        # header explicitly; set a default for the remaining API, health, and
+        # OpenAPI responses.
+        if request.url.path.startswith("/api/") or request.url.path in {
+            "/health",
+            "/openapi.json",
+        }:
+            response.headers.setdefault("Cache-Control", "no-store")
 
         if not settings.APP_DEBUG:
             response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
@@ -41,13 +51,18 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         if settings.CSP_ENABLED and request.url.path not in ("/docs", "/redoc"):
             if settings.APP_DEBUG:
                 response.headers["Content-Security-Policy"] = (
-                    "default-src 'self' http://localhost:3000 http://localhost:3001 http://localhost:5173; "
-                    "connect-src 'self' http://localhost:3000 http://localhost:3001 http://localhost:5173 ws: wss:; "
+                    "default-src 'self' http://localhost:3000 http://localhost:3001 "
+                    "http://localhost:5173; "
+                    "connect-src 'self' http://localhost:3000 http://localhost:3001 "
+                    "http://localhost:5173 ws: wss:; "
                     "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
                 )
             else:
                 frontend_origin = settings.FRONTEND_URL or settings.APP_URL
-                api_origin = f"{settings.APP_URL.rstrip('/')}/{settings.API_PREFIX}/{settings.API_VERSION}"
+                api_origin = (
+                    f"{settings.APP_URL.rstrip('/')}"
+                    f"/{settings.API_PREFIX}/{settings.API_VERSION}"
+                )
                 response.headers["Content-Security-Policy"] = (
                     f"default-src 'self' {frontend_origin}; "
                     f"connect-src 'self' {frontend_origin} {api_origin} ws: wss:; "

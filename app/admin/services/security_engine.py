@@ -4,11 +4,11 @@ import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.admin.constants import risk_level_from_score
-from app.admin.models import IPRecord, SecurityAlert
+from app.admin.constants import AlertStatus, risk_level_from_score
+from app.admin.models import IPRecord, LoginEvent, SecurityAlert
 from app.admin.repositories import IPRecordRepository, LoginEventRepository, SecurityAlertRepository
 from app.admin.services.notifications import AdminNotificationService
 
@@ -195,6 +195,78 @@ class SecurityEngine:
 
         return analysis
 
+    async def run_security_scan(self, window_minutes: int = 60, threshold: int = 5) -> dict[str, Any]:
+        """Scan recent failed admin logins and create actionable alerts.
+
+        The scan is intentionally idempotent: an open brute-force alert for an
+        IP is reused instead of creating a new alert on every scan.
+        """
+        window_minutes = max(1, min(window_minutes, 24 * 60))
+        threshold = max(1, threshold)
+        since = datetime.now(UTC) - timedelta(minutes=window_minutes)
+        result = await self.db.execute(
+            select(LoginEvent.ip_address, func.count(LoginEvent.id).label("failures"))
+            .where(
+                LoginEvent.created_at >= since,
+                LoginEvent.success.is_(False),
+                LoginEvent.ip_address.is_not(None),
+            )
+            .group_by(LoginEvent.ip_address)
+        )
+
+        suspicious: list[dict[str, Any]] = []
+        alerts_created = 0
+        for ip_address, failures in result.all():
+            failures = int(failures or 0)
+            if failures < threshold:
+                continue
+            suspicious.append({"ip_address": ip_address, "failed_attempts": failures})
+            existing = await self.db.scalar(
+                select(SecurityAlert)
+                .where(
+                    SecurityAlert.alert_type == "brute_force",
+                    SecurityAlert.ip_address == ip_address,
+                    SecurityAlert.status == AlertStatus.OPEN.value,
+                )
+                .limit(1)
+            )
+            if existing is None:
+                score = await self.calculate_risk_score(
+                    threat_types=["api_key_brute_force"],
+                    ip_address=ip_address,
+                    user_id=None,
+                    organization_id=None,
+                    failed_auth_count=failures,
+                )
+                await self.generate_alert(
+                    alert_type="brute_force",
+                    risk_score=score,
+                    title="Repeated failed authentication attempts",
+                    description=f"{failures} failed sign-in attempts from {ip_address} in the last {window_minutes} minutes.",
+                    ip_address=ip_address,
+                    organization_id=None,
+                    user_id=None,
+                    fingerprint_hash=None,
+                    triggered_rules=["failed_auth_threshold"],
+                    metadata={"window_minutes": window_minutes, "failed_attempts": failures},
+                )
+                await self._ip_repo.ban_ip(
+                    ip_address,
+                    ban_type="temporary",
+                    reason="Automated security scan: repeated failed authentication",
+                    duration_hours=24,
+                )
+                alerts_created += 1
+
+        await self.db.commit()
+        return {
+            "status": "completed",
+            "window_minutes": window_minutes,
+            "threshold": threshold,
+            "suspicious_ips": suspicious,
+            "alerts_created": alerts_created,
+        }
+
     async def generate_alert(
         self,
         alert_type: str,
@@ -233,8 +305,16 @@ class SecurityEngine:
         if alert is None:
             return []
 
-        events = []
-        events.append({"action": "Alert Created", "timestamp": alert.first_seen.isoformat() if alert.first_seen else "", "status": alert.status})
+        events = [
+            {
+                "id": f"{alert.id}:created",
+                "alert_id": str(alert.id),
+                "action": "Alert Created",
+                "performed_by": None,
+                "reason": alert.description,
+                "created_at": alert.first_seen.isoformat() if alert.first_seen else "",
+            }
+        ]
 
         return events
 

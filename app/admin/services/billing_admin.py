@@ -28,16 +28,22 @@ class BillingAdminService:
         month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
         wallet_balance = await self.db.scalar(select(func.coalesce(func.sum(Wallet.balance), 0)).where(Wallet.status == "active"))
-        credits_purchased = Decimal("0")
-        credits_used = Decimal("0")
-        provider_cost = Decimal("0")
-        refunds = Decimal("0")
-        platform_revenue = Decimal("0")
-        profit = Decimal("0")
-        profit_margin = Decimal("0")
+        credits_purchased = await self.db.scalar(select(func.coalesce(func.sum(Wallet.total_topups), 0))) or Decimal("0")
+        credits_used = await self.db.scalar(select(func.coalesce(func.sum(Wallet.total_spent), 0))) or Decimal("0")
+        from app.models.billing import UsageLog
+
+        provider_cost = await self.db.scalar(select(func.coalesce(func.sum(UsageLog.provider_cost), 0))) or Decimal("0")
+        platform_revenue = await self.db.scalar(select(func.coalesce(func.sum(UsageLog.platform_markup), 0))) or Decimal("0")
+        refunds = await self.db.scalar(
+            select(func.coalesce(func.sum(WalletTransaction.amount), 0)).where(WalletTransaction.type == "refund")
+        ) or Decimal("0")
+        profit = platform_revenue
+        profit_margin = (profit / credits_used) if credits_used else Decimal("0")
 
         top_customers = []
-        monthly_revenue = Decimal("0")
+        monthly_revenue = await self.db.scalar(
+            select(func.coalesce(func.sum(UsageLog.cost), 0)).where(UsageLog.created_at >= month_start)
+        ) or Decimal("0")
 
         return {
             "wallet_balance": float(wallet_balance or 0),
@@ -50,6 +56,8 @@ class BillingAdminService:
             "profit_margin": float(profit_margin),
             "top_customers": top_customers,
             "monthly_revenue": float(monthly_revenue),
+            "pending_payments": 0.0,
+            "failed_payments": 0.0,
         }
 
     async def get_wallet_details(self, user_id: str) -> dict[str, Any] | None:
@@ -85,12 +93,17 @@ class BillingAdminService:
         wallet = await service.get_wallet(uuid.UUID(user_id))
 
         return {
-            "transaction_id": str(transaction.id) if transaction.id else "",
+            "id": str(transaction.id) if transaction.id else "",
+            "wallet_id": str(transaction.wallet_id),
+            "user_id": user_id,
+            "user_name": None,
+            "org_name": None,
             "type": "credit",
             "amount": amount,
             "balance_before": float(balance_before),
             "balance_after": float(wallet.balance),
             "reason": reason,
+            "created_at": transaction.created_at.isoformat() if transaction.created_at else "",
         }
 
     async def debit_wallet(self, user_id: str, amount: float, reason: str | None = None) -> dict[str, Any]:
@@ -105,12 +118,17 @@ class BillingAdminService:
         wallet = await service.get_wallet(uid)
 
         return {
-            "transaction_id": str(transaction.id) if transaction.id else "",
+            "id": str(transaction.id) if transaction.id else "",
+            "wallet_id": str(transaction.wallet_id),
+            "user_id": user_id,
+            "user_name": None,
+            "org_name": None,
             "type": "debit",
             "amount": amount,
             "balance_before": float(balance_before),
             "balance_after": float(wallet.balance),
             "reason": reason,
+            "created_at": transaction.created_at.isoformat() if transaction.created_at else "",
         }
 
     async def refund_transaction(self, user_id: str, transaction_id: str, reason: str | None = None) -> dict[str, Any]:
@@ -119,18 +137,30 @@ class BillingAdminService:
         wallet = await service.get_wallet(uid)
         balance_before = wallet.balance
         try:
+            transaction_uuid = uuid.UUID(transaction_id)
+        except ValueError:
+            return {"error": "Invalid transaction id"}
+        original = await self.db.get(WalletTransaction, transaction_uuid)
+        if original is None:
+            return {"error": "Transaction not found"}
+        try:
             refund_txn = await service.refund_transaction(uid, RefundRequest(transaction_id=uuid.UUID(transaction_id), reason=reason or "Admin refund"))
         except ValueError as exc:
             return {"error": str(exc)}
         wallet = await service.get_wallet(uid)
 
         return {
-            "transaction_id": str(refund_txn.id) if refund_txn.id else "",
+            "id": str(refund_txn.id) if refund_txn.id else "",
+            "wallet_id": str(refund_txn.wallet_id),
+            "user_id": user_id,
+            "user_name": None,
+            "org_name": None,
             "type": "refund",
-            "amount": original.amount,
+            "amount": float(original.amount),
             "balance_before": float(balance_before),
             "balance_after": float(wallet.balance),
             "reason": reason,
+            "created_at": refund_txn.created_at.isoformat() if refund_txn.created_at else "",
         }
 
     async def adjust_balance(self, user_id: str, new_balance: float, reason: str | None = None) -> dict[str, Any]:
@@ -153,12 +183,17 @@ class BillingAdminService:
         wallet = await service.get_wallet(uid)
 
         return {
-            "transaction_id": str(transaction.id) if transaction.id else "",
+            "id": str(transaction.id) if transaction.id else "",
+            "wallet_id": str(transaction.wallet_id),
+            "user_id": user_id,
+            "user_name": None,
+            "org_name": None,
             "type": txn_type,
             "amount": abs(amount),
             "balance_before": float(balance_before),
             "balance_after": float(wallet.balance),
             "reason": reason,
+            "created_at": transaction.created_at.isoformat() if transaction.created_at else "",
         }
 
     async def freeze_wallet(self, user_id: str, reason: str | None = None) -> dict[str, Any]:
@@ -209,14 +244,15 @@ class BillingAdminService:
         rows = result.scalars().all()
         output = []
         for row in rows:
-            user_result = await self.db.execute(select(User).where(User.id == row.user_id))
-            user = user_result.scalar_one_or_none()
-            org_result = await self.db.execute(select(Organization).where(Organization.id == row.user_id))
-            org = org_result.scalar_one_or_none()
+            wallet = await self.db.get(Wallet, row.wallet_id)
+            user_result = await self.db.execute(select(User).where(User.id == wallet.user_id)) if wallet else None
+            user = user_result.scalar_one_or_none() if user_result else None
+            org_result = await self.db.execute(select(Organization).where(Organization.id == user.organization_id)) if user and user.organization_id else None
+            org = org_result.scalar_one_or_none() if org_result else None
             output.append({
                 "id": str(row.id) if row.id else None,
                 "wallet_id": str(row.wallet_id) if row.wallet_id else None,
-                "user_id": str(row.user_id) if row.user_id else None,
+                "user_id": str(user.id) if user else "",
                 "user_name": user.name if user else None,
                 "org_name": org.name if org else None,
                 "type": row.type,

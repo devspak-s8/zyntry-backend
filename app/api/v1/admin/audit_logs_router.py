@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.constants import Permission
@@ -13,6 +14,7 @@ from app.admin.schemas import (
 )
 from app.admin.services.audit_log import AuditLogService
 from app.core.database import get_session
+from app.admin.models import AdminAuditLog
 
 router = APIRouter(prefix="/admin", tags=["admin-audit-logs"])
 
@@ -28,16 +30,23 @@ async def admin_list_audit_logs(
     ctx: AdminContext = Depends(require_permission(Permission.AUDIT_READ)),
     db: AsyncSession = Depends(get_session),
 ) -> list[AuditLogEntryRead]:
-    service = AuditLogService(db)
-    date_from_dt = datetime.fromisoformat(date_from) if date_from else None
-    date_to_dt = datetime.fromisoformat(date_to) if date_to else None
-    logs = await service.log(
-        admin_id="",
-        action=action or "",
-        resource_type="",
-        limit=limit,
-        offset=offset,
-    )
+    stmt = select(AdminAuditLog).order_by(desc(AdminAuditLog.created_at)).offset(offset).limit(limit)
+    if action:
+        stmt = stmt.where(AdminAuditLog.action == action)
+    if admin_user_id:
+        stmt = stmt.where(AdminAuditLog.admin_user_id == admin_user_id)
+    if date_from:
+        try:
+            stmt = stmt.where(AdminAuditLog.created_at >= datetime.fromisoformat(date_from.replace("Z", "+00:00")))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid date_from") from exc
+    if date_to:
+        try:
+            stmt = stmt.where(AdminAuditLog.created_at <= datetime.fromisoformat(date_to.replace("Z", "+00:00")))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid date_to") from exc
+    result = await db.execute(stmt)
+    logs = result.scalars().all()
     return [
         AuditLogEntryRead(
             id=str(log.id) if log.id else None,
@@ -63,8 +72,9 @@ async def admin_audit_log_summary(
     ctx: AdminContext = Depends(require_permission(Permission.AUDIT_READ)),
     db: AsyncSession = Depends(get_session),
 ) -> AuditLogSummaryRead:
-    return AuditLogSummaryRead(
-        total_entries=0,
-        actions={},
-        top_admins=[],
-    )
+    total = await db.scalar(select(func.count()).select_from(AdminAuditLog)) or 0
+    action_rows = await db.execute(select(AdminAuditLog.action, func.count()).group_by(AdminAuditLog.action))
+    actions = {str(row[0]): int(row[1]) for row in action_rows.all()}
+    admin_rows = await db.execute(select(AdminAuditLog.admin_user_id, func.count()).where(AdminAuditLog.admin_user_id.is_not(None)).group_by(AdminAuditLog.admin_user_id).order_by(func.count().desc()).limit(10))
+    top_admins = [{"admin_user_id": str(row[0]), "entries": int(row[1])} for row in admin_rows.all()]
+    return AuditLogSummaryRead(total_entries=int(total), actions=actions, top_admins=top_admins)

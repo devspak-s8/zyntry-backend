@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.api.v1.admin.analytics_router import router as analytics_router
+from app.api.v1.admin.api_keys_router import router as api_keys_router
 from app.api.v1.admin.audit_logs_router import router as audit_logs_router
 from app.api.v1.admin.auth_router import router as auth_router
 from app.api.v1.admin.billing_router import router as billing_router
@@ -29,6 +30,7 @@ router.include_router(runtimes_router)
 router.include_router(models_router)
 router.include_router(billing_router)
 router.include_router(analytics_router)
+router.include_router(api_keys_router)
 router.include_router(events_router)
 router.include_router(health_router)
 router.include_router(audit_logs_router)

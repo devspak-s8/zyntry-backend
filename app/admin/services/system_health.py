@@ -3,8 +3,10 @@ from __future__ import annotations
 import time
 from typing import Any
 
+import httpx
 import psutil
 from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.constants import HealthStatus
 from app.admin.metrics_collector import metrics_collector
@@ -157,6 +159,12 @@ class SystemHealthService:
             return {"service": "Queue Health", "status": HealthStatus.CRITICAL.value, "details": {"error": str(e)}}
 
     async def get_full_health(self) -> dict[str, Any]:
+        providers = await self.check_model_providers()
+        provider_status = HealthStatus.HEALTHY.value
+        if any(provider.get("status") == HealthStatus.CRITICAL.value for provider in providers):
+            provider_status = HealthStatus.CRITICAL.value
+        elif any(provider.get("status") == HealthStatus.WARNING.value for provider in providers):
+            provider_status = HealthStatus.WARNING.value
         checks = {
             "fastapi": await self.check_fastapi(),
             "redis": await self.check_redis(),
@@ -167,7 +175,11 @@ class SystemHealthService:
             "system_resources": await self.check_system_resources(),
             "storage": await self.check_storage(),
             "external_apis": await self.check_external_apis(),
-            "model_providers": await self.check_model_providers(),
+            "model_providers": {
+                "service": "Model Providers",
+                "status": provider_status,
+                "details": {"providers": providers},
+            },
             "queue_health": await self.check_queue_health(),
         }
 
@@ -179,4 +191,4 @@ class SystemHealthService:
             if check["status"] == HealthStatus.WARNING.value:
                 overall = HealthStatus.WARNING.value
 
-        return {"overall": overall, "checks": checks}
+        return {"overall": overall, "checks": checks, "providers": providers}
