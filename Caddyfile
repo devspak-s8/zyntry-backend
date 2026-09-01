@@ -15,10 +15,10 @@
     redir https://{host}{uri} permanent
 }
 
-# Known application hostnames. Avoid a wildcard certificate here: wildcard
+# API hostnames only. Avoid a wildcard certificate here: wildcard
 # certificates require DNS-01 credentials, while these hosts can use the
 # existing HTTP-01 certificates managed by Caddy.
-zyntry.space, www.zyntry.space, api.zyntry.space, app.zyntry.space, dashboard.zyntry.space, staging-api.zyntry.space, staging.zyntry.space {
+api.zyntry.space, staging-api.zyntry.space {
     # Security headers
     header {
         X-Content-Type-Options "nosniff"
