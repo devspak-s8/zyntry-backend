@@ -9,6 +9,8 @@ import re
 
 from sqlalchemy import func, select
 
+from app.admin.constants import AdminRole
+from app.admin.models import AdminUser
 from app.core.config import settings
 from app.core.database import async_session_factory
 from app.core.security import hash_password, verify_password
@@ -20,6 +22,25 @@ def _admin_slug(email: str) -> str:
     local_part = email.split("@", 1)[0].lower()
     safe_part = re.sub(r"[^a-z0-9]+", "-", local_part).strip("-") or "admin"
     return f"superadmin-{safe_part}"[:255]
+
+
+async def _ensure_admin_record(db, user: User) -> None:
+    """Ensure the seeded user can authenticate through the admin API."""
+    await db.flush()
+    result = await db.execute(select(AdminUser).where(AdminUser.user_id == user.id))
+    admin_user = result.scalar_one_or_none()
+    if admin_user is None:
+        db.add(
+            AdminUser(
+                user_id=user.id,
+                role=AdminRole.SUPER_ADMIN,
+                is_active=True,
+            )
+        )
+        return
+
+    admin_user.role = AdminRole.SUPER_ADMIN
+    admin_user.is_active = True
 
 
 async def seed_superadmin() -> None:
@@ -86,6 +107,7 @@ async def seed_superadmin() -> None:
                 user.organization_id = organization.id
             action = "updated"
 
+        await _ensure_admin_record(db, user)
         await db.commit()
         print(f"Superadmin {action}: {email}")
 
