@@ -25,6 +25,7 @@ zyntry.space, www.zyntry.space, *.zyntry.space {
         Referrer-Policy "strict-origin-when-cross-origin"
         Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
         Permissions-Policy "geolocation=(), microphone=(), camera=()"
+        Cross-Origin-Resource-Policy "same-site"
         -Server
     }
 
@@ -53,6 +54,7 @@ localhost, 127.0.0.1, ::1 {
         X-Frame-Options "DENY"
         X-XSS-Protection "1; mode=block"
         Referrer-Policy "strict-origin-when-cross-origin"
+        Cross-Origin-Resource-Policy "same-site"
         -Server
     }
 
