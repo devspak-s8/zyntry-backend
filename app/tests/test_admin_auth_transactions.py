@@ -6,12 +6,14 @@ from sqlalchemy import select
 from app.admin.auth import AdminAuth
 from app.admin.constants import AdminRole
 from app.admin.models import AdminSession, AdminUser
+from app.core.config import settings
 from app.core.security import hash_password, hash_token
 from app.models.users import User
 
 
 @pytest.mark.asyncio
-async def test_admin_login_commits_revocable_session(db_session) -> None:
+async def test_admin_login_commits_revocable_session(db_session, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "JWT_SECRET", "test-admin-jwt-secret-at-least-32-bytes")
     password = "strong-admin-test-password"
     user = User(
         email="transaction-admin@example.com",
