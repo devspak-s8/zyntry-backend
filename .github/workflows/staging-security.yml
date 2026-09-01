@@ -132,6 +132,7 @@ jobs:
             sh -c 'zap-api-scan.py \
               -t "$ZAP_TARGET_URL" \
               -f openapi \
+              -S \
               -r zap-report.html \
               -x zap-report.xml \
               -I \
