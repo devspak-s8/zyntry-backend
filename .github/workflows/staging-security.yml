@@ -50,6 +50,22 @@ jobs:
             *) echo "::error::STAGING_BASE_URL must be an HTTPS staging endpoint"; exit 1 ;;
           esac
 
+      - name: Wait for staging HTTPS endpoint
+        env:
+          STAGING_BASE_URL: ${{ secrets.STAGING_BASE_URL }}
+        run: |
+          set -euo pipefail
+          health_url="${STAGING_BASE_URL%/}/health"
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error \
+              --connect-timeout 5 --max-time 10 "$health_url" >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Staging HTTPS endpoint did not become ready: $health_url"
+          exit 1
+
       - name: Run read-only tenant isolation checks
         env:
           STAGING_BASE_URL: ${{ secrets.STAGING_BASE_URL }}
@@ -80,6 +96,22 @@ jobs:
             https://*staging*|https://staging*) ;;
             *) echo "::error::ZAP target must be an HTTPS staging endpoint"; exit 1 ;;
           esac
+
+      - name: Wait for staging HTTPS endpoint
+        env:
+          STAGING_BASE_URL: ${{ secrets.STAGING_BASE_URL }}
+        run: |
+          set -euo pipefail
+          health_url="${STAGING_BASE_URL%/}/health"
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error \
+              --connect-timeout 5 --max-time 10 "$health_url" >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Staging HTTPS endpoint did not become ready: $health_url"
+          exit 1
 
       - name: Run authenticated ZAP baseline scan
         env:
