@@ -196,7 +196,7 @@ class AdminAuth:
                 mfa_verified=admin_user.mfa_verified,
             )
         )
-        await self.db.flush()
+        await self.db.commit()
 
         return {
             "access_token": access_token,
@@ -298,7 +298,7 @@ class AdminAuth:
                 mfa_verified=admin_user.mfa_verified,
             )
         )
-        await self.db.flush()
+        await self.db.commit()
         return {"access_token": access_token, "refresh_token": new_refresh, "token_type": "bearer", "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60, "role": AdminRole(admin_user.role).value, "mfa_verified": admin_user.mfa_verified}
 
     async def logout(self, token: str) -> dict[str, str]:
@@ -307,7 +307,7 @@ class AdminAuth:
         session = result.scalar_one_or_none()
         if session:
             session.revoked = True
-            await self.db.flush()
+            await self.db.commit()
         return {"message": "Logged out successfully"}
 
     async def logout_all(self, admin_user_id: uuid.UUID) -> dict[str, str]:
@@ -315,7 +315,7 @@ class AdminAuth:
         sessions = result.scalars().all()
         for session in sessions:
             session.revoked = True
-        await self.db.flush()
+        await self.db.commit()
         return {"message": "All sessions revoked"}
 
     async def setup_mfa(self, admin_id: uuid.UUID) -> dict[str, Any]:
@@ -327,7 +327,7 @@ class AdminAuth:
         secret = generate_totp_secret()
         admin_user.mfa_secret = secret
         admin_user.mfa_enabled = True
-        await self.db.flush()
+        await self.db.commit()
 
         return {"secret": secret, "uri": generate_totp_uri(secret, admin_user.user_id)}
 
@@ -352,7 +352,7 @@ class AdminAuth:
         )
         for session in active_sessions.scalars().all():
             session.mfa_verified = True
-        await self.db.flush()
+        await self.db.commit()
         return {"message": "MFA verified successfully"}
 
     async def disable_mfa(self, admin_id: uuid.UUID) -> dict[str, str]:
@@ -364,5 +364,5 @@ class AdminAuth:
         admin_user.mfa_secret = None
         admin_user.mfa_enabled = False
         admin_user.mfa_verified = False
-        await self.db.flush()
+        await self.db.commit()
         return {"message": "MFA disabled successfully"}
