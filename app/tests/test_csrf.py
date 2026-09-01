@@ -62,3 +62,33 @@ async def test_multipart_mutations_still_require_csrf(monkeypatch) -> None:
 
     assert response.status_code == 403
     assert called is False
+
+
+@pytest.mark.asyncio
+async def test_admin_login_is_not_blocked_by_stale_session_cookie(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "APP_DEBUG", False)
+    scope = {
+        "type": "http",
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "https",
+        "path": "/api/v1/admin/auth/login",
+        "raw_path": b"/api/v1/admin/auth/login",
+        "query_string": b"",
+        "headers": [(b"cookie", b"zyntra_refresh=expired")],
+        "client": ("127.0.0.1", 1234),
+        "server": ("test", 443),
+    }
+    request = Request(scope)
+    called = False
+
+    async def call_next(_request):
+        nonlocal called
+        called = True
+        return None
+
+    middleware = CSRFMiddleware(app=lambda scope, receive, send: None)
+    response = await middleware.dispatch(request, call_next)
+
+    assert response is None
+    assert called is True

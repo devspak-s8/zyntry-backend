@@ -25,7 +25,11 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         # Public authentication endpoints have no authenticated cookie to
         # protect. Session/refresh-cookie mutations still require the
         # double-submit token, including logout and refresh.
-        if path.startswith("/api/v1/auth") and path not in {
+        # Login endpoints are public and must remain usable even when a stale
+        # session/refresh cookie is present in the browser.  Requiring a CSRF
+        # token before a user can authenticate would turn an expired session
+        # into an unexplained 403 (notably for the admin console).
+        if (path.startswith("/api/v1/auth") or path == "/api/v1/admin/auth/login") and path not in {
             "/api/v1/auth/logout",
             "/api/v1/auth/logout-all",
             "/api/v1/auth/refresh",
