@@ -1,4 +1,6 @@
-from app.main import _parse_cors_origins
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.main import _parse_cors_origins, app
 
 
 def test_parse_cors_origins_supports_environment_specific_frontends() -> None:
@@ -18,3 +20,7 @@ def test_parse_cors_origins_ignores_empty_entries() -> None:
     assert _parse_cors_origins(" ,https://staging.zyntry.space,, ") == [
         "https://staging.zyntry.space"
     ]
+
+
+def test_cors_is_the_outermost_application_middleware() -> None:
+    assert app.user_middleware[0].cls is CORSMiddleware

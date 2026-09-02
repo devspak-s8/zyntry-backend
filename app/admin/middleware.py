@@ -41,8 +41,8 @@ class AdminSecurityMiddleware(BaseHTTPMiddleware):
     async def _publish_ws_event(self, request: Request, response: Response, duration: float, ip: str, admin_id: str) -> None:
         try:
             from app.admin.websocket_manager import admin_ws_manager
-            await admin_ws_manager.broadcast_to_topic(
-                f"admin:{admin_id}",
+            await admin_ws_manager.send_to_admin(
+                str(admin_id),
                 {
                     "type": "request",
                     "method": request.method,

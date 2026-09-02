@@ -133,6 +133,14 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(CSRFMiddleware)
+    app.add_middleware(RequestContextMiddleware)
+    app.add_middleware(RateLimitMiddleware, limit=settings.RATE_LIMIT_PER_MINUTE, window=60)
+    app.add_middleware(AdminSecurityMiddleware)
+    # Starlette applies middleware in reverse registration order. Keep CORS
+    # outermost so browser clients receive CORS headers on handled failures as
+    # well as successful API responses.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_parse_cors_origins(settings.CORS_ORIGINS),
@@ -140,11 +148,6 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    app.add_middleware(SecurityHeadersMiddleware)
-    app.add_middleware(CSRFMiddleware)
-    app.add_middleware(RequestContextMiddleware)
-    app.add_middleware(RateLimitMiddleware, limit=settings.RATE_LIMIT_PER_MINUTE, window=60)
-    app.add_middleware(AdminSecurityMiddleware)
 
     from app.core.redis import redis_client
 
@@ -188,9 +191,23 @@ def create_app() -> FastAPI:
 
         auth_header = websocket.headers.get("authorization", "")
         token = auth_header[7:] if auth_header.startswith("Bearer ") else ""
+        already_accepted = False
         if not token:
-            await websocket.close(code=4001, reason="Not authenticated")
-            return
+            # Browsers cannot set Authorization headers on WebSocket
+            # handshakes. Authenticate with the first TLS-protected message
+            # instead of putting credentials in the URL/query string.
+            await websocket.accept()
+            already_accepted = True
+            try:
+                auth_message = await asyncio.wait_for(websocket.receive_json(), timeout=5)
+                if auth_message.get("type") != "authenticate":
+                    raise ValueError("authentication message required")
+                token = str(auth_message.get("token") or "")
+                if not token:
+                    raise ValueError("token required")
+            except (asyncio.TimeoutError, ValueError, TypeError, WebSocketDisconnect):
+                await websocket.close(code=4001, reason="Not authenticated")
+                return
         try:
             payload = decode_admin_token(token)
             if payload.get("type") != "admin_access":
@@ -225,7 +242,12 @@ def create_app() -> FastAPI:
                 await websocket.close(code=4001, reason="Invalid session")
                 return
 
-        await admin_ws_manager.connect(websocket, token=token)
+        await admin_ws_manager.connect(
+            websocket,
+            admin_id=str(admin_id),
+            already_accepted=already_accepted,
+        )
+        await websocket.send_json({"type": "connected", "transport": "websocket"})
         try:
             while True:
                 data = await websocket.receive_text()

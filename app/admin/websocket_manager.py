@@ -5,41 +5,24 @@ from typing import Any
 
 from fastapi import WebSocket
 
-from app.admin.auth import decode_token
-
-
 class AdminWebSocketManager:
     def __init__(self) -> None:
         self.active_connections: dict[str, list[WebSocket]] = {}
         self.topics: dict[str, set[str]] = defaultdict(set)
         self._admin_ids: dict[WebSocket, str] = {}
 
-    async def connect(self, websocket: WebSocket, token: str) -> None:
-        await websocket.accept()
-        # Admin credentials must arrive in the Authorization header. Query
-        # string tokens are routinely copied into access logs and browser
-        # history, so never accept them here.
-        auth_token = token
-
-        if not auth_token:
-            await websocket.close(code=4001, reason="Not authenticated")
-            return
-
-        try:
-            payload = decode_token(auth_token)
-            if payload.get("type") != "admin_access":
-                await websocket.close(code=4001, reason="Invalid token type")
-                return
-            admin_id = payload.get("admin_id")
-            if not admin_id:
-                await websocket.close(code=4001, reason="Invalid token")
-                return
-        except Exception:
-            await websocket.close(code=4001, reason="Invalid token")
-            return
-
+    async def connect(
+        self,
+        websocket: WebSocket,
+        admin_id: str,
+        *,
+        already_accepted: bool = False,
+    ) -> None:
+        if not already_accepted:
+            await websocket.accept()
         self.active_connections.setdefault(admin_id, []).append(websocket)
         self._admin_ids[websocket] = admin_id
+        self.topics[f"admin:{admin_id}"].add(admin_id)
 
     async def disconnect(self, websocket: WebSocket) -> None:
         admin_id = self._admin_ids.pop(websocket, None)
@@ -47,6 +30,8 @@ class AdminWebSocketManager:
             self.active_connections[admin_id].remove(websocket)
             if not self.active_connections[admin_id]:
                 del self.active_connections[admin_id]
+                for subscribers in self.topics.values():
+                    subscribers.discard(admin_id)
 
     async def send_to_admin(self, admin_id: str, message: dict[str, Any]) -> None:
         connections = self.active_connections.get(admin_id, [])
