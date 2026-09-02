@@ -57,6 +57,30 @@ class EventTimelineService:
         )
         self.db.add(event)
         await self.db.flush()
+        from app.admin.websocket_manager import admin_ws_manager
+
+        await admin_ws_manager.broadcast(
+            {
+                "type": "invocation",
+                "event": {
+                    "id": str(event.id),
+                    "request_id": event.request_id,
+                    "event_type": event.event_type,
+                    "title": event.title,
+                    "description": event.description,
+                    "sequence": event.sequence,
+                    "timestamp": event.created_at.isoformat() if event.created_at else "",
+                    "organization_id": str(event.organization_id) if event.organization_id else None,
+                    "runtime_id": str(event.runtime_id) if event.runtime_id else None,
+                    "provider": event.provider,
+                    "model": event.model,
+                    "latency_ms": event.latency_ms,
+                    "status_code": event.status_code,
+                    "cost": float(event.cost) if event.cost else None,
+                    "data": event.data,
+                },
+            }
+        )
         return event
 
     async def get_request_timeline(self, request_id: str) -> list[AdminEventTimeline]:

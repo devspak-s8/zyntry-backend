@@ -135,7 +135,7 @@ async def admin_list_users(
     result = await db.execute(
         select(AdminUser, User)
         .join(User, User.id == AdminUser.user_id)
-        .order_by(AdminUser.created_at.desc())
+        .order_by(User.created_at.desc())
         .limit(limit)
         .offset(offset)
     )
@@ -147,7 +147,7 @@ async def admin_list_users(
             role=admin.role.value if hasattr(admin.role, "value") else str(admin.role),
             is_active=admin.is_active and user.is_active,
             mfa_enabled=admin.mfa_enabled,
-            created_at=admin.created_at.isoformat() if admin.created_at else "",
+            created_at=user.created_at.isoformat() if user.created_at else "",
         )
         for admin, user in result.all()
     ]
@@ -172,13 +172,13 @@ async def admin_get_user(
     row = result.one_or_none()
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Admin user not found")
-    user, account = row
+    admin, account = row
     return AdminUserRead(
-        id=str(user.id),
+        id=str(admin.id),
         email=account.email,
         name=account.name or "",
-        role=user.role.value if hasattr(user.role, "value") else str(user.role),
-        is_active=user.is_active and account.is_active,
-        mfa_enabled=user.mfa_enabled,
-        created_at=user.created_at.isoformat() if user.created_at else "",
+        role=admin.role.value if hasattr(admin.role, "value") else str(admin.role),
+        is_active=admin.is_active and account.is_active,
+        mfa_enabled=admin.mfa_enabled,
+        created_at=account.created_at.isoformat() if account.created_at else "",
     )
