@@ -85,6 +85,22 @@ class IntegrationDefinition:
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
+        if self.category in {"databases", "geospatial"} and not data.get("configuration_schema"):
+            if "file_path" in self.auth_methods:
+                input_fields = [{
+                    "name": "path", "label": f"{self.name} database file path",
+                    "type": "text", "secret": False, "required": True,
+                }]
+            else:
+                input_fields = [{
+                    "name": "connection_string", "label": f"{self.name} connection URL",
+                    "type": "url", "secret": False, "required": True,
+                    "placeholder": f"Paste your {self.name} connection URL",
+                }]
+            data["configuration_schema"] = {
+                "input_fields": input_fields,
+                "read_only_default": True,
+            }
         data["capabilities"] = [c.to_dict() for c in self.capabilities]
         data["supported_connection_modes"] = self.connection_modes
         data["authentication_methods"] = self.auth_methods
@@ -1522,6 +1538,104 @@ DEFINITIONS: dict[str, IntegrationDefinition] = {
     ),
 }
 
+
+def _database_definition(
+    slug: str,
+    name: str,
+    *,
+    status: str = "coming_soon",
+    auth_methods: list[str] | None = None,
+    input_fields: list[dict[str, Any]] | None = None,
+) -> IntegrationDefinition:
+    methods = auth_methods or ["connection_string"]
+    fields = input_fields or [
+        {
+            "name": "connection_string",
+            "label": f"{name} connection URL",
+            "type": "url",
+            "secret": False,
+            "required": True,
+            "placeholder": f"Paste your {name} connection URL",
+        }
+    ]
+    return IntegrationDefinition(
+        id=f"int_{slug}",
+        slug=slug,
+        name=name,
+        description=f"Connect {name} for read-only retrieval and schema discovery.",
+        category="databases",
+        icon=slug,
+        status=status,
+        enabled=status != "coming_soon",
+        connection_modes=["zyntry_managed"],
+        auth_methods=methods,
+        configuration_schema={"input_fields": fields, "read_only_default": True},
+        capabilities=[
+            IntegrationCapability(
+                slug="query",
+                name="Read data",
+                description=f"Run read-only retrieval against {name}.",
+                operation="read",
+                is_write=False,
+            ),
+            IntegrationCapability(
+                slug="schema_inspection",
+                name="Inspect schema",
+                description=f"Inspect available structures in {name}.",
+                operation="read",
+                is_write=False,
+            ),
+        ],
+        metadata={"requires_dedicated_connector": status == "coming_soon"},
+    )
+
+
+# Complete database/GIS catalog. PostgreSQL/MySQL/SQLite-compatible services
+# reuse the live engine; providers requiring a dedicated SDK stay visible but
+# disabled until their execution adapter is installed.
+DEFINITIONS.update({
+    "mariadb": _database_definition("mariadb", "MariaDB", status="beta"),
+    "microsoft_sql_server": _database_definition("microsoft_sql_server", "Microsoft SQL Server"),
+    "oracle_database": _database_definition("oracle_database", "Oracle Database"),
+    "cassandra": _database_definition("cassandra", "Cassandra"),
+    "dynamodb": _database_definition(
+        "dynamodb", "DynamoDB", auth_methods=["aws_credentials"],
+        input_fields=[
+            {"name": "region", "label": "AWS region", "type": "text", "secret": False, "required": True},
+            {"name": "access_key_id", "label": "Access key ID", "type": "text", "secret": False, "required": True},
+            {"name": "secret_access_key", "label": "Secret access key", "type": "password", "secret": True, "required": True},
+        ],
+    ),
+    "firestore": _database_definition(
+        "firestore", "Firestore", auth_methods=["service_account"],
+        input_fields=[
+            {"name": "project_id", "label": "Google Cloud project ID", "type": "text", "secret": False, "required": True},
+            {"name": "service_account_json", "label": "Service account JSON", "type": "textarea", "secret": True, "required": True},
+        ],
+    ),
+    "neo4j": _database_definition("neo4j", "Neo4j"),
+    "elasticsearch": _database_definition("elasticsearch", "Elasticsearch"),
+    "opensearch": _database_definition("opensearch", "OpenSearch"),
+    "supabase": _database_definition("supabase", "Supabase", status="available"),
+    "neon": _database_definition("neon", "Neon", status="available"),
+    "amazon_aurora": _database_definition("amazon_aurora", "Amazon Aurora", status="beta"),
+    "tidb": _database_definition("tidb", "TiDB", status="beta"),
+    "pinecone": _database_definition(
+        "pinecone", "Pinecone", auth_methods=["api_key"],
+        input_fields=[
+            {"name": "host", "label": "Index host", "type": "url", "secret": False, "required": True},
+            {"name": "api_key", "label": "API key", "type": "password", "secret": True, "required": True},
+        ],
+    ),
+    "qdrant": _database_definition("qdrant", "Qdrant"),
+    "weaviate": _database_definition("weaviate", "Weaviate"),
+    "milvus": _database_definition("milvus", "Milvus"),
+    "spatialite": _database_definition(
+        "spatialite", "SpatiaLite", status="beta", auth_methods=["file_path"],
+        input_fields=[{"name": "path", "label": "Database file path", "type": "text", "secret": False, "required": True}],
+    ),
+})
+
 # Add canonical aliases so both "postgres" and "postgresql", "s3" and "amazon_s3" work seamlessly
 ALIASES: dict[str, str] = {
     "postgres": "postgresql",
@@ -1533,6 +1647,10 @@ ALIASES: dict[str, str] = {
     "crawler": "website",
     "gemini": "google_gemini",
     "grok": "xai",
+    "mssql": "microsoft_sql_server",
+    "sql_server": "microsoft_sql_server",
+    "oracle": "oracle_database",
+    "aurora": "amazon_aurora",
 }
 
 

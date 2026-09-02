@@ -146,3 +146,4 @@ class SQLiteConnector(BaseConnector):
 
 
 registry.register("sqlite", SQLiteConnector)
+registry.register("spatialite", SQLiteConnector)

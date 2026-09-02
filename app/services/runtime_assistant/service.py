@@ -19,6 +19,7 @@ from app.services.runtime_assistant.optimizer import RuntimeOptimizer
 from app.services.runtime_assistant.planner import RuntimeAssistantPlanner
 from app.services.runtime_assistant.recommendations import RuntimeRecommendations
 from app.services.runtime_assistant.records import RuntimeAssistantRecords, evidence_from_tool_results
+from app.services.runtime_assistant.responder import RuntimeAssistantResponder
 from app.services.runtime_assistant.schemas import (
     AssistantMessage,
     AssistantResponse,
@@ -127,14 +128,29 @@ class RuntimeAssistantService:
 
         response = executor.build_response(message, tool_results)
         response.context = context
+        evidence = evidence_from_tool_results(tool_results)
+        conversation_history = await records.history(
+            uuid.UUID(runtime_id), uuid.UUID(user_id), 10, conversation.id
+        )
+        generated_message = await RuntimeAssistantResponder().generate(
+            user_message=message,
+            context=context,
+            decision=decision,
+            tool_evidence=evidence,
+            recent_messages=[
+                {"role": item.role, "content": item.content}
+                for item in conversation_history
+            ],
+        )
+        if generated_message:
+            response.message = generated_message
         control_plane_diagnostics = _diagnose_control_plane_state(context)
-        if control_plane_diagnostics:
+        if control_plane_diagnostics and tool_results:
             response.diagnostics = [*control_plane_diagnostics, *response.diagnostics]
             response.message = (
                 _format_control_plane_diagnostics(control_plane_diagnostics, context)
                 + (f"\n\n{response.message}" if response.message else "")
             )
-        evidence = evidence_from_tool_results(tool_results)
         evidence.insert(0, {
             "source": "control_plane_snapshot",
             "reference_id": runtime_id,

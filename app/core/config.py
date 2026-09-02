@@ -69,6 +69,8 @@ class AppSettings(BaseSettings):
     FIREWORKS_API_KEY: str = ""
     ONBOARDING_PROVIDER: str = "google"
     ONBOARDING_MODEL: str = "gemini-2.5-flash"
+    RUNTIME_ASSISTANT_PROVIDER: str = "google"
+    RUNTIME_ASSISTANT_MODEL: str = "gemini-2.5-flash"
     AZURE_OPENAI_ENDPOINT: str = ""
     AZURE_OPENAI_KEY: str = ""
     AZURE_OPENAI_DEPLOYMENT: str = ""

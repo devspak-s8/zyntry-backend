@@ -80,6 +80,25 @@ async def test_integration_registry_filtering() -> None:
     assert any(i.slug == "postgresql" for i in search_results)
 
 
+def test_database_and_gis_catalog_has_all_supported_targets_and_input_metadata() -> None:
+    expected = {
+        "postgresql", "mysql", "mariadb", "mongodb", "sqlite", "cockroachdb",
+        "microsoft_sql_server", "oracle_database", "redis", "cassandra", "dynamodb",
+        "firestore", "neo4j", "elasticsearch", "opensearch", "supabase", "neon",
+        "amazon_aurora", "tidb", "pinecone", "qdrant", "weaviate", "milvus",
+        "postgis", "spatialite",
+    }
+    databases = {item.slug: item for item in integration_registry.list_all()}
+    assert expected <= databases.keys()
+    for slug in expected:
+        fields = databases[slug].to_dict()["configuration_schema"].get("input_fields", [])
+        assert fields, f"{slug} must declare its required frontend inputs"
+        assert all("secret" in field and "required" in field for field in fields)
+
+    assert databases["supabase"].status == "available"
+    assert databases["microsoft_sql_server"].status == "coming_soon"
+
+
 @pytest.mark.asyncio
 async def test_integration_registry_api_catalog(client: AsyncClient, db_session: AsyncSession) -> None:
     uow = UnitOfWork(db_session)

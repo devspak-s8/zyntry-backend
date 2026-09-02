@@ -212,12 +212,10 @@ class RuntimeAssistantPlanner:
         return calls
 
     def _plan_general(self, message: str) -> list[ToolCall]:
-        calls = []
-        if "get_runtime_summary" in self.tool_map:
-            calls.append(ToolCall(id=self._generate_id(), name="get_runtime_summary", arguments={}))
-        if "run_health_check" in self.tool_map:
-            calls.append(ToolCall(id=self._generate_id(), name="run_health_check", arguments={}))
-        return calls
+        # Conversation is not a diagnostic request. Runtime data is already
+        # available in the scoped control-plane snapshot, so greetings and
+        # general chat must not trigger health checks on every turn.
+        return []
 
     def _generate_id(self) -> str:
         import uuid

@@ -163,3 +163,5 @@ class MySQLConnector(BaseConnector):
 
 
 registry.register("mysql", MySQLConnector)
+registry.register("mariadb", MySQLConnector)
+registry.register("tidb", MySQLConnector)

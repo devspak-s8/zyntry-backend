@@ -326,6 +326,9 @@ class RuntimeAssistantExecutor:
             ])
 
         if not successful and not diagnostics:
-            parts.append("I was unable to retrieve runtime data. Please try again.")
+            if any(term in message_lower.split() for term in ("hi", "hello", "hey", "yo")):
+                parts.append("Hi! I can help you understand this runtime, investigate failures, review configuration, or explain its connected resources. What would you like to check?")
+            else:
+                parts.append("I’m here to help with this runtime. Ask me about its status, configuration, integrations, knowledge sources, performance, costs, or recent failures.")
 
         return "\n".join(parts).strip()

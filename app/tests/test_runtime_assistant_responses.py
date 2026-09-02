@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from app.services.runtime_assistant.executor import RuntimeAssistantExecutor, ToolExecutionResult
+from app.services.runtime_assistant.planner import RuntimeAssistantPlanner
 from app.services.runtime_assistant.schemas import RuntimeContext, ToolCall, UserRole
 
 
@@ -57,3 +58,12 @@ def test_routing_change_is_proposed_not_executed() -> None:
     )
     assert "Proposed change (not applied)" in response.message
     assert "explicitly approve" in response.message
+
+
+def test_greeting_does_not_trigger_runtime_diagnostics() -> None:
+    executor = _executor()
+    planner = RuntimeAssistantPlanner(executor.context, [])
+    assert planner.plan("yo").tool_calls == []
+    response = executor.build_response("yo", [])
+    assert "I found" not in response.message
+    assert "Hi!" in response.message

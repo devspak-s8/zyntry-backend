@@ -83,6 +83,12 @@ class HealthService:
             error_count=error_count,
             total_operations=max(1, cache_hits + cache_misses + error_count),
         )
+        # Absence of telemetry is not evidence of degradation. A newly built
+        # runtime previously received an artificial score of 50 because it had
+        # no sync timestamp or traffic yet, even when its control-plane health
+        # was 100. Preserve the observed runtime health until metrics exist.
+        if not metrics and not checks:
+            health_score = float(runtime.health)
 
         return {
             "runtime_id": str(runtime.id),
