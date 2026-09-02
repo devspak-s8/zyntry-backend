@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from app.services.runtime_assistant.prompts import build_user_prompt
+from app.services.runtime_assistant.configuration import parse_configuration_change
 from app.services.runtime_assistant.schemas import (
     RuntimeContext,
     ToolCall,
@@ -14,9 +15,15 @@ from app.services.runtime_assistant.schemas import (
 
 
 class ToolPlan:
-    def __init__(self, tool_calls: list[ToolCall], reasoning: str) -> None:
+    def __init__(
+        self,
+        tool_calls: list[ToolCall],
+        reasoning: str,
+        configuration_error: str | None = None,
+    ) -> None:
         self.tool_calls = tool_calls
         self.reasoning = reasoning
+        self.configuration_error = configuration_error
 
 
 class RuntimeAssistantPlanner:
@@ -30,7 +37,32 @@ class RuntimeAssistantPlanner:
         tool_calls: list[ToolCall] = []
         reasoning_parts: list[str] = []
 
-        if any(k in message_lower for k in ["why is my runtime slow", "slow runtime", "latency", "performance"]):
+        configuration_error: str | None = None
+        try:
+            configuration_change = parse_configuration_change(user_message)
+        except ValueError as exc:
+            configuration_change = None
+            configuration_error = str(exc)
+        if configuration_change and "update_runtime_configuration" in self.tool_map:
+            reasoning_parts.append("User explicitly requested a runtime configuration change.")
+            tool_calls.append(
+                ToolCall(
+                    id=self._generate_id(),
+                    name="update_runtime_configuration",
+                    arguments={"changes": configuration_change},
+                )
+            )
+        elif any(k in message_lower for k in ["rebuild runtime", "rebuild the runtime", "rebuild embeddings", "rebuild the embeddings", "re-index", "reindex"]):
+            reasoning_parts.append("User explicitly requested a runtime rebuild.")
+            if "rebuild_embeddings" in self.tool_map:
+                tool_calls.append(
+                    ToolCall(
+                        id=self._generate_id(),
+                        name="rebuild_embeddings",
+                        arguments={},
+                    )
+                )
+        elif any(k in message_lower for k in ["why is my runtime slow", "slow runtime", "latency", "performance"]):
             reasoning_parts.append("User is asking about runtime performance.")
             tool_calls.extend(self._plan_slow_runtime(message_lower))
 
@@ -83,7 +115,14 @@ class RuntimeAssistantPlanner:
             tool_calls.extend(self._plan_general(message_lower))
 
         reasoning = " ".join(reasoning_parts) if reasoning_parts else "Processing general request."
-        return ToolPlan(tool_calls=tool_calls, reasoning=reasoning)
+        if configuration_error:
+            reasoning_parts.append("The requested configuration value failed validation.")
+            reasoning = " ".join(reasoning_parts)
+        return ToolPlan(
+            tool_calls=tool_calls,
+            reasoning=reasoning,
+            configuration_error=configuration_error,
+        )
 
     def classify_request(self, user_message: str) -> dict[str, Any]:
         """Return a high-level, safe execution decision for observability.

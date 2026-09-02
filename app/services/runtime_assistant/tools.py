@@ -11,6 +11,10 @@ from app.services.providers import ProviderService
 from app.services.runtimes import RuntimeService
 from app.services.tools import ToolService
 from app.services.runtime_assistant.permissions import PermissionDeniedError, check_tool_permission
+from app.services.runtime_assistant.configuration import (
+    configuration_change_impact,
+    normalize_configuration_changes,
+)
 from app.services.runtime_assistant.schemas import (
     ActionType,
     ToolCall,
@@ -396,6 +400,44 @@ async def _change_max_tokens(self: RuntimeAssistantTools, max_tokens: int) -> di
     return {"status": "success", "max_tokens": max_tokens, "runtime": updated}
 
 
+async def _update_runtime_configuration(
+    self: RuntimeAssistantTools, changes: dict[str, Any]
+) -> dict[str, Any]:
+    """Apply a confirmed, allowlisted RuntimeUpdate payload.
+
+    This is intentionally separate from the generic PATCH endpoint so the
+    assistant cannot change runtime ownership, lifecycle status, or secrets.
+    """
+    from app.schemas.runtimes import RuntimeUpdate
+
+    runtime = await self.runtime_service.get(self.runtime_id)
+    if not runtime:
+        raise ValueError("Runtime not found")
+
+    normalized = normalize_configuration_changes(changes)
+    current_config = dict(runtime.get("config") or {})
+    config_updates = normalized.pop("config", None)
+    if config_updates:
+        current_config.update(config_updates)
+        normalized["config"] = current_config
+
+    effective_chunk_size = normalized.get("chunk_size", runtime.get("chunk_size", 512))
+    effective_chunk_overlap = normalized.get("chunk_overlap", runtime.get("chunk_overlap", 64))
+    if effective_chunk_overlap >= effective_chunk_size:
+        raise ValueError("chunk_overlap must be smaller than chunk_size")
+
+    update_data = RuntimeUpdate(**normalized)
+    updated = await self.runtime_service.update(self.runtime_id, update_data)
+    impact = configuration_change_impact(
+        {**normalized, "config": config_updates} if config_updates else normalized
+    )
+    return {
+        "status": "success",
+        **impact,
+        "runtime": updated,
+    }
+
+
 async def _sync_sources(self: RuntimeAssistantTools) -> dict[str, Any]:
     runtime = await self.runtime_service.get(self.runtime_id)
     if not runtime:
@@ -607,6 +649,7 @@ _TOOL_MAP: dict[str, Any] = {
     "change_default_provider": _change_default_provider,
     "change_temperature": _change_temperature,
     "change_max_tokens": _change_max_tokens,
+    "update_runtime_configuration": _update_runtime_configuration,
     "sync_sources": _sync_sources,
     "rebuild_embeddings": _rebuild_embeddings,
     "clear_cache": _clear_cache,

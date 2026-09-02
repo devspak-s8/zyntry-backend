@@ -386,6 +386,25 @@ def build_tool_definitions() -> list[ToolDefinition]:
             action_type=ActionType.WRITE,
         ),
         ToolDefinition(
+            name="update_runtime_configuration",
+            description=(
+                "Update one or more supported runtime configuration settings after "
+                "the user explicitly confirms the proposed change"
+            ),
+            parameters={
+                "changes": {
+                    "type": "object",
+                    "description": (
+                        "Canonical RuntimeUpdate fields plus a config object containing "
+                        "temperature, max_tokens, dynamic_routing_enabled, cache_enabled, "
+                        "cache_ttl_seconds, top_p, frequency_penalty, or presence_penalty"
+                    ),
+                }
+            },
+            required_permission=UserRole.DEVELOPER,
+            action_type=ActionType.WRITE,
+        ),
+        ToolDefinition(
             name="sync_sources",
             description="Sync all knowledge sources",
             parameters={},

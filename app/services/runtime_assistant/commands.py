@@ -6,6 +6,7 @@ from typing import Any
 
 from app.models.actions import ActionAuditLog, ActionConfirmation, ActionExecution
 from app.repositories import UnitOfWork
+from app.services.runtime_assistant.configuration import normalize_configuration_changes
 from app.services.runtime_assistant.permissions import check_tool_permission
 from app.services.runtime_assistant.prompts import build_tool_definitions
 from app.services.runtime_assistant.redaction import redact_sensitive
@@ -28,6 +29,7 @@ ALLOWED_COMMANDS = {
     "change_default_provider",
     "change_temperature",
     "change_max_tokens",
+    "update_runtime_configuration",
 }
 
 
@@ -47,6 +49,12 @@ class RuntimeAssistantCommandService:
     ) -> ActionConfirmation:
         if action not in ALLOWED_COMMANDS:
             raise ValueError("This command is not available to Runtime Assistant")
+        if action == "update_runtime_configuration":
+            # Validate before creating the pending record so malformed or
+            # unsupported settings can never reach the confirmation endpoint.
+            arguments = {
+                "changes": normalize_configuration_changes(arguments.get("changes", {}))
+            }
         tools = build_tool_definitions()
         decision = check_tool_permission(
             user_role, action, [tool.model_dump() for tool in tools]

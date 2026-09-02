@@ -11,6 +11,7 @@ from fastapi import Depends
 from app.core.database import get_session
 from app.repositories import UnitOfWork
 from app.services.runtime_assistant.context import RuntimeContextBuilder
+from app.services.runtime_assistant.configuration import configuration_change_impact
 from app.services.runtime_assistant.commands import RuntimeAssistantCommandService
 from app.services.runtime_assistant.diagnostics import RuntimeDiagnostics
 from app.services.runtime_assistant.executor import RuntimeAssistantExecutor
@@ -141,9 +142,16 @@ class RuntimeAssistantService:
                 {"role": item.role, "content": item.content}
                 for item in conversation_history
             ],
+            pending_action=action_proposal,
         )
         if generated_message:
             response.message = generated_message
+        if plan.configuration_error:
+            response.message = (
+                f"{response.message}\n\n"
+                f"I could not prepare that configuration change: {plan.configuration_error} "
+                "No changes were applied."
+            ).strip()
         control_plane_diagnostics = _diagnose_control_plane_state(context)
         if control_plane_diagnostics and tool_results:
             response.diagnostics = [*control_plane_diagnostics, *response.diagnostics]
@@ -172,9 +180,28 @@ class RuntimeAssistantService:
                 "conversation_id": str(conversation.id),
                 "decision": decision,
                 "plan_reason": plan.reasoning,
+                "configuration_error": plan.configuration_error,
             }
         )
         if action_proposal:
+            if action_proposal["action"] == "update_runtime_configuration":
+                changes = action_proposal.get("arguments", {}).get("changes", {})
+                impact = configuration_change_impact(changes)
+                action_proposal["impact"] = impact
+                change_lines = [
+                    f"- {field.replace('_', ' ').replace('.', ': ')}: "
+                    f"{_current_configuration_value(context, field)} -> {value}"
+                    for field, value in _flatten_configuration_changes(changes)
+                ]
+                response.message = (
+                    f"{response.message}\n\nProposed configuration change:\n"
+                    + "\n".join(change_lines)
+                )
+                if impact["requires_rebuild"]:
+                    response.message += (
+                        "\n\nThis change affects the runtime artifact or retrieval index. "
+                        "After approval, a separate rebuild may be required before it is fully live."
+                    )
             response.message = (
                 f"{response.message}\n\n"
                 f"The backend requires confirmation before {action_proposal['action'].replace('_', ' ')}."
@@ -339,6 +366,24 @@ def _infer_mode(message: str) -> str:
     if any(term in lowered for term in ("why", "failed", "cause", "investigate", "wrong")):
         return "investigate"
     return "observe"
+
+
+def _flatten_configuration_changes(changes: dict[str, Any]) -> list[tuple[str, Any]]:
+    flattened: list[tuple[str, Any]] = []
+    for key, value in changes.items():
+        if key == "config" and isinstance(value, dict):
+            flattened.extend((f"config.{nested}", nested_value) for nested, nested_value in value.items())
+        else:
+            flattened.append((key, value))
+    return flattened
+
+
+def _current_configuration_value(context: RuntimeContext, field: str) -> Any:
+    if field.startswith("config."):
+        value = context.config.get(field.removeprefix("config."))
+    else:
+        value = context.runtime.get(field)
+    return "(not set)" if value is None else value
 
 
 def _evidence_confidence(tool_results: list[Any]) -> float:

@@ -28,6 +28,7 @@ class RuntimeAssistantResponder:
         decision: dict[str, Any],
         tool_evidence: list[dict[str, Any]],
         recent_messages: list[dict[str, str]],
+        pending_action: dict[str, Any] | None = None,
     ) -> str | None:
         if self.provider is None:
             return None
@@ -45,6 +46,7 @@ class RuntimeAssistantResponder:
             },
             "decision": decision,
             "verified_tool_evidence": tool_evidence,
+            "pending_action": pending_action,
             "recent_conversation": recent_messages[-10:],
             "latest_user_message": user_message,
         })
@@ -59,7 +61,8 @@ class RuntimeAssistantResponder:
                             "For runtime questions, use only the supplied verified context and evidence. Never invent a status, "
                             "tool result, source, error, or completed action. If evidence is missing, say what you cannot verify. "
                             "Do not expose credentials, hidden reasoning, raw telemetry JSON, or internal decision objects. "
-                            "Keep answers concise and actionable. Write operations require explicit confirmation."
+                            "Keep answers concise and actionable. Write operations require explicit confirmation. "
+                            "If a pending action is supplied, describe it as a proposal and never as already applied."
                         ),
                     },
                     {"role": "user", "content": json.dumps(payload, default=str)},
