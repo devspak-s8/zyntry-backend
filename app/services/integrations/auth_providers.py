@@ -34,7 +34,7 @@ class OAuth2AuthProvider:
         scopes = scope_override or integration.required_scopes
         scope_str = " ".join(scopes)
 
-        cid = client_id or getattr(settings, f"{integration.slug.upper()}_CLIENT_ID", "") or "zyntry_client_id"
+        cid = client_id or self._client_id(integration) or "zyntry_client_id"
         auth_url = auth_url_override or self._default_auth_url(integration.slug)
 
         params: dict[str, Any] = {
@@ -67,8 +67,8 @@ class OAuth2AuthProvider:
         client_secret: str | None = None,
         token_url_override: str | None = None,
     ) -> dict[str, Any]:
-        cid = client_id or getattr(settings, f"{integration.slug.upper()}_CLIENT_ID", "") or "mock_client_id"
-        csecret = client_secret or getattr(settings, f"{integration.slug.upper()}_CLIENT_SECRET", "") or "mock_client_secret"
+        cid = client_id or self._client_id(integration) or "mock_client_id"
+        csecret = client_secret or self._client_secret(integration) or "mock_client_secret"
         token_url = token_url_override or self._default_token_url(integration.slug)
 
         payload: dict[str, Any] = {
@@ -107,12 +107,48 @@ class OAuth2AuthProvider:
             "token_type": "Bearer",
         }
 
+    @staticmethod
+    def _client_id(integration: IntegrationDefinition) -> str:
+        explicit = getattr(settings, f"{integration.slug.upper()}_CLIENT_ID", "")
+        if explicit:
+            return explicit
+        if integration.slug.startswith("google_") or integration.slug in {
+            "gmail", "bigquery", "firestore",
+        }:
+            return settings.GOOGLE_CLIENT_ID
+        return ""
+
+    @staticmethod
+    def _client_secret(integration: IntegrationDefinition) -> str:
+        explicit = getattr(settings, f"{integration.slug.upper()}_CLIENT_SECRET", "")
+        if explicit:
+            return explicit
+        if integration.slug.startswith("google_") or integration.slug in {
+            "gmail", "bigquery", "firestore",
+        }:
+            return settings.GOOGLE_CLIENT_SECRET
+        return ""
+
     def _default_auth_url(self, slug: str) -> str:
         urls = {
             "github": "https://github.com/login/oauth/authorize",
             "slack": "https://slack.com/oauth/v2/authorize",
             "notion": "https://api.notion.com/v1/oauth/authorize",
             "gmail": "https://accounts.google.com/o/oauth2/v2/auth",
+            "google_drive": "https://accounts.google.com/o/oauth2/v2/auth",
+            "google_calendar": "https://accounts.google.com/o/oauth2/v2/auth",
+            "google_people": "https://accounts.google.com/o/oauth2/v2/auth",
+            "google_sheets": "https://accounts.google.com/o/oauth2/v2/auth",
+            "google_docs": "https://accounts.google.com/o/oauth2/v2/auth",
+            "google_chat": "https://accounts.google.com/o/oauth2/v2/auth",
+            "google_meet": "https://accounts.google.com/o/oauth2/v2/auth",
+            "google_forms": "https://accounts.google.com/o/oauth2/v2/auth",
+            "bigquery": "https://accounts.google.com/o/oauth2/v2/auth",
+            "google_cloud_storage": "https://accounts.google.com/o/oauth2/v2/auth",
+            "firestore": "https://accounts.google.com/o/oauth2/v2/auth",
+            "google_analytics": "https://accounts.google.com/o/oauth2/v2/auth",
+            "google_logging": "https://accounts.google.com/o/oauth2/v2/auth",
+            "google_monitoring": "https://accounts.google.com/o/oauth2/v2/auth",
         }
         return urls.get(slug, f"https://auth.zyntry.space/oauth/{slug}/authorize")
 
@@ -122,6 +158,20 @@ class OAuth2AuthProvider:
             "slack": "https://slack.com/api/oauth.v2.access",
             "notion": "https://api.notion.com/v1/oauth/token",
             "gmail": "https://oauth2.googleapis.com/token",
+            "google_drive": "https://oauth2.googleapis.com/token",
+            "google_calendar": "https://oauth2.googleapis.com/token",
+            "google_people": "https://oauth2.googleapis.com/token",
+            "google_sheets": "https://oauth2.googleapis.com/token",
+            "google_docs": "https://oauth2.googleapis.com/token",
+            "google_chat": "https://oauth2.googleapis.com/token",
+            "google_meet": "https://oauth2.googleapis.com/token",
+            "google_forms": "https://oauth2.googleapis.com/token",
+            "bigquery": "https://oauth2.googleapis.com/token",
+            "google_cloud_storage": "https://oauth2.googleapis.com/token",
+            "firestore": "https://oauth2.googleapis.com/token",
+            "google_analytics": "https://oauth2.googleapis.com/token",
+            "google_logging": "https://oauth2.googleapis.com/token",
+            "google_monitoring": "https://oauth2.googleapis.com/token",
         }
         return urls.get(slug, f"https://auth.zyntry.space/oauth/{slug}/token")
 

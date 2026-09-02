@@ -646,10 +646,27 @@ DEFINITIONS: dict[str, IntegrationDefinition] = {
         description="Search Google Workspace contacts, directory profiles, and emails.",
         category="google",
         icon="google_people",
-        status="coming_soon",
+        status="available",
         connection_modes=["zyntry_managed", "end_user_oauth"],
         auth_methods=["oauth2"],
-        scopes=["https://www.googleapis.com/auth/contacts.readonly"],
+        scopes=[
+            "https://www.googleapis.com/auth/contacts.readonly",
+            "https://www.googleapis.com/auth/admin.directory.user.readonly",
+            "https://www.googleapis.com/auth/admin.directory.group.readonly",
+            "https://www.googleapis.com/auth/admin.directory.group.member.readonly",
+        ],
+        configuration_schema={
+            "input_fields": [
+                {
+                    "name": "directory_domain",
+                    "label": "Workspace domain (optional)",
+                    "type": "text",
+                    "secret": False,
+                    "required": False,
+                },
+            ],
+            "read_only_default": True,
+        },
         capabilities=[
             IntegrationCapability(
                 slug="search_contacts",
@@ -666,6 +683,38 @@ DEFINITIONS: dict[str, IntegrationDefinition] = {
                 operation="read",
                 is_write=False,
                 required_scopes=["contacts.readonly"],
+            ),
+            IntegrationCapability(
+                slug="directory_search",
+                name="Directory Search",
+                description="Search people in a Google Workspace directory.",
+                operation="search",
+                is_write=False,
+                required_scopes=["admin.directory.user.readonly"],
+            ),
+            IntegrationCapability(
+                slug="directory_user_details",
+                name="Directory User Details",
+                description="Read a Workspace user's profile and organization details.",
+                operation="read",
+                is_write=False,
+                required_scopes=["admin.directory.user.readonly"],
+            ),
+            IntegrationCapability(
+                slug="search_groups",
+                name="Search Groups",
+                description="Find Workspace groups by name or email address.",
+                operation="search",
+                is_write=False,
+                required_scopes=["admin.directory.group.readonly"],
+            ),
+            IntegrationCapability(
+                slug="group_membership",
+                name="Group Membership",
+                description="Read the members of an authorized Workspace group.",
+                operation="read",
+                is_write=False,
+                required_scopes=["admin.directory.group.member.readonly"],
             ),
         ],
     ),
@@ -1636,6 +1685,279 @@ DEFINITIONS.update({
     ),
 })
 
+
+def _google_capability(
+    slug: str,
+    name: str,
+    description: str,
+    *,
+    operation: str = "read",
+    is_write: bool = False,
+    scopes: list[str] | None = None,
+) -> IntegrationCapability:
+    """Build a consistently described Google API capability."""
+    return IntegrationCapability(
+        slug=slug,
+        name=name,
+        description=description,
+        operation=operation,
+        is_write=is_write,
+        required_scopes=scopes or [],
+    )
+
+
+def _google_service_definition(
+    slug: str,
+    name: str,
+    description: str,
+    *,
+    category: str = "google",
+    status: str = "beta",
+    connection_modes: list[str] | None = None,
+    auth_methods: list[str] | None = None,
+    scopes: list[str] | None = None,
+    input_fields: list[dict[str, Any]] | None = None,
+    capabilities: list[IntegrationCapability] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> IntegrationDefinition:
+    """Create a Google integration definition for the catalog and runtime policy."""
+    return IntegrationDefinition(
+        id=f"int_{slug}",
+        slug=slug,
+        name=name,
+        description=description,
+        category=category,
+        icon=slug,
+        status=status,
+        enabled=True,
+        connection_modes=connection_modes or ["zyntry_managed"],
+        auth_methods=auth_methods or ["oauth2"],
+        scopes=scopes or [],
+        configuration_schema={
+            "input_fields": input_fields or [],
+            "read_only_default": True,
+        },
+        capabilities=capabilities or [],
+        metadata=metadata or {"provider": "google"},
+    )
+
+
+def _google_cloud_fields(*fields: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return non-secret resource fields plus an optional service account."""
+    return [
+        *fields,
+        {
+            "name": "service_account_json",
+            "label": "Google service account JSON (optional)",
+            "type": "textarea",
+            "secret": True,
+            "required": False,
+        },
+    ]
+
+
+# Google Workspace and Google Cloud integrations.  They are deliberately
+# declared read-only by default; write capabilities are visible to the
+# planner but require an explicit connector permission and confirmation.
+DEFINITIONS.update({
+    "google_sheets": _google_service_definition(
+        "google_sheets",
+        "Google Sheets",
+        "Search spreadsheets, inspect sheets, and retrieve structured rows.",
+        category="productivity",
+        scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
+        connection_modes=["zyntry_managed", "end_user_oauth"],
+        input_fields=[
+            {"name": "spreadsheet_id", "label": "Spreadsheet ID", "type": "text", "secret": False, "required": False},
+            {"name": "sheet_name", "label": "Sheet name", "type": "text", "secret": False, "required": False},
+        ],
+        capabilities=[
+            _google_capability("search_spreadsheets", "Search Spreadsheets", "Find spreadsheets by name or metadata.", operation="search"),
+            _google_capability("spreadsheet_metadata", "Spreadsheet Metadata", "Read spreadsheet and worksheet metadata."),
+            _google_capability("read_ranges", "Read Ranges", "Read cells from an authorized worksheet."),
+            _google_capability("query_rows", "Query Rows", "Filter and summarize rows without changing the sheet.", operation="search"),
+            _google_capability("append_rows", "Append Rows", "Append rows to an authorized worksheet.", operation="write", is_write=True, scopes=["spreadsheets"]),
+            _google_capability("update_cells", "Update Cells", "Update selected cells after confirmation.", operation="write", is_write=True, scopes=["spreadsheets"]),
+            _google_capability("create_spreadsheet", "Create Spreadsheet", "Create a new spreadsheet after confirmation.", operation="write", is_write=True, scopes=["spreadsheets"]),
+        ],
+    ),
+    "google_docs": _google_service_definition(
+        "google_docs",
+        "Google Docs",
+        "Search, read, and export Google Docs documents.",
+        category="productivity",
+        scopes=["https://www.googleapis.com/auth/documents.readonly"],
+        connection_modes=["zyntry_managed", "end_user_oauth"],
+        input_fields=[
+            {"name": "document_id", "label": "Document ID", "type": "text", "secret": False, "required": False},
+        ],
+        capabilities=[
+            _google_capability("search_documents", "Search Documents", "Find Docs by title or Drive metadata.", operation="search"),
+            _google_capability("read_document", "Read Document", "Read document structure and text."),
+            _google_capability("export_document", "Export Document", "Export an authorized document for indexing."),
+            _google_capability("read_comments", "Read Comments", "Retrieve comments associated with a document."),
+            _google_capability("create_document", "Create Document", "Create a new document after confirmation.", operation="write", is_write=True, scopes=["documents"]),
+            _google_capability("update_document", "Update Document", "Apply document edits after confirmation.", operation="write", is_write=True, scopes=["documents"]),
+            _google_capability("append_content", "Append Content", "Append text to a document after confirmation.", operation="write", is_write=True, scopes=["documents"]),
+        ],
+    ),
+    "google_chat": _google_service_definition(
+        "google_chat",
+        "Google Chat",
+        "Search Google Chat spaces and conversation threads.",
+        scopes=["https://www.googleapis.com/auth/chat.messages.readonly"],
+        connection_modes=["zyntry_managed", "end_user_oauth"],
+        input_fields=[
+            {"name": "space_id", "label": "Space ID", "type": "text", "secret": False, "required": False},
+        ],
+        capabilities=[
+            _google_capability("list_spaces", "List Spaces", "List authorized Google Chat spaces."),
+            _google_capability("search_messages", "Search Messages", "Search messages in authorized spaces.", operation="search"),
+            _google_capability("retrieve_threads", "Retrieve Threads", "Read a message thread and its replies."),
+            _google_capability("list_members", "List Members", "Read members of an authorized space."),
+            _google_capability("send_messages", "Send Messages", "Send a Chat message after confirmation.", operation="write", is_write=True, scopes=["chat.messages"]),
+        ],
+    ),
+    "google_meet": _google_service_definition(
+        "google_meet",
+        "Google Meet",
+        "Inspect Meet conferences, participants, transcripts, and recordings metadata.",
+        scopes=["https://www.googleapis.com/auth/meetings.space.created"],
+        connection_modes=["zyntry_managed", "end_user_oauth"],
+        input_fields=[
+            {"name": "conference_record_id", "label": "Conference record ID", "type": "text", "secret": False, "required": False},
+        ],
+        capabilities=[
+            _google_capability("list_meetings", "List Meetings", "List authorized conference records."),
+            _google_capability("meeting_details", "Meeting Details", "Read conference timing and meeting metadata."),
+            _google_capability("participants", "Participants", "Read participant sessions and identities."),
+            _google_capability("transcripts", "Transcripts", "Retrieve available meeting transcripts."),
+            _google_capability("recordings_metadata", "Recording Metadata", "Read recording metadata without downloading private media."),
+        ],
+    ),
+    "google_forms": _google_service_definition(
+        "google_forms",
+        "Google Forms",
+        "Read form definitions and responses for knowledge and operations workflows.",
+        scopes=["https://www.googleapis.com/auth/forms.body.readonly", "https://www.googleapis.com/auth/forms.responses.readonly"],
+        connection_modes=["zyntry_managed", "end_user_oauth"],
+        input_fields=[
+            {"name": "form_id", "label": "Form ID", "type": "text", "secret": False, "required": False},
+        ],
+        capabilities=[
+            _google_capability("form_metadata", "Form Metadata", "Read title, description, and form settings."),
+            _google_capability("list_questions", "List Questions", "Inspect question types and choices."),
+            _google_capability("list_responses", "List Responses", "Retrieve submitted responses."),
+            _google_capability("response_details", "Response Details", "Read an individual response and timestamps."),
+        ],
+    ),
+    "bigquery": _google_service_definition(
+        "bigquery",
+        "Google BigQuery",
+        "Query BigQuery datasets and inspect schemas for read-only analytics.",
+        category="databases",
+        auth_methods=["oauth2", "service_account"],
+        scopes=["https://www.googleapis.com/auth/bigquery.readonly"],
+        input_fields=_google_cloud_fields(
+            {"name": "project_id", "label": "Google Cloud project ID", "type": "text", "secret": False, "required": True},
+            {"name": "dataset_id", "label": "Dataset ID", "type": "text", "secret": False, "required": False},
+        ),
+        capabilities=[
+            _google_capability("list_projects", "List Projects", "List projects visible to the connection."),
+            _google_capability("list_datasets", "List Datasets", "List datasets in a project."),
+            _google_capability("table_schema", "Table Schema", "Inspect table and column metadata."),
+            _google_capability("query", "Run Read-only Query", "Execute a read-only SQL query." , operation="search"),
+            _google_capability("job_status", "Job Status", "Inspect query job status and timing."),
+        ],
+    ),
+    "google_cloud_storage": _google_service_definition(
+        "google_cloud_storage",
+        "Google Cloud Storage",
+        "Search and retrieve objects from Google Cloud Storage buckets.",
+        category="storage",
+        auth_methods=["oauth2", "service_account"],
+        scopes=["https://www.googleapis.com/auth/devstorage.read_only"],
+        input_fields=_google_cloud_fields(
+            {"name": "project_id", "label": "Google Cloud project ID", "type": "text", "secret": False, "required": False},
+            {"name": "bucket", "label": "Bucket name", "type": "text", "secret": False, "required": False},
+        ),
+        capabilities=[
+            _google_capability("list_buckets", "List Buckets", "List buckets visible to the connection."),
+            _google_capability("search_objects", "Search Objects", "Find objects by prefix or metadata.", operation="search"),
+            _google_capability("object_metadata", "Object Metadata", "Read object size, type, and timestamps."),
+            _google_capability("download_objects", "Download Objects", "Download authorized objects for indexing."),
+            _google_capability("upload_objects", "Upload Objects", "Upload an object after confirmation.", operation="write", is_write=True, scopes=["devstorage.read_write"]),
+            _google_capability("delete_objects", "Delete Objects", "Delete an object after confirmation.", operation="write", is_write=True, scopes=["devstorage.read_write"]),
+        ],
+    ),
+    "firestore": _google_service_definition(
+        "firestore",
+        "Firestore",
+        "Query Firestore collections and retrieve documents in read-only mode.",
+        category="databases",
+        auth_methods=["oauth2", "service_account"],
+        scopes=["https://www.googleapis.com/auth/datastore"],
+        input_fields=_google_cloud_fields(
+            {"name": "project_id", "label": "Google Cloud project ID", "type": "text", "secret": False, "required": True},
+            {"name": "database_id", "label": "Firestore database ID", "type": "text", "secret": False, "required": False},
+        ),
+        capabilities=[
+            _google_capability("list_collections", "List Collections", "List collections available to the connection."),
+            _google_capability("query_documents", "Query Documents", "Run a structured read-only document query.", operation="search"),
+            _google_capability("document_retrieval", "Document Retrieval", "Retrieve a Firestore document."),
+            _google_capability("write_documents", "Write Documents", "Create or update a document after confirmation.", operation="write", is_write=True, scopes=["datastore"]),
+            _google_capability("delete_documents", "Delete Documents", "Delete a document after confirmation.", operation="write", is_write=True, scopes=["datastore"]),
+        ],
+    ),
+    "google_analytics": _google_service_definition(
+        "google_analytics",
+        "Google Analytics",
+        "Query Google Analytics properties, events, conversions, and reports.",
+        auth_methods=["oauth2", "service_account"],
+        scopes=["https://www.googleapis.com/auth/analytics.readonly"],
+        input_fields=_google_cloud_fields(
+            {"name": "property_id", "label": "GA4 property ID", "type": "text", "secret": False, "required": True},
+        ),
+        capabilities=[
+            _google_capability("list_properties", "List Properties", "List Analytics properties available to the connection."),
+            _google_capability("run_reports", "Run Reports", "Run a read-only Analytics Data report.", operation="search"),
+            _google_capability("query_events", "Query Events", "Query event counts and dimensions."),
+            _google_capability("query_conversions", "Query Conversions", "Query conversion and revenue metrics."),
+        ],
+    ),
+    "google_logging": _google_service_definition(
+        "google_logging",
+        "Google Cloud Logging",
+        "Search and analyze logs for an authorized Google Cloud project.",
+        auth_methods=["oauth2", "service_account"],
+        scopes=["https://www.googleapis.com/auth/logging.read"],
+        input_fields=_google_cloud_fields(
+            {"name": "project_id", "label": "Google Cloud project ID", "type": "text", "secret": False, "required": True},
+        ),
+        capabilities=[
+            _google_capability("search_logs", "Search Logs", "Search log entries with a filter.", operation="search"),
+            _google_capability("log_details", "Log Details", "Read a log entry and its trace metadata."),
+            _google_capability("aggregate_logs", "Aggregate Logs", "Summarize log volume and severity over time."),
+        ],
+    ),
+    "google_monitoring": _google_service_definition(
+        "google_monitoring",
+        "Google Cloud Monitoring",
+        "Inspect metrics, alerts, uptime checks, and incidents for a project.",
+        auth_methods=["oauth2", "service_account"],
+        scopes=["https://www.googleapis.com/auth/monitoring.read"],
+        input_fields=_google_cloud_fields(
+            {"name": "project_id", "label": "Google Cloud project ID", "type": "text", "secret": False, "required": True},
+        ),
+        capabilities=[
+            _google_capability("query_metrics", "Query Metrics", "Read time-series metrics with a filter.", operation="search"),
+            _google_capability("list_alerts", "List Alerts", "List alert policies and current states."),
+            _google_capability("incident_details", "Incident Details", "Read incident and notification details."),
+            _google_capability("uptime_checks", "Uptime Checks", "Inspect uptime-check configuration and results."),
+        ],
+    ),
+})
+
 # Add canonical aliases so both "postgres" and "postgresql", "s3" and "amazon_s3" work seamlessly
 ALIASES: dict[str, str] = {
     "postgres": "postgresql",
@@ -1651,6 +1973,18 @@ ALIASES: dict[str, str] = {
     "sql_server": "microsoft_sql_server",
     "oracle": "oracle_database",
     "aurora": "amazon_aurora",
+    "sheets": "google_sheets",
+    "docs_api": "google_docs",
+    "chat": "google_chat",
+    "meet": "google_meet",
+    "forms": "google_forms",
+    "gcs": "google_cloud_storage",
+    "cloud_storage": "google_cloud_storage",
+    "analytics": "google_analytics",
+    "cloud_logging": "google_logging",
+    "logging": "google_logging",
+    "cloud_monitoring": "google_monitoring",
+    "monitoring": "google_monitoring",
 }
 
 

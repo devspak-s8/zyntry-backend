@@ -47,7 +47,11 @@ class ActionExecutor:
                 body.provider,
                 body.action,
                 body.arguments,
-                {"user_id": str(user_id), "project_id": str(project_id)},
+                {
+                    "user_id": str(user_id),
+                    "project_id": str(project_id),
+                    "confirmed": body.confirm,
+                },
                 uow=self.uow,
             )
             execution.status = ActionStatus.SUCCEEDED

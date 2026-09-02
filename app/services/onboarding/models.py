@@ -42,6 +42,19 @@ class FastOnboardingModelProvider:
         "website": "Website Crawler",
         "mcp": "MCP Server",
         "document_storage": "Uploaded Documents",
+        "google_drive": "Google Drive",
+        "google_people": "Google People / Contacts",
+        "google_sheets": "Google Sheets",
+        "google_docs": "Google Docs",
+        "google_chat": "Google Chat",
+        "google_meet": "Google Meet",
+        "google_forms": "Google Forms",
+        "bigquery": "Google BigQuery",
+        "google_cloud_storage": "Google Cloud Storage",
+        "firestore": "Firestore",
+        "google_analytics": "Google Analytics",
+        "google_logging": "Google Cloud Logging",
+        "google_monitoring": "Google Cloud Monitoring",
     }
 
     _USE_CASE_TITLES: dict[str, str] = {
@@ -413,6 +426,7 @@ class FastOnboardingModelProvider:
         return "general_ai_application"
 
     def _detect_integrations(self, msg: str) -> list[str]:
+        msg = msg.lower()
         found: list[str] = []
         slugs = integration_registry.list_slugs()
         for slug in slugs:
@@ -436,6 +450,28 @@ class FastOnboardingModelProvider:
         if "gmail" in msg or "mail" in msg:
             if "gmail" not in found:
                 found.append("gmail")
+        google_aliases = {
+            "sheets": "google_sheets",
+            "spreadsheets": "google_sheets",
+            "google sheet": "google_sheets",
+            "google docs": "google_docs",
+            "google document": "google_docs",
+            "google chat": "google_chat",
+            "google meet": "google_meet",
+            "google forms": "google_forms",
+            "big query": "bigquery",
+            "bigquery": "bigquery",
+            "cloud storage": "google_cloud_storage",
+            "gcs": "google_cloud_storage",
+            "firestore": "firestore",
+            "firebase": "firestore",
+            "analytics": "google_analytics",
+            "cloud logging": "google_logging",
+            "cloud monitoring": "google_monitoring",
+        }
+        for phrase, slug in google_aliases.items():
+            if phrase in msg and slug not in found:
+                found.append(slug)
         if any(k in msg for k in ["document", "documentation", "upload", "docs", "pdf", "rag"]):
             if "document_storage" not in found:
                 found.append("document_storage")

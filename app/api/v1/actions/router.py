@@ -61,7 +61,25 @@ async def execute_action(
     user_id = auth.user.id
 
     risk_actions = {"delete", "remove", "archive", "merge", "close", "cancel", "expire", "revoke"}
+    from app.services.actions.registry import ActionRegistry
+
+    try:
+        provider_actions = ActionRegistry.list_actions(body.provider)
+    except KeyError:
+        provider_actions = []
+    action_definition = next(
+        (definition for definition in provider_actions if definition.name == body.action),
+        None,
+    )
     requires_confirmation = any(risk in body.action.lower() for risk in risk_actions)
+    if action_definition is not None:
+        # Provider metadata is the authoritative write/risk declaration. This
+        # covers operations such as update_cells and send_messages whose names
+        # do not contain a legacy risk keyword.
+        requires_confirmation = requires_confirmation or bool(
+            action_definition.required_permissions
+            or action_definition.risk in {"medium", "high"}
+        )
 
     if requires_confirmation and not body.confirm:
         confirmation_service = ConfirmationService(uow)

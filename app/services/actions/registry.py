@@ -14,19 +14,32 @@ class ActionRegistry:
     _providers: dict[str, type[BaseActionProvider]] = {}
 
     @classmethod
+    def _ensure_builtin_providers_loaded(cls) -> None:
+        """Load built-in providers before a catalog lookup or execution.
+
+        Providers register themselves at import time.  The old registry only
+        loaded them when a test imported the providers package explicitly,
+        which left production action catalogs empty on a cold process.
+        """
+        from app.services.actions import providers as _builtin_providers  # noqa: F401
+
+    @classmethod
     def register(cls, provider: type[BaseActionProvider]) -> None:
         cls._providers[provider.provider_name] = provider
 
     @classmethod
     def get_provider(cls, name: str) -> type[BaseActionProvider] | None:
+        cls._ensure_builtin_providers_loaded()
         return cls._providers.get(name)
 
     @classmethod
     def list_providers(cls) -> list[str]:
+        cls._ensure_builtin_providers_loaded()
         return list(cls._providers.keys())
 
     @classmethod
     def list_actions(cls, provider: str | None = None) -> list[ActionDefinition]:
+        cls._ensure_builtin_providers_loaded()
         actions: list[ActionDefinition] = []
         providers = [cls._providers[provider]] if provider else cls._providers.values()
         for provider_cls in providers:
@@ -42,6 +55,7 @@ class ActionRegistry:
         context: dict[str, Any],
         uow: UnitOfWork | None = None,
     ) -> Any:
+        cls._ensure_builtin_providers_loaded()
         provider_cls = cls.get_provider(provider_name)
         if not provider_cls:
             raise ValueError(f"Provider '{provider_name}' not found")

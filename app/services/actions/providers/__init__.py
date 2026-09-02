@@ -6,6 +6,20 @@ from app.services.actions.providers.github import GitHubActionProvider
 from app.services.actions.providers.gitlab import GitLabActionProvider
 from app.services.actions.providers.gmail import GmailActionProvider
 from app.services.actions.providers.google_drive import GoogleDriveActionProvider
+from app.services.actions.providers.google_services import (
+    BigQueryActionProvider,
+    FirestoreActionProvider,
+    GoogleAnalyticsActionProvider,
+    GoogleChatActionProvider,
+    GoogleCloudStorageActionProvider,
+    GoogleDocsActionProvider,
+    GoogleFormsActionProvider,
+    GoogleLoggingActionProvider,
+    GoogleMeetActionProvider,
+    GoogleMonitoringActionProvider,
+    GooglePeopleActionProvider,
+    GoogleSheetsActionProvider,
+)
 from app.services.actions.providers.jira import JiraActionProvider
 from app.services.actions.providers.notion import NotionActionProvider
 from app.services.actions.providers.slack import SlackActionProvider
@@ -19,6 +33,18 @@ providers = [
     JiraActionProvider,
     GitLabActionProvider,
     GoogleDriveActionProvider,
+    GooglePeopleActionProvider,
+    GoogleSheetsActionProvider,
+    GoogleDocsActionProvider,
+    GoogleChatActionProvider,
+    GoogleMeetActionProvider,
+    GoogleFormsActionProvider,
+    BigQueryActionProvider,
+    GoogleCloudStorageActionProvider,
+    FirestoreActionProvider,
+    GoogleAnalyticsActionProvider,
+    GoogleLoggingActionProvider,
+    GoogleMonitoringActionProvider,
     ConfluenceActionProvider,
     BoxActionProvider,
     OneDriveActionProvider,

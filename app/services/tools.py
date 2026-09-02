@@ -24,6 +24,18 @@ TOOL_CATALOG: tuple[dict[str, Any], ...] = (
     {"key": "s3", "name": "Amazon S3", "description": "Connect an S3 bucket.", "category": "Storage", "auth_type": "credentials", "credential_fields": ["access_key_id", "secret_access_key"], "config_fields": ["bucket", "region"]},
     {"key": "website", "name": "Website", "description": "Connect a public website URL.", "category": "Web", "auth_type": "none", "credential_fields": [], "config_fields": ["url"]},
     {"key": "mcp", "name": "MCP Server", "description": "Connect tools exposed by a Model Context Protocol server.", "category": "API", "auth_type": "token", "credential_fields": ["api_key"], "config_fields": ["url"]},
+    {"key": "google_people", "name": "Google People / Contacts", "description": "Search Google contacts and Workspace directory profiles.", "category": "Knowledge", "auth_type": "oauth", "credential_fields": ["access_token"], "config_fields": ["directory_domain"]},
+    {"key": "google_sheets", "name": "Google Sheets", "description": "Read and manage authorized spreadsheet ranges.", "category": "Knowledge", "auth_type": "oauth", "credential_fields": ["access_token"], "config_fields": ["spreadsheet_id", "sheet_name"]},
+    {"key": "google_docs", "name": "Google Docs", "description": "Read and manage authorized Google documents.", "category": "Knowledge", "auth_type": "oauth", "credential_fields": ["access_token"], "config_fields": ["document_id"]},
+    {"key": "google_chat", "name": "Google Chat", "description": "Search spaces and conversation threads.", "category": "Communication", "auth_type": "oauth", "credential_fields": ["access_token"], "config_fields": ["space_id"]},
+    {"key": "google_meet", "name": "Google Meet", "description": "Read conferences, participants, and transcripts metadata.", "category": "Knowledge", "auth_type": "oauth", "credential_fields": ["access_token"], "config_fields": ["conference_record_id"]},
+    {"key": "google_forms", "name": "Google Forms", "description": "Read form definitions and submitted responses.", "category": "Knowledge", "auth_type": "oauth", "credential_fields": ["access_token"], "config_fields": ["form_id"]},
+    {"key": "bigquery", "name": "Google BigQuery", "description": "Run read-only queries and inspect dataset schemas.", "category": "Database", "auth_type": "credentials", "credential_fields": ["access_token"], "config_fields": ["project_id", "dataset_id"]},
+    {"key": "google_cloud_storage", "name": "Google Cloud Storage", "description": "Search and retrieve objects from Cloud Storage buckets.", "category": "Storage", "auth_type": "credentials", "credential_fields": ["access_token"], "config_fields": ["project_id", "bucket"]},
+    {"key": "firestore", "name": "Firestore", "description": "Query Firestore collections and documents.", "category": "Database", "auth_type": "credentials", "credential_fields": ["access_token"], "config_fields": ["project_id", "database_id", "collection_id"]},
+    {"key": "google_analytics", "name": "Google Analytics", "description": "Run read-only Analytics reports.", "category": "Analytics", "auth_type": "credentials", "credential_fields": ["access_token"], "config_fields": ["property_id"]},
+    {"key": "google_logging", "name": "Google Cloud Logging", "description": "Search and summarize project logs.", "category": "Operations", "auth_type": "credentials", "credential_fields": ["access_token"], "config_fields": ["project_id", "filter"]},
+    {"key": "google_monitoring", "name": "Google Cloud Monitoring", "description": "Query metrics, alerts, incidents, and uptime checks.", "category": "Operations", "auth_type": "credentials", "credential_fields": ["access_token"], "config_fields": ["project_id"]},
 )
 _CATALOG_BY_KEY = {item["key"]: item for item in TOOL_CATALOG}
 _LIVE_CONNECTORS = {
@@ -37,8 +49,31 @@ _LIVE_CONNECTORS = {
     "slack",
     "sqlite",
     "website",
+    "s3",
+    "google_people",
+    "google_sheets",
+    "google_docs",
+    "google_chat",
+    "google_meet",
+    "google_forms",
+    "bigquery",
+    "google_cloud_storage",
+    "firestore",
+    "google_analytics",
+    "google_logging",
+    "google_monitoring",
 }
-_OAUTH_CONNECTORS = {"github", "notion", "slack"}
+_OAUTH_CONNECTORS = {
+    "github",
+    "notion",
+    "slack",
+    "google_people",
+    "google_sheets",
+    "google_docs",
+    "google_chat",
+    "google_meet",
+    "google_forms",
+}
 _INTERNAL_CONNECTION_KEY = "_zyntry_connection"
 
 

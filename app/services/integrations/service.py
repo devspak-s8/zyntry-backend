@@ -10,7 +10,18 @@ from app.services.integrations.definitions import integration_registry
 from app.services.tools import ToolService
 
 ConnectionPurpose = Literal["source", "tool", "both"]
-SOURCE_CONNECTORS = {"github", "notion", "slack"}
+SOURCE_CONNECTORS = {
+    "github",
+    "notion",
+    "slack",
+    "google_drive",
+    "google_people",
+    "google_sheets",
+    "google_docs",
+    "google_chat",
+    "google_meet",
+    "google_forms",
+}
 
 
 class IntegrationService:

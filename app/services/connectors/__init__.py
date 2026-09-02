@@ -28,4 +28,19 @@ class Registry:
 
 registry = Registry()
 
-from app.services.connectors import github, gitlab, google_drive, mcp, mysql, mongodb, notion, postgres, redis, s3, slack, sqlite, website  # noqa: E402
+from app.services.connectors import (  # noqa: E402
+    github,
+    gitlab,
+    google_drive,
+    google_services,
+    mcp,
+    mysql,
+    mongodb,
+    notion,
+    postgres,
+    redis,
+    s3,
+    slack,
+    sqlite,
+    website,
+)
