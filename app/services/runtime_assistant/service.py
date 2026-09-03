@@ -33,6 +33,7 @@ from app.services.runtime_assistant.schemas import (
     ToolDefinition,
     UserRole,
 )
+from app.services.model_compatibility import provider_model_mismatch
 
 logger = logging.getLogger(__name__)
 
@@ -105,25 +106,31 @@ class RuntimeAssistantService:
         tool_results = await executor.execute_plan(executable_calls)
 
         action_proposal: dict[str, Any] | None = None
+        action_proposal_error: str | None = None
         if mutating_calls:
             pending = mutating_calls[0]
-            proposal = await RuntimeAssistantCommandService(self.uow).propose(
-                runtime_id=uuid.UUID(runtime_id),
-                project_id=uuid.UUID(context.project_id),
-                user_id=uuid.UUID(user_id),
-                user_role=role,
-                action=pending.name,
-                arguments=pending.arguments,
-            )
-            action_proposal = {
-                "id": str(proposal.id),
-                "action": proposal.action,
-                "arguments": proposal.arguments,
-                "risk": proposal.risk,
-                "expires_at": proposal.expires_at.isoformat(),
-                "status": proposal.status,
-                "requires_confirmation": True,
-            }
+            try:
+                proposal = await RuntimeAssistantCommandService(self.uow).propose(
+                    runtime_id=uuid.UUID(runtime_id),
+                    project_id=uuid.UUID(context.project_id),
+                    user_id=uuid.UUID(user_id),
+                    user_role=role,
+                    action=pending.name,
+                    arguments=pending.arguments,
+                )
+                action_proposal = {
+                    "id": str(proposal.id),
+                    "action": proposal.action,
+                    "arguments": proposal.arguments,
+                    "risk": proposal.risk,
+                    "expires_at": proposal.expires_at.isoformat(),
+                    "status": proposal.status,
+                    "requires_confirmation": True,
+                }
+            except (ValueError, PermissionError) as exc:
+                # A malformed or incompatible change should become an
+                # assistant explanation, not a 500 from the chat endpoint.
+                action_proposal_error = str(exc)
 
         for result in tool_results:
             await memory.save_action(result.tool_call.name, result.tool_call.result or {})
@@ -156,6 +163,16 @@ class RuntimeAssistantService:
         verified_completion = _verified_completion_message(message, tool_results)
         if verified_completion:
             response.message = verified_completion
+        if action_proposal and _is_generic_runtime_help(response.message):
+            response.message = (
+                f"I can prepare this change for the {context.runtime.get('name') or 'runtime'}. "
+                "Review the proposed operation below; nothing is applied until you approve it."
+            )
+        if action_proposal_error:
+            response.message = (
+                f"I could not prepare that runtime change: {action_proposal_error} "
+                "No changes were applied."
+            )
         if plan.configuration_error:
             response.message = (
                 f"{response.message}\n\n"
@@ -191,6 +208,7 @@ class RuntimeAssistantService:
                 "decision": decision,
                 "plan_reason": plan.reasoning,
                 "configuration_error": plan.configuration_error,
+                "action_proposal_error": action_proposal_error,
             }
         )
         if action_proposal:
@@ -434,14 +452,43 @@ def _verified_configuration_message(
     base_strategy = config_result.get("routing_strategy") or "not set"
     provider = config_result.get("provider") or "automatic"
     model = config_result.get("model") or "automatic"
-    if "routing" in lowered or "route" in lowered or "dynamic" in lowered:
+    mismatch = provider_model_mismatch(provider, model)
+    asks_for_strategies = (
+        ("available" in lowered or "list" in lowered or "which" in lowered)
+        and "strateg" in lowered
+    )
+    explains_dynamic = (
+        ("how" in lowered or "explain" in lowered or "work" in lowered)
+        and any(term in lowered for term in ("automatic", "dynamic", "routing", "route"))
+    )
+    if asks_for_strategies:
         return (
+            "Available routing strategies:\n"
+            "- `latency_optimized` — prioritize lower response latency.\n"
+            "- `balanced` — trade off quality, latency, and cost.\n"
+            "- `quality_optimized` — prioritize answer quality.\n\n"
+            "Automatic model routing is separate from this list. Enable dynamic "
+            "model routing to let Zyntry choose a connected model for each request; "
+            "the selected strategy becomes its preference."
+        )
+    if explains_dynamic:
+        return (
+            f"Dynamic model routing is **{dynamic_state}** for this runtime. "
+            f"The current preference is `{base_strategy}`. When enabled, Zyntry "
+            "evaluates the request, available provider credentials, latency, cost, "
+            "and this preference before choosing a connected model. When disabled, "
+            "requests stay on the configured provider and model, plus explicit "
+            "fallbacks."
+        )
+    if "routing" in lowered or "route" in lowered or "dynamic" in lowered:
+        message = (
             f"The saved runtime configuration has dynamic model routing **{dynamic_state}**. "
             f"The base routing strategy is `{base_strategy}`, with `{model}` as the configured model "
             f"for provider `{provider}`. The base strategy remains unchanged because automatic model "
             "selection is controlled by the dynamic-routing setting."
         )
-    return (
+        return f"{message}\n\nWarning: {mismatch}" if mismatch else message
+    message = (
         "Current saved runtime configuration:\n"
         f"- Provider: `{provider}`\n"
         f"- Model: `{model}`\n"
@@ -451,6 +498,15 @@ def _verified_configuration_message(
         f"- Embedding model: `{config_result.get('embedding_model') or 'default'}`\n"
         f"- Vector store: `{config_result.get('vector_store') or 'default'}`"
     )
+    return f"{message}\n- Warning: {mismatch}" if mismatch else message
+
+
+def _is_generic_runtime_help(message: str) -> bool:
+    normalized = " ".join((message or "").lower().split())
+    return normalized in {
+        "i’m here to help with this runtime. ask me about its status, configuration, integrations, knowledge sources, performance, costs, or recent failures.",
+        "i'm here to help with this runtime. ask me about its status, configuration, integrations, knowledge sources, performance, costs, or recent failures.",
+    }
 
 
 def _verified_completion_message(

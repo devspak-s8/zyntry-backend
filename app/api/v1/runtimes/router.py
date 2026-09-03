@@ -166,7 +166,10 @@ async def update_runtime(
         raise HTTPException(status_code=403, detail="Unauthorized")
 
     service = RuntimeService(uow)
-    runtime = await service.update(str(rid), body)
+    try:
+        runtime = await service.update(str(rid), body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return RuntimeRead(**runtime)
 
 

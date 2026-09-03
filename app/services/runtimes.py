@@ -6,6 +6,7 @@ from typing import Any
 
 from app.repositories import UnitOfWork
 from app.schemas.runtimes import RuntimeCreate, RuntimeUpdate
+from app.services.model_compatibility import infer_provider_for_model, provider_model_mismatch
 
 
 RUNTIME_STATUSES = {
@@ -131,6 +132,19 @@ class RuntimeService:
         if not runtime:
             raise ValueError("Runtime not found")
         update_data = data.model_dump(exclude_unset=True)
+        # A model selection from a clearly identifiable provider is atomic
+        # even when the caller only sends ``model`` (the common UI flow).
+        # This prevents saving an impossible provider/model pair.
+        if "model" in update_data and "provider" not in update_data:
+            inferred_provider = infer_provider_for_model(update_data["model"])
+            if inferred_provider and inferred_provider != str(runtime.provider).lower():
+                update_data["provider"] = inferred_provider
+        mismatch = provider_model_mismatch(
+            update_data.get("provider", runtime.provider),
+            update_data.get("model", runtime.model),
+        )
+        if mismatch:
+            raise ValueError(mismatch)
         updated = await self.uow.runtimes.update(runtime, **update_data)
         await self.uow.commit()
         return self._to_read(updated)

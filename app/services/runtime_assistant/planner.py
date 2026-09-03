@@ -96,6 +96,14 @@ class RuntimeAssistantPlanner:
             if "get_deployment_status" in self.tool_map:
                 tool_calls.append(ToolCall(id=self._generate_id(), name="get_deployment_status", arguments={}))
 
+        elif any(k in message_lower for k in [
+            "how does automatic", "how does dynamic", "how automatic model",
+            "how are models selected", "explain automatic", "explain dynamic",
+            "how does routing", "how routing works",
+        ]):
+            reasoning_parts.append("User is asking how automatic model routing works.")
+            tool_calls.extend(self._plan_dynamic_routing(message_lower))
+
         elif any(k in message_lower for k in ["dynamic routing", "routing", "route"]):
             reasoning_parts.append("User is asking about dynamic routing.")
             tool_calls.extend(self._plan_dynamic_routing(message_lower))

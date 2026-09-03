@@ -13,6 +13,7 @@ from app.services.runtime_assistant.configuration import (
 from app.services.runtime_assistant.planner import RuntimeAssistantPlanner
 from app.services.runtime_assistant.schemas import RuntimeContext, ToolDefinition, UserRole
 from app.services.runtime_assistant.tools import _update_runtime_configuration
+from app.services.model_compatibility import infer_provider_for_model, provider_model_mismatch
 
 
 def _context() -> RuntimeContext:
@@ -108,6 +109,13 @@ def test_automatic_routing_alias_is_canonicalized() -> None:
     assert normalize_configuration_changes(
         {"routing_strategy": "automatic_model_routing"}
     ) == {"config": {"dynamic_routing_enabled": True}}
+
+
+def test_model_provider_compatibility_is_checked_without_blocking_custom_models() -> None:
+    assert infer_provider_for_model("gemini-2.5-flash") == "google"
+    assert provider_model_mismatch("openai", "gemini-2.5-flash")
+    assert provider_model_mismatch("google", "gemini-2.5-flash") is None
+    assert provider_model_mismatch("openai", "my-private-model") is None
 
 
 def test_rebuild_is_a_separate_confirmed_action() -> None:

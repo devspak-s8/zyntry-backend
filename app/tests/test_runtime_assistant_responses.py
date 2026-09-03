@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from app.services.runtime_assistant.executor import RuntimeAssistantExecutor, ToolExecutionResult
 from app.services.runtime_assistant.planner import RuntimeAssistantPlanner
 from app.services.runtime_assistant.responder import _strip_control_payload
+from app.services.runtime_assistant.service import _verified_configuration_message
 from app.services.runtime_assistant.schemas import RuntimeContext, ToolCall, UserRole
 
 
@@ -77,3 +78,33 @@ def test_responder_removes_raw_action_payload() -> None:
     )
     assert response == "I can propose this.\nPlease confirm."
     assert "pending_action" not in response
+
+
+def test_verified_configuration_lists_routing_strategies() -> None:
+    message = _verified_configuration_message(
+        "list the available routing strategies",
+        [_result("get_runtime_config", {
+            "provider": "openai", "model": "gpt-4o",
+            "routing_strategy": "quality_optimized",
+            "config": {"dynamic_routing_enabled": False},
+        })],
+    )
+    assert message is not None
+    assert "latency_optimized" in message
+    assert "balanced" in message
+    assert "quality_optimized" in message
+    assert "Automatic model routing is separate" in message
+
+
+def test_verified_configuration_explains_dynamic_routing() -> None:
+    message = _verified_configuration_message(
+        "how does automatic model routing work",
+        [_result("get_runtime_config", {
+            "provider": "openai", "model": "gpt-4o",
+            "routing_strategy": "balanced",
+            "config": {"dynamic_routing_enabled": True},
+        })],
+    )
+    assert message is not None
+    assert "Dynamic model routing is **enabled**" in message
+    assert "available provider credentials" in message

@@ -13,6 +13,7 @@ from app.services.runtime_assistant.records import RuntimeAssistantRecords
 from app.services.runtime_assistant.redaction import redact_sensitive
 from app.services.runtime_assistant.schemas import ToolCall, UserRole
 from app.services.runtime_assistant.tools import RuntimeAssistantTools
+from app.services.model_compatibility import infer_provider_for_model, provider_model_mismatch
 
 
 ALLOWED_COMMANDS = {
@@ -53,8 +54,26 @@ class RuntimeAssistantCommandService:
         if action == "update_runtime_configuration":
             # Validate before creating the pending record so malformed or
             # unsupported settings can never reach the confirmation endpoint.
+            requested = dict(arguments.get("changes", {}))
+            current = await self.uow.runtimes.get(runtime_id)
+            if current is None:
+                raise ValueError("Runtime not found")
+            # Selecting a model from another unambiguous provider is an atomic
+            # provider/model change.  This avoids proposals such as
+            # provider=openai + model=gemini-2.5-flash.
+            requested_model = requested.get("model")
+            if requested_model and "provider" not in requested:
+                inferred = infer_provider_for_model(str(requested_model))
+                if inferred and inferred != str(current.provider).lower():
+                    requested["provider"] = inferred
+            mismatch = provider_model_mismatch(
+                requested.get("provider", current.provider),
+                requested.get("model", current.model),
+            )
+            if mismatch:
+                raise ValueError(mismatch)
             arguments = {
-                "changes": normalize_configuration_changes(arguments.get("changes", {}))
+                "changes": normalize_configuration_changes(requested)
             }
         tools = build_tool_definitions()
         decision = check_tool_permission(
