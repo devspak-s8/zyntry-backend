@@ -146,6 +146,12 @@ class RuntimeAssistantService:
         )
         if generated_message:
             response.message = generated_message
+        # Configuration and routing answers are control-plane facts. The LLM
+        # may phrase ordinary conversation naturally, but it must not replace
+        # a verified saved value with an inferred or stale statement.
+        verified_configuration = _verified_configuration_message(message, tool_results)
+        if verified_configuration:
+            response.message = verified_configuration
         if plan.configuration_error:
             response.message = (
                 f"{response.message}\n\n"
@@ -384,6 +390,63 @@ def _current_configuration_value(context: RuntimeContext, field: str) -> Any:
     else:
         value = context.runtime.get(field)
     return "(not set)" if value is None else value
+
+
+def _verified_configuration_message(
+    user_message: str,
+    tool_results: list[Any],
+) -> str | None:
+    """Build a concise configuration answer from the latest tool result.
+
+    The assistant's language model can occasionally confuse the base routing
+    strategy with the dynamic-routing flag. For configuration questions, use
+    the freshly-read control-plane value so the answer cannot contradict the
+    saved runtime state.
+    """
+    lowered = user_message.lower()
+    if not any(
+        term in lowered
+        for term in (
+            "configuration", "configured", "settings", "routing", "route",
+            "provider", "model", "temperature", "dynamic",
+        )
+    ):
+        return None
+    config_result = next(
+        (
+            result.tool_call.result
+            for result in tool_results
+            if result.success
+            and result.tool_call.name == "get_runtime_config"
+            and isinstance(result.tool_call.result, dict)
+        ),
+        None,
+    )
+    if not config_result:
+        return None
+    config = config_result.get("config") or {}
+    dynamic_enabled = bool(config.get("dynamic_routing_enabled"))
+    dynamic_state = "enabled" if dynamic_enabled else "disabled"
+    base_strategy = config_result.get("routing_strategy") or "not set"
+    provider = config_result.get("provider") or "automatic"
+    model = config_result.get("model") or "automatic"
+    if "routing" in lowered or "route" in lowered or "dynamic" in lowered:
+        return (
+            f"The saved runtime configuration has dynamic model routing **{dynamic_state}**. "
+            f"The base routing strategy is `{base_strategy}`, with `{model}` as the configured model "
+            f"for provider `{provider}`. The base strategy remains unchanged because automatic model "
+            "selection is controlled by the dynamic-routing setting."
+        )
+    return (
+        "Current saved runtime configuration:\n"
+        f"- Provider: `{provider}`\n"
+        f"- Model: `{model}`\n"
+        f"- Base routing strategy: `{base_strategy}`\n"
+        f"- Dynamic model routing: **{dynamic_state}**\n"
+        f"- Environment: `{config_result.get('environment') or 'not set'}`\n"
+        f"- Embedding model: `{config_result.get('embedding_model') or 'default'}`\n"
+        f"- Vector store: `{config_result.get('vector_store') or 'default'}`"
+    )
 
 
 def _evidence_confidence(tool_results: list[Any]) -> float:

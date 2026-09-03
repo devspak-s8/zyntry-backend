@@ -158,8 +158,12 @@ async def _get_runtime_config(self: RuntimeAssistantTools) -> dict[str, Any]:
     if not runtime:
         raise ValueError("Runtime not found")
     return {
+        "name": runtime.get("name"),
+        "status": runtime.get("status"),
+        "environment": runtime.get("environment"),
         "provider": runtime.get("provider"),
         "model": runtime.get("model"),
+        "routing_strategy": runtime.get("routing_strategy"),
         "embedding_model": runtime.get("embedding_model"),
         "vector_store": runtime.get("vector_store"),
         "chunk_size": runtime.get("chunk_size"),
