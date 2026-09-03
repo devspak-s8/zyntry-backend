@@ -10,6 +10,8 @@ from app.schemas.runtimes import RuntimeCreate, RuntimeUpdate
 
 RUNTIME_STATUSES = {
     "preconfigured",
+    "awaiting_project_attachment",
+    "awaiting_provider_credentials",
     "awaiting_connections",
     "awaiting_documents",
     "queued",
@@ -145,6 +147,41 @@ class RuntimeService:
         runtime = await self.uow.runtimes.get(uuid.UUID(runtime_id))
         if not runtime:
             raise ValueError("Runtime not found")
+
+        # A preconfigured runtime is a reusable definition.  It cannot be
+        # built, indexed, or issued an invoke key until a project supplies its
+        # data boundary and environment.
+        if hasattr(runtime, "project_id") and runtime.project_id is None:
+            await self.uow.runtimes.update(
+                runtime,
+                status="awaiting_project_attachment",
+                error_message=None,
+            )
+            await self.uow.commit()
+            return {
+                "runtime_id": str(runtime.id),
+                "status": "awaiting_project_attachment",
+                "required_project_attachment": True,
+                "message": "Attach this runtime to a project before building it.",
+                "trigger": trigger,
+            }
+
+        credential_requirements = await self._provider_requirements(runtime)
+        if credential_requirements:
+            await self.uow.runtimes.update(
+                runtime,
+                status="awaiting_provider_credentials",
+                error_message=None,
+            )
+            await self.uow.commit()
+            return {
+                "runtime_id": str(runtime.id),
+                "status": "awaiting_provider_credentials",
+                "required_provider_credentials": credential_requirements,
+                "message": "Connect and verify the selected model provider before building.",
+                "trigger": trigger,
+            }
+
         integrations = await self.uow.runtime_integrations.get_by_runtime(runtime.id)
         required_connections = [
             item.integration_slug
@@ -210,6 +247,41 @@ class RuntimeService:
             await self.uow.commit()
             raise RuntimeError("Unable to queue runtime build") from exc
         return {"runtime_id": str(runtime.id), "status": "building", "trigger": trigger}
+
+    async def _provider_requirements(self, runtime: Any) -> list[dict[str, str]]:
+        """Return missing model/embedding credentials for a project runtime.
+
+        Lightweight fakes used by unit tests and older internal callers may
+        not expose ``providers`` or a project boundary; those callers retain
+        the previous queueing behavior.  Real Runtime rows always have both.
+        """
+        if not getattr(runtime, "project_id", None) or not hasattr(self.uow, "providers"):
+            return []
+        from app.services.provider_credentials import provider_credential_status
+
+        names = [str(getattr(runtime, "provider", "") or "").strip().lower()]
+        embedding_model = str(getattr(runtime, "embedding_model", "") or "").strip()
+        embedding_provider = embedding_model.split("/", 1)[0].lower() if "/" in embedding_model else "openai"
+        if embedding_provider not in names:
+            names.append(embedding_provider)
+        requirements: list[dict[str, str]] = []
+        for provider_name in names:
+            if not provider_name:
+                continue
+            result = await provider_credential_status(
+                self.uow,
+                provider_name,
+                project_id=runtime.project_id,
+                organization_id=getattr(runtime, "organization_id", None),
+            )
+            if not result["valid"]:
+                requirements.append(
+                    {
+                        "provider": provider_name,
+                        "reason": str(result.get("reason") or "invalid_credentials"),
+                    }
+                )
+        return requirements
 
     async def cancel(self, runtime_id: str) -> dict[str, Any]:
         runtime = await self.uow.runtimes.get(uuid.UUID(runtime_id))

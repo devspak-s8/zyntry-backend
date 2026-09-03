@@ -165,6 +165,7 @@ async def _get_runtime_config(self: RuntimeAssistantTools) -> dict[str, Any]:
         "chunk_size": runtime.get("chunk_size"),
         "chunk_overlap": runtime.get("chunk_overlap"),
         "config": runtime.get("config", {}),
+        "security_policies": runtime.get("security_policies", {}),
         "metadata": runtime.get("metadata_", {}),
     }
 

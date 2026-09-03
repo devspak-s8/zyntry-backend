@@ -260,6 +260,12 @@ class RuntimeAssistantExecutor:
                 f"- Vector store: {config_result.get('vector_store') or 'default'}",
                 f"- Chunk size/overlap: {config_result.get('chunk_size')}/{config_result.get('chunk_overlap')}",
             ]
+            deployment = result_map.get("get_deployment_status")
+            if deployment:
+                deployment_status = deployment.get("status") or "unknown"
+                lines.insert(1, f"- Latest deployment status: {deployment_status}")
+                if deployment.get("error_message"):
+                    lines.insert(2, f"- Deployment note: {deployment['error_message']}")
             if "enable" in message_lower and "routing" in message_lower:
                 lines.extend([
                     "",

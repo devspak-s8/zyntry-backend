@@ -334,6 +334,40 @@ class ConnectionService:
                 f"Connection for '{integration_slug}' has expired. Re-authorization required."
             )
 
+        defn = integration_registry.get(integration_slug)
+        if defn is not None:
+            required_scopes: set[str] = set()
+            capability_map = {cap.slug: cap for cap in defn.capabilities}
+            for capability in runtime_int.enabled_capabilities or []:
+                definition = capability_map.get(capability)
+                if definition is not None:
+                    required_scopes.update(definition.required_scopes)
+            # Some integrations put their read scope on the top-level
+            # definition rather than each capability.  Enforce it whenever a
+            # capability has no narrower declaration.
+            if not required_scopes:
+                required_scopes.update(defn.required_scopes)
+            granted_scopes = {
+                str(scope).strip()
+                for scope in (connection.scopes or [])
+                if str(scope).strip()
+            }
+            missing_scopes = sorted(
+                required
+                for required in required_scopes
+                if not any(
+                    granted == required
+                    or granted.endswith(f"/{required}")
+                    or granted.endswith(f":{required}")
+                    for granted in granted_scopes
+                )
+            )
+            if missing_scopes:
+                raise PermissionError(
+                    f"Connection for '{integration_slug}' is missing required API scopes: "
+                    f"{', '.join(missing_scopes)}"
+                )
+
         # Decrypt credentials
         raw_creds = {}
         if connection.encrypted_credentials:

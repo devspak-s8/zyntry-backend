@@ -186,6 +186,13 @@ def normalize_configuration_changes(changes: Mapping[str, Any]) -> dict[str, Any
             payload[key] = ENVIRONMENT_ALIASES[environment]
         elif key == "routing_strategy":
             strategy = _clean_text(raw_value, key).lower().replace("-", "_").replace(" ", "_")
+            # Automatic model routing is represented by the runtime's dynamic
+            # routing flag. Keep the persisted routing strategy canonical
+            # (latency/quality/balanced) while accepting the natural-language
+            # setting users commonly ask for.
+            if strategy in {"automatic", "automatic_model_routing", "dynamic", "dynamic_routing"}:
+                config_updates["dynamic_routing_enabled"] = True
+                continue
             if strategy not in ROUTING_STRATEGIES:
                 raise ValueError("routing_strategy must be latency_optimized, quality_optimized, or balanced")
             payload[key] = strategy
@@ -239,6 +246,22 @@ def parse_configuration_change(message: str) -> dict[str, Any] | None:
     )
     if dynamic:
         changes["config"] = {"dynamic_routing_enabled": dynamic.group(1) in {"enable", "turn on", "activate"}}
+
+    # Users often describe the same setting as "automatic model routing" or
+    # "route the models automatically". Only accept it when paired with an
+    # explicit change verb so a read question cannot become a mutation.
+    automatic_routing = re.search(
+        r"\b(?:enable|activate|configure|set|set\s+up|turn\s+on|make|switch\s+to)\b.*\b(?:automatic(?:ally)?\s+(?:model\s+)?routing|automatic(?:ally)?\s+route\s+(?:the\s+)?models?|route\s+(?:the\s+)?models?\s+automatically|dynamic(?:\s+model)?\s+routing)\b",
+        lowered,
+    )
+    automatic_routing_disabled = re.search(
+        r"\b(?:disable|deactivate|turn\s+off|stop)\b.*\b(?:automatic(?:ally)?\s+(?:model\s+)?routing|automatic(?:ally)?\s+route\s+(?:the\s+)?models?|route\s+(?:the\s+)?models?\s+automatically|dynamic(?:\s+model)?\s+routing)\b",
+        lowered,
+    )
+    if automatic_routing or automatic_routing_disabled:
+        changes["config"] = {
+            "dynamic_routing_enabled": automatic_routing_disabled is None,
+        }
 
     def capture(pattern: str) -> str | None:
         match = re.search(pattern, text, flags=re.IGNORECASE)

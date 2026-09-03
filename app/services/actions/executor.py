@@ -96,6 +96,7 @@ class ActionExecutor:
         context = dict(body.context)
         context["user_id"] = str(user_id)
         context["project_id"] = body.project_id
+        context["confirmed"] = body.confirm
 
         providers_needed = {step.provider for step in body.steps}
         if providers_needed and self.uow:
@@ -139,6 +140,29 @@ class ActionExecutor:
                 continue
 
             try:
+                from app.services.actions.guardrails import requires_action_confirmation
+                from app.services.actions.registry import ActionRegistry
+
+                try:
+                    provider_actions = ActionRegistry.list_actions(step.provider)
+                except KeyError:
+                    provider_actions = []
+                definition = next(
+                    (
+                        item
+                        for item in provider_actions
+                        if item.name == step.action
+                    ),
+                    None,
+                )
+                if requires_action_confirmation(step.action, definition) and not body.confirm:
+                    yield {
+                        "type": "step_error",
+                        "step": step.model_dump(),
+                        "error": "Workflow write operation requires explicit confirmation",
+                        "timestamp": now_ts,
+                    }
+                    break
                 result = await ActionRegistry.execute(
                     step.provider,
                     step.action,

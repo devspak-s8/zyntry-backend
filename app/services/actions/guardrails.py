@@ -4,6 +4,32 @@ import re
 from typing import Any
 
 
+# Some providers historically marked mutating operations as ``risk='low'``.
+# Keep the policy safe even when a connector's metadata is incomplete.
+WRITE_ACTION_PREFIXES = (
+    "create", "update", "delete", "remove", "send", "post", "put", "patch",
+    "upload", "invite", "pin", "schedule", "trigger", "merge", "close",
+    "cancel", "archive", "revoke", "comment", "commit", "add", "modify",
+    "move", "rename", "set", "write",
+)
+
+
+def is_write_action(action: str, definition: Any | None = None) -> bool:
+    """Return whether an action mutates an external system."""
+    normalized = action.strip().lower()
+    if definition is not None:
+        if "write" in {str(item).lower() for item in (definition.required_permissions or [])}:
+            return True
+        if definition.risk in {"medium", "high", "critical"}:
+            return True
+    return normalized.startswith(WRITE_ACTION_PREFIXES)
+
+
+def requires_action_confirmation(action: str, definition: Any | None = None) -> bool:
+    """All writes require a user confirmation; destructive actions are high risk."""
+    return is_write_action(action, definition)
+
+
 class GuardrailService:
     @staticmethod
     def validate_prompt(prompt: str) -> tuple[bool, str | None]:

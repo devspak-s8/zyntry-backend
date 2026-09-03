@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -18,6 +19,7 @@ from app.schemas.providers import (
     ProviderConnectionCreate,
     ProviderConnectionRead,
     ProviderConnectionUpdate,
+    ProviderTestRequest,
 )
 from app.services.model_discovery import get_model_discovery
 from app.services.notifications import enqueue_notification
@@ -30,13 +32,13 @@ router = APIRouter(prefix="/providers", tags=["providers"])
 
 @router.post("/test-connection", tags=["providers"])
 async def test_provider_connection(
-    body: dict,
+    body: ProviderTestRequest,
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> dict:
     uow = UnitOfWork(db)
     service = ProviderService(uow)
-    result = await service.test_connection(body)
+    result = await service.test_connection(body.model_dump())
     return result
 
 
@@ -129,7 +131,7 @@ async def list_provider_connections(
             display_name=c.get("display_name"),
             status=c["status"],
             last_tested_at=c.get("last_tested_at"),
-            is_active=True,
+            is_active=bool(c.get("is_active", False)),
             created_at=c.get("created_at", ""),
             updated_at=c.get("created_at", ""),
         )
@@ -194,16 +196,19 @@ async def connect_provider(
     org_id = body.organization_id or (
         str(current_user.organization_id) if current_user.organization_id else None
     )
-    result = await service.connect(
-        ProviderConnectionCreate(
-            provider_name=body.provider_name,
-            display_name=body.display_name,
-            api_key=api_key,
-            organization_id=org_id,
-            project_id=body.project_id,
-            config=body.config,
+    try:
+        result = await service.connect(
+            ProviderConnectionCreate(
+                provider_name=body.provider_name,
+                display_name=body.display_name,
+                api_key=api_key,
+                organization_id=org_id,
+                project_id=body.project_id,
+                config=body.config,
+            )
         )
-    )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if result.get("requires_oauth"):
         await emit_provider_updated(
             str(current_user.id),
@@ -219,8 +224,8 @@ async def connect_provider(
         provider_name=result["provider_name"],
         display_name=result.get("display_name") or body.display_name,
         status=result["status"],
-        last_tested_at=None,
-        is_active=True,
+        last_tested_at=result.get("last_tested_at"),
+        is_active=bool(result.get("is_active", False)),
         created_at=result.get("created_at") or "",
         updated_at=result.get("updated_at") or "",
     )
@@ -260,9 +265,30 @@ async def update_provider_connection(
         raise HTTPException(status_code=404, detail="Provider connection not found")
     if existing.project_id:
         await require_project_membership(str(existing.project_id), current_user, db)
-    updated = await uow.providers.update(
-        existing, **{k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
-    )
+    update_data = {
+        k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None
+    }
+    if "api_key" in update_data:
+        api_key = str(update_data.pop("api_key")).strip()
+        if not api_key:
+            raise HTTPException(status_code=400, detail="API key cannot be empty")
+        test_result = await ProviderService(uow).test_connection(
+            {"provider_name": existing.provider_name, "api_key": api_key}
+        )
+        if not test_result.get("success"):
+            raise HTTPException(status_code=400, detail=test_result.get("message"))
+        from app.core.security import hash_token
+        from app.services.security.secrets import default_secret_manager
+        update_data.update(
+            {
+                "encrypted_api_key": default_secret_manager.encrypt(api_key),
+                "api_key_hash": hash_token(api_key),
+                "status": "active",
+                "is_active": True,
+                "last_tested_at": datetime.now(UTC).isoformat(),
+            }
+        )
+    updated = await uow.providers.update(existing, **update_data)
     await uow.commit()
     response = ProviderConnectionRead(
         id=str(updated.id),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -9,6 +10,9 @@ from app.models.oauth import OAuthProvider
 from app.models.onboarding import ProviderConnection
 from app.repositories import UnitOfWork
 from app.schemas.providers import ProviderConnectionCreate
+from app.core.security import hash_token
+from app.services.model_providers import PROVIDER_REGISTRY
+from app.services.security.secrets import default_secret_manager
 
 
 class ProviderService:
@@ -39,12 +43,16 @@ class ProviderService:
                 "display_name": c.display_name,
                 "status": c.status,
                 "is_active": c.is_active,
+                "last_tested_at": c.last_tested_at,
                 "created_at": c.created_at.isoformat() if c.created_at else None,
             }
             for c in connections
         ]
 
     async def connect(self, data: ProviderConnectionCreate) -> dict[str, Any]:
+        provider_name = data.provider_name.strip().lower()
+        if provider_name != data.provider_name:
+            data = data.model_copy(update={"provider_name": provider_name})
         existing = None
         if data.project_id:
             existing = await self.uow.providers.get_by_provider(
@@ -55,13 +63,40 @@ class ProviderService:
         if oauth_provider:
             return await self._initiate_oauth(data, oauth_provider, existing)
 
+        if provider_name not in PROVIDER_REGISTRY:
+            raise ValueError(
+                f"Provider '{data.provider_name}' is not supported. "
+                f"Choose one of: {', '.join(sorted(PROVIDER_REGISTRY))}."
+            )
+        if not data.api_key or not data.api_key.strip():
+            raise ValueError(
+                f"A valid {provider_name} API key is required before connecting this provider"
+            )
+        try:
+            valid = await self._test_model_provider(provider_name, data.api_key.strip())
+        except Exception as exc:
+            raise ValueError(
+                f"Unable to validate {provider_name} credentials: {exc}"
+            ) from exc
+        if not valid:
+            raise ValueError(
+                f"The {provider_name} credentials could not be verified. "
+                "Check the key, provider account, and required API scopes."
+            )
+        encrypted_key = default_secret_manager.encrypt(data.api_key.strip())
+        tested_at = datetime.now(UTC).isoformat()
+
         if existing:
             updated = await self.uow.providers.update(
                 existing,
-                encrypted_api_key=data.api_key,
+                provider_name=provider_name,
+                encrypted_api_key=encrypted_key,
+                api_key_hash=hash_token(data.api_key.strip()),
                 status="active",
+                is_active=True,
                 display_name=data.display_name,
                 config=data.config,
+                last_tested_at=tested_at,
             )
             await self.uow.commit()
             return {
@@ -70,6 +105,7 @@ class ProviderService:
                 "display_name": updated.display_name,
                 "status": updated.status,
                 "is_active": updated.is_active,
+                "last_tested_at": updated.last_tested_at,
                 "created_at": updated.created_at.isoformat() if updated.created_at else "",
                 "updated_at": updated.updated_at.isoformat() if updated.updated_at else "",
             }
@@ -77,10 +113,12 @@ class ProviderService:
         created = await self.uow.providers.create(
             organization_id=data.organization_id,
             project_id=data.project_id,
-            provider_name=data.provider_name,
+            provider_name=provider_name,
             display_name=data.display_name,
-            encrypted_api_key=data.api_key,
+            encrypted_api_key=encrypted_key,
+            api_key_hash=hash_token(data.api_key.strip()),
             status="active",
+            last_tested_at=tested_at,
             config=data.config,
         )
         await self.uow.commit()
@@ -89,7 +127,8 @@ class ProviderService:
             "provider_name": created.provider_name,
             "display_name": created.display_name,
             "status": created.status,
-            "is_active": created.is_active,
+            "is_active": getattr(created, "is_active", True),
+            "last_tested_at": created.last_tested_at,
             "created_at": created.created_at.isoformat() if created.created_at else "",
             "updated_at": created.updated_at.isoformat() if created.updated_at else "",
         }
@@ -213,7 +252,41 @@ class ProviderService:
         await self.uow.commit()
 
     async def test_connection(self, data: dict) -> dict:
-        return {"success": True, "message": "Connection test passed"}
+        provider_name = str(data.get("provider_name") or data.get("provider") or "").strip().lower()
+        api_key = data.get("api_key")
+        if provider_name not in PROVIDER_REGISTRY:
+            return {
+                "success": False,
+                "provider": provider_name,
+                "message": f"Provider '{provider_name}' is not supported",
+            }
+        if not isinstance(api_key, str) or not api_key.strip():
+            return {
+                "success": False,
+                "provider": provider_name,
+                "message": "An API key is required",
+            }
+        try:
+            valid = await self._test_model_provider(provider_name, api_key.strip())
+        except Exception as exc:
+            return {
+                "success": False,
+                "provider": provider_name,
+                "message": f"Provider validation failed: {exc}",
+            }
+        return {
+            "success": valid,
+            "provider": provider_name,
+            "message": (
+                "Connection test passed"
+                if valid
+                else "Credentials were rejected. Check the key and required API scopes."
+            ),
+        }
+
+    async def _test_model_provider(self, provider_name: str, api_key: str) -> bool:
+        provider_cls = PROVIDER_REGISTRY[provider_name]
+        return bool(await provider_cls().test_connection(api_key))
 
     async def discover_resources(self, data: dict) -> dict:
         return {"items": [], "total": 0}

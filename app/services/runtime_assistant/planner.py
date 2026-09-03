@@ -78,6 +78,17 @@ class RuntimeAssistantPlanner:
             reasoning_parts.append("User is asking about sync issues.")
             tool_calls.extend(self._plan_sync_failures(message_lower))
 
+        elif any(k in message_lower for k in [
+            "are you done", "is it done", "did it apply", "was it applied",
+            "has it completed", "when completed", "is it live", "did the update",
+            "did the change", "was the change", "verify the change",
+        ]):
+            reasoning_parts.append("User is verifying whether a previous runtime change completed.")
+            if "get_runtime_config" in self.tool_map:
+                tool_calls.append(ToolCall(id=self._generate_id(), name="get_runtime_config", arguments={}))
+            if "get_deployment_status" in self.tool_map:
+                tool_calls.append(ToolCall(id=self._generate_id(), name="get_deployment_status", arguments={}))
+
         elif any(k in message_lower for k in ["dynamic routing", "routing", "route"]):
             reasoning_parts.append("User is asking about dynamic routing.")
             tool_calls.extend(self._plan_dynamic_routing(message_lower))

@@ -21,17 +21,23 @@ from app.schemas.actions import ActionRequest, ActionResponse
 from app.schemas.billing import InsufficientCreditsError
 from app.services.actions.confirmations import ConfirmationService
 from app.services.actions.executor import ActionExecutor
-from app.services.actions.guardrails import GuardrailService as ActionGuardrailService
+from app.services.actions.guardrails import (
+    GuardrailService as ActionGuardrailService,
+    requires_action_confirmation,
+)
 from app.services.billing import BillingService, InsufficientCredits
 from app.services.metered_billing import InsufficientBalanceError, MeteredBillingService
 from app.services.guardrails import GuardrailService
 from app.services.model_router import ModelRouter, RoutingGoal, RoutingPreference
+from app.services.provider_credentials import resolve_provider_key
 from app.services.oauth.service import OAuthService
 from app.services.security.outbound import validate_outbound_url
 from app.services.security.secrets import default_secret_manager
+from app.services.runtime_security import RuntimeSecurityService, RuntimeSecurityViolation
 
 router = APIRouter()
 guardrail_service = GuardrailService()
+runtime_security_service = RuntimeSecurityService()
 
 
 def _insufficient_credits_detail() -> dict[str, str]:
@@ -223,6 +229,23 @@ async def invoke(
             "status": runtime.status,
         }
         events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Runtime Loaded", "runtime_id": str(runtime.id), "cached": False})
+        try:
+            security_event = await runtime_security_service.enforce(runtime, request, body.input)
+            events.append({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "event": "Runtime Security Checked",
+                "enabled": security_event.get("enabled", False),
+            })
+        except RuntimeSecurityViolation as exc:
+            events.append({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "event": "Runtime Security Blocked",
+                "code": exc.code,
+            })
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail={"code": exc.code, "message": exc.message},
+            ) from exc
     else:
         runtime_data = {"provider": "openai", "model": "gpt-4o", "config": {}}
         events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Runtime Loaded", "runtime_id": None, "cached": False})
@@ -256,6 +279,15 @@ async def invoke(
     preference = RoutingPreference(goal=goal)
 
     provider_keys: dict[str, str] = {}
+    if runtime:
+        runtime_provider_key, _ = await resolve_provider_key(
+            uow,
+            provider_name,
+            project_id=project.id,
+            organization_id=project.organization_id,
+        )
+        if runtime_provider_key:
+            provider_keys[provider_name.strip().lower()] = runtime_provider_key
     for p_name, setting_name in [
         ("openai", "OPENAI_API_KEY"),
         ("anthropic", "ANTHROPIC_API_KEY"),
@@ -265,7 +297,7 @@ async def invoke(
         ("groq", "GROQ_API_KEY"),
     ]:
         key = getattr(settings, setting_name, None)
-        if key:
+        if key and p_name not in provider_keys:
             provider_keys[p_name] = key
 
     # Reserve the worst-case inference estimate before contacting a provider.
@@ -356,8 +388,23 @@ async def invoke(
                 action_results.append(ActionResponse(success=False, error=error))
                 continue
 
-            risk_actions = {"delete", "remove", "archive", "merge", "close", "cancel", "expire", "revoke"}
-            requires_confirmation = any(risk in action_req.action.lower() for risk in risk_actions)
+            from app.services.actions.registry import ActionRegistry
+            try:
+                provider_actions = ActionRegistry.list_actions(action_req.provider)
+            except KeyError:
+                provider_actions = []
+            action_definition = next(
+                (
+                    definition
+                    for definition in provider_actions
+                    if definition.name == action_req.action
+                ),
+                None,
+            )
+            requires_confirmation = requires_action_confirmation(
+                action_req.action,
+                action_definition,
+            )
 
             if requires_confirmation and not action_req.confirm:
                 confirmation = await confirmation_service.request(

@@ -22,6 +22,7 @@ from app.services.embeddings import (
     embed_with_cache,
     get_embedding_provider,
 )
+from app.services.provider_credentials import resolve_provider_key
 from app.services.vector_stores import get_vector_store
 
 
@@ -291,9 +292,19 @@ class RuntimeWorker:
 
     async def _stage_generate_embeddings(self) -> None:
         provider_name = self._runtime.embedding_model.split("/")[0] if "/" in self._runtime.embedding_model else "openai"
+        api_key, _ = await resolve_provider_key(
+            self._uow,
+            provider_name,
+            project_id=self._runtime.project_id,
+            organization_id=self._runtime.organization_id,
+        )
+        if not api_key:
+            raise RuntimeError(
+                f"No verified credentials are available for embedding provider '{provider_name}'"
+            )
         self._embedding_provider = get_embedding_provider(
             provider_name=provider_name,
-            api_key=getattr(settings, f"{provider_name.upper()}_API_KEY", ""),
+            api_key=api_key,
             model=self._runtime.embedding_model,
         )
         cache_service = await self._ensure_cache_service()
@@ -406,7 +417,15 @@ class RuntimeWorker:
             project_id=self._runtime.project_id,
             runtime_id=self._runtime.id,
             environment=self._runtime.environment or "development",
-            scopes=["read", "write"],
+            # Runtime credentials are read-only by default.  A project owner
+            # must explicitly enable write access in the runtime configuration;
+            # individual mutating actions still require confirmation at the
+            # action gateway.
+            scopes=(
+                ["read", "write"]
+                if bool((self._runtime.config or {}).get("write_access_enabled"))
+                else ["read"]
+            ),
         )
         await self._uow.commit()
         self._runtime.api_key_id = api_key.id

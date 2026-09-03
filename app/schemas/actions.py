@@ -34,6 +34,9 @@ class WorkflowRequest(BaseModel):
     project_id: str
     steps: list[WorkflowStep]
     context: dict[str, Any] = {}
+    # A workflow may contain mutating steps.  The caller must explicitly
+    # confirm the whole workflow before it can run those steps.
+    confirm: bool = False
 
 
 class ActionResponse(BaseModel):

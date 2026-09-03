@@ -89,6 +89,21 @@ def test_parser_supports_multiple_changes_and_fallback_models() -> None:
     }
 
 
+def test_automatic_model_routing_maps_to_dynamic_routing_flag() -> None:
+    assert parse_configuration_change(
+        "Configure it to automatically route the models"
+    ) == {"config": {"dynamic_routing_enabled": True}}
+    assert parse_configuration_change(
+        "Disable automatic model routing"
+    ) == {"config": {"dynamic_routing_enabled": False}}
+
+
+def test_automatic_routing_alias_is_canonicalized() -> None:
+    assert normalize_configuration_changes(
+        {"routing_strategy": "automatic_model_routing"}
+    ) == {"config": {"dynamic_routing_enabled": True}}
+
+
 def test_rebuild_is_a_separate_confirmed_action() -> None:
     planner = RuntimeAssistantPlanner(
         _context(),
@@ -104,6 +119,31 @@ def test_rebuild_is_a_separate_confirmed_action() -> None:
     plan = planner.plan("Rebuild the runtime")
     assert len(plan.tool_calls) == 1
     assert plan.tool_calls[0].name == "rebuild_embeddings"
+
+
+def test_completion_question_checks_current_config_and_deployment() -> None:
+    planner = RuntimeAssistantPlanner(
+        _context(),
+        [
+            ToolDefinition(
+                name="get_runtime_config",
+                description="Get current runtime configuration",
+                required_permission=UserRole.VIEWER,
+                action_type="read",
+            ),
+            ToolDefinition(
+                name="get_deployment_status",
+                description="Get deployment status",
+                required_permission=UserRole.VIEWER,
+                action_type="read",
+            ),
+        ],
+    )
+    plan = planner.plan("Are you done?")
+    assert [call.name for call in plan.tool_calls] == [
+        "get_runtime_config",
+        "get_deployment_status",
+    ]
 
 
 def test_configuration_impact_marks_index_changes_for_rebuild() -> None:

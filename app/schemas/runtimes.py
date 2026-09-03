@@ -44,6 +44,22 @@ class RuntimeUpdate(ORMModel):
     config: dict | None = None
 
 
+class RuntimeSecurityPolicy(BaseModel):
+    """V1 controls for prompt filtering and abuse protection."""
+
+    model_config = ConfigDict(extra="allow")
+
+    enabled: bool = False
+    block_suspicious_requests: bool = True
+    prompt_injection_protection: bool = True
+    pii_redaction: bool = True
+    max_input_chars: int = Field(default=10000, ge=1000, le=1_000_000)
+    rate_limit_per_minute: int = Field(default=120, ge=1, le=100_000)
+    ip_ban_enabled: bool = True
+    violation_threshold: int = Field(default=3, ge=1, le=100)
+    ban_duration_seconds: int = Field(default=900, ge=60, le=86_400)
+
+
 class RuntimeRead(ORMModel):
     id: uuid.UUID
     user_id: uuid.UUID

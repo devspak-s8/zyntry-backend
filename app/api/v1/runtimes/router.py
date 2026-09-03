@@ -5,7 +5,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -43,12 +43,14 @@ from app.schemas.runtimes import (
     RuntimeTopologySimulationRequest,
     RuntimeTopologySimulationResponse,
     RuntimeUpdate,
+    RuntimeSecurityPolicy,
 )
 from app.services.apikeys import ApiKeyService
 from app.services.health import HealthService
 from app.services.integrations.service import IntegrationService
 from app.services.runtimes import RuntimeService
 from app.services.security.secrets import default_secret_manager
+from app.services.runtime_security import normalize_runtime_security_policy
 
 router = APIRouter(prefix="/runtimes", tags=["runtimes"])
 OBSERVABILITY_GUARD = [Depends(require_feature("observability"))]
@@ -366,6 +368,48 @@ async def rebuild_runtime(
     return result
 
 
+@router.get("/{runtime_id}/security", response_model=dict)
+async def get_runtime_security_policy(
+    runtime_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_session),
+) -> dict:
+    try:
+        rid = uuid.UUID(runtime_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid runtime_id format") from None
+    runtime = await require_runtime_access(rid, current_user, db)
+    return {
+        "runtime_id": str(runtime.id),
+        "project_id": str(runtime.project_id) if runtime.project_id else None,
+        "policy": normalize_runtime_security_policy(runtime.security_policies),
+    }
+
+
+@router.put("/{runtime_id}/security", response_model=dict)
+async def update_runtime_security_policy(
+    runtime_id: str,
+    body: RuntimeSecurityPolicy,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_session),
+) -> dict:
+    try:
+        rid = uuid.UUID(runtime_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid runtime_id format") from None
+    runtime = await require_runtime_access(rid, current_user, db)
+    policy = normalize_runtime_security_policy(
+        {**(runtime.security_policies or {}), **body.model_dump()}
+    )
+    await UnitOfWork(db).runtimes.update(runtime, security_policies=policy)
+    await db.commit()
+    return {
+        "runtime_id": str(runtime.id),
+        "project_id": str(runtime.project_id) if runtime.project_id else None,
+        "policy": policy,
+    }
+
+
 @router.post(
     "/{runtime_id}/console/invoke",
     response_model=InvokeResponse,
@@ -374,6 +418,7 @@ async def rebuild_runtime(
 async def invoke_runtime_console(
     runtime_id: str,
     body: InvokeRequest,
+    request: Request,
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> InvokeResponse:
@@ -385,6 +430,11 @@ async def invoke_runtime_console(
 
     uow = UnitOfWork(db)
     runtime = await require_runtime_access(runtime_uuid, current_user, db)
+    if runtime.project_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Attach this runtime to a project before invoking it",
+        )
 
     safe_body = body.model_copy(
         update={
@@ -392,7 +442,7 @@ async def invoke_runtime_console(
             "runtime_id": str(runtime.id),
         }
     )
-    return await invoke(safe_body, current_user, db)
+    return await invoke(safe_body, request, current_user, db)
 
 
 @router.post("/{runtime_id}/propagate", response_model=dict)

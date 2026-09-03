@@ -23,7 +23,7 @@ from app.schemas.actions import (
 )
 from app.services.actions.confirmations import ConfirmationService
 from app.services.actions.executor import ActionExecutor
-from app.services.actions.guardrails import GuardrailService
+from app.services.actions.guardrails import GuardrailService, requires_action_confirmation
 
 router = APIRouter(prefix="/actions", tags=["actions"])
 
@@ -60,7 +60,6 @@ async def execute_action(
         raise HTTPException(status_code=403, detail="API key is not authorized for this project")
     user_id = auth.user.id
 
-    risk_actions = {"delete", "remove", "archive", "merge", "close", "cancel", "expire", "revoke"}
     from app.services.actions.registry import ActionRegistry
 
     try:
@@ -71,15 +70,12 @@ async def execute_action(
         (definition for definition in provider_actions if definition.name == body.action),
         None,
     )
-    requires_confirmation = any(risk in body.action.lower() for risk in risk_actions)
+    requires_confirmation = requires_action_confirmation(body.action)
     if action_definition is not None:
         # Provider metadata is the authoritative write/risk declaration. This
         # covers operations such as update_cells and send_messages whose names
         # do not contain a legacy risk keyword.
-        requires_confirmation = requires_confirmation or bool(
-            action_definition.required_permissions
-            or action_definition.risk in {"medium", "high"}
-        )
+        requires_confirmation = requires_action_confirmation(body.action, action_definition)
 
     if requires_confirmation and not body.confirm:
         confirmation_service = ConfirmationService(uow)
@@ -123,6 +119,33 @@ async def execute_workflow(
         )
         if not valid:
             raise HTTPException(status_code=400, detail=error)
+
+    from app.services.actions.registry import ActionRegistry
+    write_steps = []
+    for step in body.steps:
+        try:
+            provider_actions = ActionRegistry.list_actions(step.provider)
+        except KeyError:
+            provider_actions = []
+        definition = next(
+            (
+                item
+                for item in provider_actions
+                if item.name == step.action
+            ),
+            None,
+        )
+        if requires_action_confirmation(step.action, definition):
+            write_steps.append(f"{step.provider}.{step.action}")
+    if write_steps and not body.confirm:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "workflow_confirmation_required",
+                "message": "This workflow contains write operations and requires explicit confirmation.",
+                "actions": write_steps,
+            },
+        )
 
     async def event_stream():
         async for event in executor.execute_workflow(body, auth.user.id):
