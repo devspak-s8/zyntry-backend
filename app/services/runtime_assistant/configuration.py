@@ -250,12 +250,16 @@ def parse_configuration_change(message: str) -> dict[str, Any] | None:
     # Users often describe the same setting as "automatic model routing" or
     # "route the models automatically". Only accept it when paired with an
     # explicit change verb so a read question cannot become a mutation.
+    # ``automatc``/``automtic`` are common keyboard slips in chat. They are
+    # accepted only in this explicit mutation pattern; a read question still
+    # returns ``None`` and cannot create a proposal.
+    automatic_word = r"autom(?:atic|atc|tic)(?:ally)?"
     automatic_routing = re.search(
-        r"\b(?:enable|activate|change|configure|set|set\s+up|turn\s+on|make|switch\s+to)\b.*\b(?:automatic(?:ally)?\s+(?:model\s+)?routing|automatic(?:ally)?\s+route\s+(?:the\s+)?models?|route\s+(?:the\s+)?models?\s+automatically|dynamic(?:\s+model)?\s+routing)\b",
+        rf"\b(?:enable|activate|change|configure|set|set\s+up|turn\s+on|make|switch\s+to)\b.*\b(?:{automatic_word}(?:\s+(?:model\s+)?routing|\s+route\s+(?:the\s+)?models?)?|route\s+(?:the\s+)?models?\s+{automatic_word}|dynamic(?:\s+model)?\s+routing)\b",
         lowered,
     )
     automatic_routing_disabled = re.search(
-        r"\b(?:disable|deactivate|turn\s+off|stop)\b.*\b(?:automatic(?:ally)?\s+(?:model\s+)?routing|automatic(?:ally)?\s+route\s+(?:the\s+)?models?|route\s+(?:the\s+)?models?\s+automatically|dynamic(?:\s+model)?\s+routing)\b",
+        rf"\b(?:disable|deactivate|turn\s+off|stop)\b.*\b(?:{automatic_word}(?:\s+(?:model\s+)?routing|\s+route\s+(?:the\s+)?models?)?|route\s+(?:the\s+)?models?\s+{automatic_word}|dynamic(?:\s+model)?\s+routing)\b",
         lowered,
     )
     if automatic_routing or automatic_routing_disabled:
@@ -267,7 +271,7 @@ def parse_configuration_change(message: str) -> dict[str, Any] | None:
     # from the conversation (for example, “change it to automatic”). Treat
     # that explicit continuation as a routing change, never as a read query.
     contextual_automatic = re.search(
-        r"\b(?:change|switch|set|make)\s+(?:it|this|that)\s+to\s+(?:automatic|dynamic)\b",
+        rf"\b(?:change|switch|set|make)\s+(?:it|this|that)\s+to\s+(?:{automatic_word}|dynamic)\b",
         lowered,
     )
     if contextual_automatic:

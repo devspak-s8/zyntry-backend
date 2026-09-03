@@ -99,6 +99,9 @@ def test_automatic_model_routing_maps_to_dynamic_routing_flag() -> None:
     assert parse_configuration_change(
         "No, change it to automatic"
     ) == {"config": {"dynamic_routing_enabled": True}}
+    assert parse_configuration_change(
+        "Now I want to switch to automatc"
+    ) == {"config": {"dynamic_routing_enabled": True}}
 
 
 def test_automatic_routing_alias_is_canonicalized() -> None:
