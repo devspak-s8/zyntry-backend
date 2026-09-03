@@ -111,7 +111,11 @@ class RuntimeAssistantPlanner:
         elif any(k in message_lower for k in ["integration", "connected connector", "connection status"]):
             reasoning_parts.append("User is asking about runtime integrations.")
 
-        elif any(k in message_lower for k in ["security polic", "security setting", "prompt injection", "pii redaction"]):
+        elif any(k in message_lower for k in [
+            "security polic", "security setting", "prompt injection", "pii redaction",
+            "api key", "ip blocking", "ip ban", "temporary block", "rate limit",
+            "access control",
+        ]):
             reasoning_parts.append("User is asking about runtime security settings.")
             if "get_security_settings" in self.tool_map:
                 tool_calls.append(ToolCall(id=self._generate_id(), name="get_security_settings", arguments={}))

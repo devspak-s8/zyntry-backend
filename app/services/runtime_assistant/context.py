@@ -93,7 +93,14 @@ class RuntimeContextBuilder:
             for item in integration_models
         ]
         logs = await collect("logs", lambda: project_value(lambda: self._get_recent_logs(project_id), []), [])
-        security = await collect("security", self._get_security_settings, {"api_keys_count": 0, "keys": []})
+        # Keep the security snapshot scoped to the selected project/runtime
+        # and current user. The assistant must never count or expose API keys
+        # from another project or tenant just because they share the database.
+        security = await collect(
+            "security",
+            lambda: self._get_security_settings(project_id),
+            {"api_keys_count": 0, "keys": []},
+        )
 
         return RuntimeContext(
             runtime_id=self.runtime_id,
@@ -179,22 +186,36 @@ class RuntimeContextBuilder:
                 serialized[key] = float(serialized[key])
         return serialized
 
-    async def _get_security_settings(self) -> dict[str, Any]:
+    async def _get_security_settings(self, project_id: str | None = None) -> dict[str, Any]:
         try:
             from app.services.apikeys import ApiKeyService
 
             api_key_service = ApiKeyService(self.uow)
-            keys = await api_key_service.list_keys()
+            keys = await api_key_service.list_keys(
+                # Match the console's project scope when the runtime is bound
+                # to a project; fall back to runtime scope for unbound
+                # runtimes. Always keep the user filter so another member's
+                # secret metadata is not leaked.
+                user_id=self.user_id or None,
+                project_id=project_id or None,
+                runtime_id=None if project_id else self.runtime_id,
+            )
+
+            def value(item: Any, key: str, default: Any = None) -> Any:
+                return item.get(key, default) if isinstance(item, dict) else getattr(item, key, default)
+
             return {
                 "api_keys_count": len(keys),
                 "keys": [
                     {
-                        "id": str(k.id),
-                        "name": k.name,
-                        "prefix": k.prefix,
-                        "last_used_at": k.last_used_at.isoformat() if k.last_used_at else None,
-                        "expires_at": k.expires_at.isoformat() if k.expires_at else None,
-                        "revoked": k.revoked,
+                        "id": str(value(k, "id")),
+                        "name": value(k, "name"),
+                        "prefix": value(k, "prefix"),
+                        "last_used_at": value(k, "last_used_at").isoformat()
+                        if value(k, "last_used_at") else None,
+                        "expires_at": value(k, "expires_at").isoformat()
+                        if value(k, "expires_at") else None,
+                        "revoked": value(k, "revoked", False),
                     }
                     for k in keys
                 ],

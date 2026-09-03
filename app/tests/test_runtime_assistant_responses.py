@@ -129,4 +129,17 @@ def test_context_facts_answer_provider_integrations_and_security_questions() -> 
     assert message is not None
     assert "google" in message and "gemini-2.5-flash" in message
     assert "github: connected" in message
-    assert "Enabled: True" in message
+    assert "Security protection: enabled" in message
+
+
+def test_context_facts_cover_security_subquestions() -> None:
+    context = RuntimeContext(
+        runtime_id="runtime", project_id="project", organization_id="org",
+        user_id="user", user_role=UserRole.VIEWER,
+        runtime={"security_policies": {"ip_ban_enabled": True}},
+        security={"api_keys_count": 3},
+    )
+    key_message = _context_factual_message("How many API keys are visible in this scope?", context)
+    ban_message = _context_factual_message("Is temporary IP blocking enabled?", context)
+    assert key_message == "Active runtime security policy:\n- API keys visible in this scope: 3"
+    assert ban_message == "Active runtime security policy:\n- Temporary IP blocking: enabled"

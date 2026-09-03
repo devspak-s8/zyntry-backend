@@ -19,6 +19,7 @@ from app.api.v1.features.dependencies import require_feature
 from app.api.v1.invoke.router import InvokeRequest, InvokeResponse, invoke
 from app.core.database import get_session
 from app.models.billing import UsageLog
+from app.models.events import Event
 from app.models.request_logs import RequestLog
 from app.models.runtimes import Runtime, RuntimeBuildLog
 from app.models.integrations import RuntimeIntegration
@@ -44,16 +45,22 @@ from app.schemas.runtimes import (
     RuntimeTopologySimulationResponse,
     RuntimeUpdate,
     RuntimeSecurityPolicy,
+    RuntimeSecurityIpRule,
 )
 from app.services.apikeys import ApiKeyService
 from app.services.health import HealthService
 from app.services.integrations.service import IntegrationService
 from app.services.runtimes import RuntimeService
 from app.services.security.secrets import default_secret_manager
-from app.services.runtime_security import normalize_runtime_security_policy
+from app.services.runtime_security import (
+    RuntimeSecurityService,
+    normalize_runtime_security_policy,
+    persist_runtime_security_event,
+)
 
 router = APIRouter(prefix="/runtimes", tags=["runtimes"])
 OBSERVABILITY_GUARD = [Depends(require_feature("observability"))]
+runtime_security_service = RuntimeSecurityService()
 
 
 def _safe_integration_config(value: dict | None) -> dict:
@@ -170,6 +177,19 @@ async def update_runtime(
         runtime = await service.update(str(rid), body)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if body.security_policies is not None:
+        try:
+            refreshed = await uow.runtimes.get(rid)
+            if refreshed is not None:
+                await persist_runtime_security_event(
+                    db,
+                    refreshed,
+                    "policy_updated",
+                    message="Runtime security policy updated.",
+                )
+                await db.commit()
+        except Exception:
+            pass
     return RuntimeRead(**runtime)
 
 
@@ -401,16 +421,137 @@ async def update_runtime_security_policy(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid runtime_id format") from None
     runtime = await require_runtime_access(rid, current_user, db)
-    policy = normalize_runtime_security_policy(
-        {**(runtime.security_policies or {}), **body.model_dump()}
-    )
+    try:
+        policy = normalize_runtime_security_policy(
+            {**(runtime.security_policies or {}), **body.model_dump()}
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     await UnitOfWork(db).runtimes.update(runtime, security_policies=policy)
+    try:
+        await persist_runtime_security_event(
+            db,
+            runtime,
+            "policy_updated",
+            message="Runtime security policy updated.",
+        )
+    except Exception:
+        # A history write must not make a valid policy update fail.
+        pass
     await db.commit()
     return {
         "runtime_id": str(runtime.id),
         "project_id": str(runtime.project_id) if runtime.project_id else None,
         "policy": policy,
     }
+
+
+@router.get("/{runtime_id}/security/events", response_model=list[dict])
+async def list_runtime_security_events(
+    runtime_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_session),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> list[dict]:
+    """Return the selected runtime's redacted security event history."""
+    try:
+        rid = uuid.UUID(runtime_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid runtime_id format") from None
+    runtime = await require_runtime_access(rid, current_user, db)
+    scope_column = Event.project_id if runtime.project_id else Event.organization_id
+    scope_value = runtime.project_id or runtime.organization_id
+    stmt = (
+        select(Event)
+        .where(
+            scope_column == scope_value,
+            Event.event_type.like("runtime.security.%"),
+        )
+        .order_by(Event.created_at.desc())
+    )
+    result = await db.execute(stmt)
+    records = [
+        event for event in result.scalars().all()
+        if str((event.data or {}).get("runtime_id")) == str(runtime.id)
+    ]
+    records = records[offset: offset + limit]
+    return [
+        {
+            "id": str(event.id),
+            "runtime_id": str(runtime.id),
+            "event_type": event.event_type.removeprefix("runtime.security."),
+            "created_at": event.created_at.isoformat() if event.created_at else None,
+            **(event.data or {}),
+        }
+        for event in records
+    ]
+
+
+@router.post("/{runtime_id}/security/blocked-ips", response_model=dict)
+async def block_runtime_ip(
+    runtime_id: str,
+    body: RuntimeSecurityIpRule,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_session),
+) -> dict:
+    """Add a permanent IP/CIDR rule until an owner explicitly removes it."""
+    try:
+        rid = uuid.UUID(runtime_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid runtime_id format") from None
+    runtime = await require_runtime_access(rid, current_user, db)
+    try:
+        candidate = normalize_runtime_security_policy({"blocked_ips": [body.ip]})["blocked_ips"][0]
+    except (ValueError, IndexError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    current = normalize_runtime_security_policy(runtime.security_policies)
+    if candidate not in current["blocked_ips"]:
+        current["blocked_ips"].append(candidate)
+    await UnitOfWork(db).runtimes.update(runtime, security_policies=current)
+    await persist_runtime_security_event(
+        db,
+        runtime,
+        "manual_ip_block",
+        client_ip=candidate,
+        code="ip_blocked",
+        message="An IP rule was manually added to the runtime blocklist.",
+    )
+    await db.commit()
+    return {"runtime_id": str(runtime.id), "policy": current}
+
+
+@router.delete("/{runtime_id}/security/blocked-ips", response_model=dict)
+async def unblock_runtime_ip(
+    runtime_id: str,
+    body: RuntimeSecurityIpRule,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_session),
+) -> dict:
+    """Remove an IP/CIDR rule and clear any matching temporary Redis block."""
+    try:
+        rid = uuid.UUID(runtime_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid runtime_id format") from None
+    runtime = await require_runtime_access(rid, current_user, db)
+    try:
+        candidate = normalize_runtime_security_policy({"blocked_ips": [body.ip]})["blocked_ips"][0]
+    except (ValueError, IndexError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    current = normalize_runtime_security_policy(runtime.security_policies)
+    current["blocked_ips"] = [item for item in current["blocked_ips"] if item != candidate]
+    await UnitOfWork(db).runtimes.update(runtime, security_policies=current)
+    await runtime_security_service.clear_ip_block(str(runtime.id), candidate)
+    await persist_runtime_security_event(
+        db,
+        runtime,
+        "manual_ip_unblock",
+        client_ip=candidate,
+        code="ip_unblocked",
+        message="An IP rule was removed from the runtime blocklist.",
+    )
+    await db.commit()
+    return {"runtime_id": str(runtime.id), "policy": current}
 
 
 @router.post(

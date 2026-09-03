@@ -260,17 +260,27 @@ async def _get_security_settings(self: RuntimeAssistantTools) -> dict[str, Any]:
     from app.services.apikeys import ApiKeyService
 
     api_key_service = ApiKeyService(self.uow)
-    keys = await api_key_service.list_keys()
+    keys = await api_key_service.list_keys(
+        user_id=self.user_id or None,
+        project_id=self.project_id or None,
+        runtime_id=None if self.project_id else self.runtime_id,
+    )
+
+    def value(item: Any, key: str, default: Any = None) -> Any:
+        return item.get(key, default) if isinstance(item, dict) else getattr(item, key, default)
+
     return {
         "api_keys_count": len(keys),
         "keys": [
             {
-                "id": str(k.id),
-                "name": k.name,
-                "prefix": k.key_prefix,
-                "last_used_at": k.last_used_at.isoformat() if k.last_used_at else None,
-                "expires_at": k.expires_at.isoformat() if k.expires_at else None,
-                "revoked": k.revoked,
+                "id": str(value(k, "id")),
+                "name": value(k, "name"),
+                "prefix": value(k, "prefix"),
+                "last_used_at": value(k, "last_used_at").isoformat()
+                if value(k, "last_used_at") else None,
+                "expires_at": value(k, "expires_at").isoformat()
+                if value(k, "expires_at") else None,
+                "revoked": value(k, "revoked", False),
             }
             for k in keys
         ],

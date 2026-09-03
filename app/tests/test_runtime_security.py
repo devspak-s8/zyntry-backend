@@ -8,6 +8,7 @@ from app.services.runtime_security import (
     RuntimeSecurityService,
     RuntimeSecurityViolation,
     normalize_runtime_security_policy,
+    redact_pii,
 )
 from app.services.runtimes import RuntimeService
 
@@ -73,7 +74,54 @@ def test_security_policy_defaults_are_bounded_and_preserve_metadata():
     policy = normalize_runtime_security_policy({"data_retention_days": 30, "rate_limit_per_minute": 0})
     assert policy["data_retention_days"] == 30
     assert policy["rate_limit_per_minute"] == 1
-    assert policy["enabled"] is False
+    assert policy["enabled"] is True
+    assert policy["redis_failure_mode"] == "fail_closed"
+
+
+def test_live_pii_redaction_covers_common_identifiers_without_redacting_normal_text():
+    text = "Contact jane.doe@example.com or +234 801 234 5678. Order 12345 is ready."
+    redacted = redact_pii(text)
+    assert "jane.doe@example.com" not in redacted
+    assert "+234 801 234 5678" not in redacted
+    assert "Order 12345 is ready." in redacted
+    payload = redact_pii({"contact": "jane.doe@example.com", "count": 12})
+    assert payload == {"contact": "[REDACTED_EMAIL]", "count": 12}
+
+
+@pytest.mark.asyncio
+async def test_ip_allowlist_and_blocklist_are_enforced():
+    service = RuntimeSecurityService(FakeRedis())
+    runtime = SimpleNamespace(
+        id=uuid.uuid4(),
+        security_policies={
+            "enabled": True,
+            "allowed_ips": ["203.0.113.0/24"],
+            "blocked_ips": ["203.0.113.42"],
+        },
+    )
+    with pytest.raises(RuntimeSecurityViolation, match="blocked") as blocked:
+        await service.enforce(runtime, make_request("203.0.113.42"), "hello")
+    assert blocked.value.code == "ip_blocked"
+    with pytest.raises(RuntimeSecurityViolation) as not_allowed:
+        await service.enforce(runtime, make_request("198.51.100.10"), "hello")
+    assert not_allowed.value.code == "ip_not_allowlisted"
+
+
+@pytest.mark.asyncio
+async def test_redis_failure_is_fail_closed_by_default():
+    class BrokenRedis:
+        async def get(self, key):
+            raise ConnectionError("redis unavailable")
+
+        async def incr(self, key):
+            raise ConnectionError("redis unavailable")
+
+    service = RuntimeSecurityService(BrokenRedis())
+    runtime = SimpleNamespace(id=uuid.uuid4(), security_policies={"enabled": True})
+    with pytest.raises(RuntimeSecurityViolation) as blocked:
+        await service.enforce(runtime, make_request(), "hello")
+    assert blocked.value.status_code == 503
+    assert blocked.value.code == "security_unavailable"
 
 
 @pytest.mark.asyncio

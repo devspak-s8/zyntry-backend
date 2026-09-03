@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import uuid
+import logging
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
@@ -33,11 +34,18 @@ from app.services.provider_credentials import resolve_provider_key
 from app.services.oauth.service import OAuthService
 from app.services.security.outbound import validate_outbound_url
 from app.services.security.secrets import default_secret_manager
-from app.services.runtime_security import RuntimeSecurityService, RuntimeSecurityViolation
+from app.services.runtime_security import (
+    RuntimeSecurityService,
+    RuntimeSecurityViolation,
+    normalize_runtime_security_policy,
+    persist_runtime_security_event,
+    redact_pii,
+)
 
 router = APIRouter()
 guardrail_service = GuardrailService()
 runtime_security_service = RuntimeSecurityService()
+logger = logging.getLogger(__name__)
 
 
 def _insufficient_credits_detail() -> dict[str, str]:
@@ -238,12 +246,38 @@ async def invoke(
                 "event": "Runtime Security Checked",
                 "enabled": security_event.get("enabled", False),
             })
+            try:
+                await persist_runtime_security_event(
+                    db,
+                    runtime,
+                    "checked",
+                    request_id=request_id,
+                    client_ip=security_event.get("client_ip"),
+                    code="suspicious_request" if security_event.get("suspicious") else None,
+                    message="Runtime request passed security checks.",
+                )
+            except Exception:
+                logger.exception("Unable to persist runtime security check event")
         except RuntimeSecurityViolation as exc:
             events.append({
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "event": "Runtime Security Blocked",
                 "code": exc.code,
             })
+            try:
+                await persist_runtime_security_event(
+                    db,
+                    runtime,
+                    "blocked",
+                    request_id=request_id,
+                    client_ip=request.client.host if request.client else None,
+                    code=exc.code,
+                    message=exc.message,
+                    status_code=exc.status_code,
+                )
+                await db.commit()
+            except Exception:
+                logger.exception("Unable to persist runtime security blocked event")
             raise HTTPException(
                 status_code=exc.status_code,
                 detail={"code": exc.code, "message": exc.message},
@@ -464,6 +498,34 @@ async def invoke(
             events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Action Executed", "provider": action_req.provider, "action": action_req.action, "success": result.success})
 
     response_text, output_violations = guardrail_service.enforce(result_text, body.json_schema)
+    if runtime:
+        security_policy = normalize_runtime_security_policy(runtime.security_policies)
+        if security_policy["pii_redaction"]:
+            redacted_response = redact_pii(response_text)
+            if redacted_response != response_text:
+                response_text = redacted_response
+                events.append({
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "event": "Runtime PII Redacted",
+                })
+                try:
+                    await persist_runtime_security_event(
+                        db,
+                        runtime,
+                        "pii_redacted",
+                        request_id=request_id,
+                        message="PII was redacted from the runtime response.",
+                        pii_redacted=True,
+                    )
+                except Exception:
+                    logger.exception("Unable to persist runtime PII redaction event")
+            # Tool and action payloads are part of the JSON response too. Keep
+            # their shape intact while masking any PII returned by a connector.
+            tool_calls = redact_pii(tool_calls)
+            action_results = [
+                ActionResponse.model_validate(redact_pii(item.model_dump()))
+                for item in action_results
+            ]
     latency_ms = (time.perf_counter() - start_time) * 1000
 
     metered = MeteredBillingService(db)

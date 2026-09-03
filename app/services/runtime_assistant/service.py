@@ -568,7 +568,11 @@ def _context_factual_message(user_message: str, context: RuntimeContext) -> str 
         else:
             sections.append("No knowledge sources are currently available for this runtime.")
 
-    if any(term in lowered for term in ("security polic", "security setting", "prompt injection", "pii redaction")):
+    if any(term in lowered for term in (
+        "security polic", "security setting", "prompt injection", "pii redaction",
+        "api key", "ip blocking", "ip ban", "temporary block", "rate limit",
+        "access control",
+    )):
         policy = context.runtime.get("security_policies") or {}
         keys_count = context.security.get("api_keys_count", 0)
         tracked = (
@@ -576,11 +580,45 @@ def _context_factual_message(user_message: str, context: RuntimeContext) -> str 
             "prompt_injection_protection", "pii_redaction", "max_input_chars",
             "rate_limit_per_minute", "violation_threshold", "ban_duration_seconds",
         )
+        # For a focused question, return the requested fact instead of
+        # dumping unrelated policy fields.  Broad security questions still
+        # receive the complete policy snapshot.
+        focused_keys: tuple[str, ...] | None = None
+        if "api key" in lowered and not any(
+            term in lowered for term in ("security polic", "security setting", "access control")
+        ):
+            focused_keys = ()
+        elif any(term in lowered for term in ("ip blocking", "ip ban", "temporary block")) and not any(
+            term in lowered for term in ("security polic", "security setting", "access control")
+        ):
+            focused_keys = ("ip_ban_enabled",)
+
+        labels = {
+            "enabled": "Security protection",
+            "block_suspicious_requests": "Suspicious request blocking",
+            "ip_ban_enabled": "Temporary IP blocking",
+            "prompt_injection_protection": "Prompt-injection protection",
+            "pii_redaction": "PII redaction",
+            "max_input_chars": "Maximum input length",
+            "rate_limit_per_minute": "Rate limit per minute",
+            "violation_threshold": "Violation threshold",
+            "ban_duration_seconds": "Ban duration (seconds)",
+        }
+
+        def display_value(value: Any) -> str:
+            if isinstance(value, bool):
+                return "enabled" if value else "disabled"
+            return str(value)
+
         lines = ["Active runtime security policy:"]
-        for key in tracked:
+        for key in tracked if focused_keys is None else focused_keys:
             if key in policy:
-                lines.append(f"- {key.replace('_', ' ').capitalize()}: {policy[key]}")
-        lines.append(f"- API keys visible in this scope: {keys_count}")
+                label = labels.get(key, key.replace("_", " ").capitalize())
+                lines.append(f"- {label}: {display_value(policy[key])}")
+        if focused_keys == ("ip_ban_enabled",) and "ip_ban_enabled" not in policy:
+            lines.append("- Temporary IP blocking: not configured")
+        if focused_keys == () or focused_keys is None:
+            lines.append(f"- API keys visible in this scope: {keys_count}")
         sections.append("\n".join(lines))
 
     if any(term in lowered for term in ("health", "p95 latency", "latency")):

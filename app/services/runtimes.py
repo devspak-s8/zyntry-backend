@@ -7,6 +7,7 @@ from typing import Any
 from app.repositories import UnitOfWork
 from app.schemas.runtimes import RuntimeCreate, RuntimeUpdate
 from app.services.model_compatibility import infer_provider_for_model, provider_model_mismatch
+from app.services.runtime_security import normalize_runtime_security_policy
 
 
 RUNTIME_STATUSES = {
@@ -139,6 +140,10 @@ class RuntimeService:
             inferred_provider = infer_provider_for_model(update_data["model"])
             if inferred_provider and inferred_provider != str(runtime.provider).lower():
                 update_data["provider"] = inferred_provider
+        if "security_policies" in update_data:
+            update_data["security_policies"] = normalize_runtime_security_policy(
+                update_data["security_policies"]
+            )
         mismatch = provider_model_mismatch(
             update_data.get("provider", runtime.provider),
             update_data.get("model", runtime.model),

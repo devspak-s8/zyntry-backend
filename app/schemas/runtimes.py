@@ -49,7 +49,7 @@ class RuntimeSecurityPolicy(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    enabled: bool = False
+    enabled: bool = True
     block_suspicious_requests: bool = True
     prompt_injection_protection: bool = True
     pii_redaction: bool = True
@@ -58,6 +58,13 @@ class RuntimeSecurityPolicy(BaseModel):
     ip_ban_enabled: bool = True
     violation_threshold: int = Field(default=3, ge=1, le=100)
     ban_duration_seconds: int = Field(default=900, ge=60, le=86_400)
+    allowed_ips: list[str] = Field(default_factory=list)
+    blocked_ips: list[str] = Field(default_factory=list)
+    redis_failure_mode: str = Field(default="fail_closed", pattern="^(fail_closed|fail_open)$")
+
+
+class RuntimeSecurityIpRule(BaseModel):
+    ip: str = Field(min_length=1, max_length=64)
 
 
 class RuntimeRead(ORMModel):
