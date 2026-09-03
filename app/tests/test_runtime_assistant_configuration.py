@@ -164,6 +164,30 @@ def test_completion_question_checks_current_config_and_deployment() -> None:
     ]
 
 
+def test_provider_model_and_security_questions_select_factual_paths() -> None:
+    tools = [
+        ToolDefinition(
+            name="get_runtime_config",
+            description="Get current runtime configuration",
+            required_permission=UserRole.VIEWER,
+            action_type="read",
+        ),
+        ToolDefinition(
+            name="get_security_settings",
+            description="Get security settings",
+            required_permission=UserRole.VIEWER,
+            action_type="read",
+        ),
+    ]
+    planner = RuntimeAssistantPlanner(_context(), tools)
+    assert [call.name for call in planner.plan("What provider and model is this runtime using?").tool_calls] == [
+        "get_runtime_config"
+    ]
+    assert [call.name for call in planner.plan("What security policies are active?").tool_calls] == [
+        "get_security_settings"
+    ]
+
+
 def test_configuration_impact_marks_index_changes_for_rebuild() -> None:
     impact = configuration_change_impact(
         {"model": "gpt-4o-mini", "config": {"temperature": 0.2}}

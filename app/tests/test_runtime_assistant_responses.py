@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from app.services.runtime_assistant.executor import RuntimeAssistantExecutor, ToolExecutionResult
 from app.services.runtime_assistant.planner import RuntimeAssistantPlanner
 from app.services.runtime_assistant.responder import _strip_control_payload
-from app.services.runtime_assistant.service import _verified_configuration_message
+from app.services.runtime_assistant.service import _context_factual_message, _verified_configuration_message
 from app.services.runtime_assistant.schemas import RuntimeContext, ToolCall, UserRole
 
 
@@ -108,3 +108,25 @@ def test_verified_configuration_explains_dynamic_routing() -> None:
     assert message is not None
     assert "Dynamic model routing is **enabled**" in message
     assert "available provider credentials" in message
+
+
+def test_context_facts_answer_provider_integrations_and_security_questions() -> None:
+    context = RuntimeContext(
+        runtime_id="runtime", project_id="project", organization_id="org",
+        user_id="user", user_role=UserRole.DEVELOPER,
+        runtime={
+            "provider": "google", "model": "gemini-2.5-flash",
+            "security_policies": {"enabled": True, "ip_ban_enabled": True},
+        },
+        integrations=[{"integration_slug": "github", "connection_status": "connected"}],
+        security={"api_keys_count": 2},
+        health={"health_score": 96, "error_count": 1, "llm_latency_ms": 180},
+    )
+    message = _context_factual_message(
+        "What provider and model is this runtime using? Which integrations are connected? What security policies are active?",
+        context,
+    )
+    assert message is not None
+    assert "google" in message and "gemini-2.5-flash" in message
+    assert "github: connected" in message
+    assert "Enabled: True" in message

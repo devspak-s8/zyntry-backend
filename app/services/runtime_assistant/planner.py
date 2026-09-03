@@ -108,7 +108,25 @@ class RuntimeAssistantPlanner:
             reasoning_parts.append("User is asking about dynamic routing.")
             tool_calls.extend(self._plan_dynamic_routing(message_lower))
 
-        elif any(k in message_lower for k in ["configuration", "configurationof", "configured", "settings", "temperature", "system prompt"]):
+        elif any(k in message_lower for k in ["integration", "connected connector", "connection status"]):
+            reasoning_parts.append("User is asking about runtime integrations.")
+
+        elif any(k in message_lower for k in ["security polic", "security setting", "prompt injection", "pii redaction"]):
+            reasoning_parts.append("User is asking about runtime security settings.")
+            if "get_security_settings" in self.tool_map:
+                tool_calls.append(ToolCall(id=self._generate_id(), name="get_security_settings", arguments={}))
+
+        elif any(k in message_lower for k in ["knowledge source", "knowledge available", "uploaded document", "document source"]):
+            reasoning_parts.append("User is asking about runtime knowledge sources.")
+            if "get_knowledge_sources" in self.tool_map:
+                tool_calls.append(ToolCall(id=self._generate_id(), name="get_knowledge_sources", arguments={}))
+
+        elif any(k in message_lower for k in ["deployment status", "latest deployment", "build status", "waiting for connections", "why is this runtime waiting"]):
+            reasoning_parts.append("User is asking about deployment state.")
+            if "get_deployment_status" in self.tool_map:
+                tool_calls.append(ToolCall(id=self._generate_id(), name="get_deployment_status", arguments={}))
+
+        elif any(k in message_lower for k in ["configuration", "configurationof", "configured", "settings", "provider", "model", "temperature", "system prompt"]):
             reasoning_parts.append("User is asking about runtime configuration.")
             if "get_runtime_config" in self.tool_map:
                 tool_calls.append(ToolCall(id=self._generate_id(), name="get_runtime_config", arguments={}))

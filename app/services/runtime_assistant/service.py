@@ -163,6 +163,12 @@ class RuntimeAssistantService:
         verified_completion = _verified_completion_message(message, tool_results)
         if verified_completion:
             response.message = verified_completion
+        context_factual = _context_factual_message(message, context)
+        if context_factual and not action_proposal:
+            # These values are loaded with the scoped control-plane snapshot,
+            # so a provider outage or an unavailable optional tool cannot make
+            # the assistant fall back to stale model-generated facts.
+            response.message = context_factual
         if action_proposal and _is_generic_runtime_help(response.message):
             response.message = (
                 f"I can prepare this change for the {context.runtime.get('name') or 'runtime'}. "
@@ -507,6 +513,95 @@ def _is_generic_runtime_help(message: str) -> bool:
         "i’m here to help with this runtime. ask me about its status, configuration, integrations, knowledge sources, performance, costs, or recent failures.",
         "i'm here to help with this runtime. ask me about its status, configuration, integrations, knowledge sources, performance, costs, or recent failures.",
     }
+
+
+def _context_factual_message(user_message: str, context: RuntimeContext) -> str | None:
+    """Answer common read questions from the fresh runtime snapshot.
+
+    The responder is still used for natural language, but these control-plane
+    facts must remain correct even when an LLM call is unavailable or stale.
+    Multiple sections are returned when a user asks several questions in one
+    message.
+    """
+
+    lowered = user_message.lower()
+    sections: list[str] = []
+    is_mutation = any(term in lowered for term in (
+        "change", "switch", "set ", "enable", "disable", "update", "configure",
+    ))
+    asks_provider_model = (
+        not is_mutation
+        and "provider" in lowered
+        and "model" in lowered
+        and any(term in lowered for term in ("what", "which", "using", "configured"))
+    )
+    if asks_provider_model:
+        provider = context.runtime.get("provider") or "automatic"
+        model = context.runtime.get("model") or "automatic"
+        mismatch = provider_model_mismatch(provider, model)
+        section = f"Current provider and model: `{provider}` / `{model}`."
+        if mismatch:
+            section += f"\nWarning: {mismatch}"
+        sections.append(section)
+
+    if "integration" in lowered or "connected connector" in lowered:
+        integrations = context.integrations
+        if integrations:
+            lines = ["Runtime integrations:"]
+            for item in integrations:
+                slug = str(item.get("integration_slug") or "integration").replace("_", " ")
+                status = str(item.get("connection_status") or item.get("status") or "not configured").replace("_", " ")
+                lines.append(f"- {slug}: {status}")
+            sections.append("\n".join(lines))
+        else:
+            sections.append("No integrations are configured for this runtime.")
+
+    if any(term in lowered for term in ("knowledge source", "knowledge available", "uploaded document", "document source")):
+        sources = context.knowledge_sources
+        if sources:
+            lines = ["Knowledge sources:"]
+            for source in sources:
+                name = source.get("name") or source.get("source_type") or source.get("provider") or "source"
+                status = str(source.get("status") or "unknown").replace("_", " ")
+                lines.append(f"- {name}: {status}")
+            sections.append("\n".join(lines))
+        else:
+            sections.append("No knowledge sources are currently available for this runtime.")
+
+    if any(term in lowered for term in ("security polic", "security setting", "prompt injection", "pii redaction")):
+        policy = context.runtime.get("security_policies") or {}
+        keys_count = context.security.get("api_keys_count", 0)
+        tracked = (
+            "enabled", "block_suspicious_requests", "ip_ban_enabled",
+            "prompt_injection_protection", "pii_redaction", "max_input_chars",
+            "rate_limit_per_minute", "violation_threshold", "ban_duration_seconds",
+        )
+        lines = ["Active runtime security policy:"]
+        for key in tracked:
+            if key in policy:
+                lines.append(f"- {key.replace('_', ' ').capitalize()}: {policy[key]}")
+        lines.append(f"- API keys visible in this scope: {keys_count}")
+        sections.append("\n".join(lines))
+
+    if any(term in lowered for term in ("health", "p95 latency", "latency")):
+        health = context.health or {}
+        score = health.get("health_score", health.get("health", context.runtime.get("health", "unknown")))
+        errors = health.get("error_count", health.get("errors", "unknown"))
+        latency = health.get("llm_latency_ms") or health.get("retrieval_latency_ms")
+        section = f"Runtime health: `{score}`; errors: `{errors}`."
+        if latency is not None:
+            section += f" Observed latency: `{latency} ms`."
+        sections.append(section)
+
+    if any(term in lowered for term in ("deployment status", "latest deployment", "build status", "waiting for connections", "failing to build")):
+        deployment = context.deployment or {}
+        status = deployment.get("status") or context.runtime.get("status") or "unknown"
+        section = f"Latest deployment status: `{status}`."
+        if deployment.get("error_message"):
+            section += f" Note: {deployment['error_message']}"
+        sections.append(section)
+
+    return "\n\n".join(sections) if sections else None
 
 
 def _verified_completion_message(
