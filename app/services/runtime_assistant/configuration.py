@@ -251,7 +251,7 @@ def parse_configuration_change(message: str) -> dict[str, Any] | None:
     # "route the models automatically". Only accept it when paired with an
     # explicit change verb so a read question cannot become a mutation.
     automatic_routing = re.search(
-        r"\b(?:enable|activate|configure|set|set\s+up|turn\s+on|make|switch\s+to)\b.*\b(?:automatic(?:ally)?\s+(?:model\s+)?routing|automatic(?:ally)?\s+route\s+(?:the\s+)?models?|route\s+(?:the\s+)?models?\s+automatically|dynamic(?:\s+model)?\s+routing)\b",
+        r"\b(?:enable|activate|change|configure|set|set\s+up|turn\s+on|make|switch\s+to)\b.*\b(?:automatic(?:ally)?\s+(?:model\s+)?routing|automatic(?:ally)?\s+route\s+(?:the\s+)?models?|route\s+(?:the\s+)?models?\s+automatically|dynamic(?:\s+model)?\s+routing)\b",
         lowered,
     )
     automatic_routing_disabled = re.search(
@@ -262,6 +262,16 @@ def parse_configuration_change(message: str) -> dict[str, Any] | None:
         changes["config"] = {
             "dynamic_routing_enabled": automatic_routing_disabled is None,
         }
+
+    # Follow-up messages commonly omit the noun because it is already clear
+    # from the conversation (for example, “change it to automatic”). Treat
+    # that explicit continuation as a routing change, never as a read query.
+    contextual_automatic = re.search(
+        r"\b(?:change|switch|set|make)\s+(?:it|this|that)\s+to\s+(?:automatic|dynamic)\b",
+        lowered,
+    )
+    if contextual_automatic:
+        changes["config"] = {"dynamic_routing_enabled": True}
 
     def capture(pattern: str) -> str | None:
         match = re.search(pattern, text, flags=re.IGNORECASE)

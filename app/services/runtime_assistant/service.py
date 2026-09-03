@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator
 
@@ -152,6 +153,9 @@ class RuntimeAssistantService:
         verified_configuration = _verified_configuration_message(message, tool_results)
         if verified_configuration:
             response.message = verified_configuration
+        verified_completion = _verified_completion_message(message, tool_results)
+        if verified_completion:
+            response.message = verified_completion
         if plan.configuration_error:
             response.message = (
                 f"{response.message}\n\n"
@@ -447,6 +451,66 @@ def _verified_configuration_message(
         f"- Embedding model: `{config_result.get('embedding_model') or 'default'}`\n"
         f"- Vector store: `{config_result.get('vector_store') or 'default'}`"
     )
+
+
+def _verified_completion_message(
+    user_message: str,
+    tool_results: list[Any],
+) -> str | None:
+    """Answer completion checks from the latest control-plane snapshot.
+
+    A responder must not claim that it is still applying a change (or that it
+    will notify the user later) when the only reliable evidence is the saved
+    runtime state. This also gives short follow-ups such as ``do?`` a useful,
+    deterministic answer.
+    """
+    lowered = user_message.strip().lower()
+    if not (
+        re.fullmatch(r"(?:do|did|done|check|status)\s*[?!.]*", lowered)
+        or any(term in lowered for term in (
+            "are you done", "is it done", "did it apply", "was it applied",
+            "has it completed", "when completed", "is it live", "did the update",
+            "did the change", "was the change", "verify the change",
+        ))
+    ):
+        return None
+    config_result = next(
+        (
+            result.tool_call.result
+            for result in tool_results
+            if result.success
+            and result.tool_call.name == "get_runtime_config"
+            and isinstance(result.tool_call.result, dict)
+        ),
+        None,
+    )
+    deployment_result = next(
+        (
+            result.tool_call.result
+            for result in tool_results
+            if result.success
+            and result.tool_call.name == "get_deployment_status"
+            and isinstance(result.tool_call.result, dict)
+        ),
+        None,
+    )
+    if not config_result and not deployment_result:
+        return None
+    config_result = config_result or {}
+    deployment_result = deployment_result or {}
+    runtime_status = deployment_result.get("status") or config_result.get("status") or "unknown"
+    dynamic_state = "enabled" if (config_result.get("config") or {}).get("dynamic_routing_enabled") else "disabled"
+    note = deployment_result.get("error_message")
+    message = (
+        f"I checked the backend. The runtime is `{runtime_status}` and the saved "
+        f"dynamic model routing setting is **{dynamic_state}**. "
+        "This is the latest verified state; no unconfirmed change was applied by this check."
+    )
+    if deployment_result.get("last_propagated"):
+        message += f" Last propagated: `{deployment_result['last_propagated']}`."
+    if note:
+        message += f" Backend note: {note}"
+    return message
 
 
 def _evidence_confidence(tool_results: list[Any]) -> float:
