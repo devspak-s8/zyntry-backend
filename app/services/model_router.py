@@ -113,12 +113,73 @@ class ModelRouter:
                 continue
         return None, "", "", last_error
 
+    async def invoke_fixed(
+        self,
+        provider_name: str,
+        model_names: list[str],
+        available_providers: dict[str, str],
+        messages: list[dict[str, str]],
+        max_tokens: int = 2048,
+        temperature: float = 0.7,
+    ) -> tuple[str, str, str, str]:
+        """Invoke the runtime's configured provider/model without auto-routing.
+
+        Runtime routing is opt-in. Keeping this path separate from
+        ``_invoke_with_fallback`` prevents a runtime configured for one
+        provider from silently selecting a different provider just because a
+        global API key happens to be present.
+        """
+        provider_key = provider_name.strip().lower()
+        api_key = available_providers.get(provider_key)
+        if not api_key:
+            return "", "", provider_key, f"No credentials are configured for provider '{provider_key}'"
+        provider_cls = PROVIDER_REGISTRY.get(provider_key)
+        if not provider_cls:
+            return "", "", provider_key, f"Provider '{provider_key}' is not supported"
+        last_error = ""
+        for model_name in [item.strip() for item in model_names if item and item.strip()]:
+            try:
+                provider = provider_cls()
+                start = time.perf_counter()
+                result = await provider.chat_completion(
+                    api_key=api_key,
+                    model=model_name,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
+                latency = (time.perf_counter() - start) * 1000
+                self.record_latency(provider_key, model_name, latency)
+                self.last_invoked_candidate = ModelCandidate(
+                    model_info=ModelInfo(
+                        id=model_name,
+                        name=model_name,
+                        provider=provider_key,
+                        max_context=0,
+                        supports_vision=False,
+                        supports_tools=False,
+                        supports_streaming=False,
+                    ),
+                    provider_name=provider_key,
+                )
+                return result, model_name, provider_key, ""
+            except Exception as exc:
+                last_error = str(exc)
+        return "", "", provider_key, last_error or "No configured model was available"
+
     async def _build_candidates(self, preference: RoutingPreference, available_providers: dict[str, str]) -> list[ModelCandidate]:
         candidates: list[ModelCandidate] = []
         provider_priority = self.PROVIDER_PRIORITY.get(preference.goal, self.PROVIDER_PRIORITY[RoutingGoal.BALANCED])
-        ordered_providers = sorted(
-            [p for p in provider_priority if p in available_providers and p not in preference.excluded_providers],
-            key=lambda p: provider_priority.index(p) if p in provider_priority else 999,
+        prioritized = [
+            p for p in provider_priority
+            if p in available_providers and p not in preference.excluded_providers
+        ]
+        # A balanced route must not silently ignore a connected provider that
+        # is not in the goal's preferred list (for example Google or Mistral).
+        # Keep the goal order first, then consider every remaining provider.
+        ordered_providers = prioritized + sorted(
+            p for p in available_providers
+            if p not in prioritized and p not in preference.excluded_providers
         )
         for provider_name in ordered_providers:
             api_key = available_providers[provider_name]

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from app.services.runtime_assistant.executor import RuntimeAssistantExecutor, ToolExecutionResult
 from app.services.runtime_assistant.planner import RuntimeAssistantPlanner
+from app.services.runtime_assistant.responder import _strip_control_payload
 from app.services.runtime_assistant.schemas import RuntimeContext, ToolCall, UserRole
 
 
@@ -67,3 +68,12 @@ def test_greeting_does_not_trigger_runtime_diagnostics() -> None:
     response = executor.build_response("yo", [])
     assert "I found" not in response.message
     assert "Hi!" in response.message
+
+
+def test_responder_removes_raw_action_payload() -> None:
+    response = _strip_control_payload(
+        'I can propose this. json {"pending_action":{"tool_code":"update_runtime_configuration"}} '
+        "Please confirm."
+    )
+    assert response == "I can propose this.\nPlease confirm."
+    assert "pending_action" not in response

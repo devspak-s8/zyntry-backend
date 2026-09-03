@@ -52,7 +52,7 @@ class RuntimeAssistantPlanner:
                     arguments={"changes": configuration_change},
                 )
             )
-        elif any(k in message_lower for k in ["rebuild runtime", "rebuild the runtime", "rebuild embeddings", "rebuild the embeddings", "re-index", "reindex"]):
+        elif re.fullmatch(r"(?:rebuild|re-index|reindex)(?:\s+(?:the\s+)?(?:runtime|embeddings?))?[!.?]*", message_lower) or any(k in message_lower for k in ["rebuild runtime", "rebuild the runtime", "rebuild embeddings", "rebuild the embeddings", "re-index", "reindex"]):
             reasoning_parts.append("User explicitly requested a runtime rebuild.")
             if "rebuild_embeddings" in self.tool_map:
                 tool_calls.append(

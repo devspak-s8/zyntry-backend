@@ -220,8 +220,10 @@ async def invoke(
             "id": str(runtime.id),
             "provider": runtime.provider,
             "model": runtime.model,
+            "routing_strategy": runtime.routing_strategy,
             "embedding_model": runtime.embedding_model,
             "vector_store": runtime.vector_store,
+            "fallback_models": list(runtime.fallback_models or []),
             # Runtime configuration can contain legacy/generated credentials.
             # Invocation telemetry is user-visible, so never echo those
             # values even when a runtime predates the worker fix.
@@ -268,26 +270,30 @@ async def invoke(
             detail=_insufficient_credits_detail(),
         )
 
-    provider_name = body.provider or runtime_data.get("provider", "openai")
-    model_name = body.model or runtime_data.get("model", "gpt-4o")
+    provider_name = body.provider or runtime_data.get("provider") or "openai"
+    model_name = body.model or runtime_data.get("model") or "gpt-4o"
+    dynamic_routing_enabled = bool((runtime_data.get("config") or {}).get("dynamic_routing_enabled"))
+    explicit_model_selection = bool(body.provider or body.model)
+    automatic_routing = dynamic_routing_enabled and not explicit_model_selection
 
     input_violations = guardrail_service.validate_input(body.input, body.json_schema)
     if input_violations:
         raise HTTPException(status_code=400, detail={"guardrail_violations": input_violations})
 
-    goal = RoutingGoal(body.goal) if body.goal in [g.value for g in RoutingGoal] else RoutingGoal.BALANCED
+    configured_strategy = str(runtime_data.get("routing_strategy") or "").strip().lower()
+    strategy_goal = {
+        "latency_optimized": RoutingGoal.FASTEST,
+        "quality_optimized": RoutingGoal.REASONING,
+        "balanced": RoutingGoal.BALANCED,
+    }.get(configured_strategy)
+    # The request goal is an explicit per-call override. When callers leave it
+    # at the default, use the runtime's saved routing strategy instead.
+    goal = RoutingGoal(body.goal) if body.goal in [g.value for g in RoutingGoal] else (strategy_goal or RoutingGoal.BALANCED)
+    if body.goal == "balanced" and strategy_goal:
+        goal = strategy_goal
     preference = RoutingPreference(goal=goal)
 
     provider_keys: dict[str, str] = {}
-    if runtime:
-        runtime_provider_key, _ = await resolve_provider_key(
-            uow,
-            provider_name,
-            project_id=project.id,
-            organization_id=project.organization_id,
-        )
-        if runtime_provider_key:
-            provider_keys[provider_name.strip().lower()] = runtime_provider_key
     for p_name, setting_name in [
         ("openai", "OPENAI_API_KEY"),
         ("anthropic", "ANTHROPIC_API_KEY"),
@@ -295,10 +301,30 @@ async def invoke(
         ("deepseek", "DEEPSEEK_API_KEY"),
         ("openrouter", "OPENROUTER_API_KEY"),
         ("groq", "GROQ_API_KEY"),
+        ("mistral", "MISTRAL_API_KEY"),
+        ("meta", "META_API_KEY"),
+        ("bedrock", "AWS_ACCESS_KEY_ID"),
     ]:
+        if runtime:
+            runtime_provider_key, _ = await resolve_provider_key(
+                uow,
+                p_name,
+                project_id=project.id,
+                organization_id=project.organization_id,
+            )
+            if runtime_provider_key:
+                provider_keys[p_name] = runtime_provider_key
         key = getattr(settings, setting_name, None)
         if key and p_name not in provider_keys:
             provider_keys[p_name] = key
+
+    events.append({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "event": "Routing Mode",
+        "mode": "automatic" if automatic_routing else "configured",
+        "configured_provider": provider_name,
+        "configured_model": model_name,
+    })
 
     # Reserve the worst-case inference estimate before contacting a provider.
     # A failed provider call releases this reservation without charging.
@@ -345,9 +371,18 @@ async def invoke(
     router_service = ModelRouter(uow)
     messages = [{"role": "user", "content": body.input}]
     try:
-        result_text, invoked_model, invoked_provider, last_error = await router_service._invoke_with_fallback(
-            preference, provider_keys, messages
-        )
+        if automatic_routing:
+            result_text, invoked_model, invoked_provider, last_error = await router_service._invoke_with_fallback(
+                preference, provider_keys, messages
+            )
+        else:
+            configured_models = [model_name, *(runtime_data.get("fallback_models") or [])]
+            result_text, invoked_model, invoked_provider, last_error = await router_service.invoke_fixed(
+                provider_name,
+                configured_models,
+                provider_keys,
+                messages,
+            )
     except Exception:
         if pre_reservation is not None:
             await MeteredBillingService(db).release(pre_reservation.id, reason="provider_exception")

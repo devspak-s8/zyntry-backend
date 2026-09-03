@@ -6,6 +6,7 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.actions import ActionConfirmation
 from app.models.runtime_assistant import (
     RuntimeAssistantConversation,
     RuntimeAssistantEvidence,
@@ -108,6 +109,49 @@ class RuntimeAssistantRecords:
         await self.session.flush()
         return records
 
+    async def mark_action_proposal_resolved(
+        self,
+        *,
+        runtime_id: uuid.UUID,
+        user_id: uuid.UUID,
+        proposal_id: uuid.UUID,
+        status: str,
+    ) -> int:
+        """Persist an action decision in the conversation transcript.
+
+        Action confirmations are stored separately from assistant messages.
+        Updating the embedded proposal metadata keeps a refreshed conversation
+        from showing an already-approved or rejected card again.
+        """
+        result = await self.session.execute(
+            select(RuntimeAssistantMessage)
+            .join(
+                RuntimeAssistantConversation,
+                RuntimeAssistantConversation.id == RuntimeAssistantMessage.conversation_id,
+            )
+            .where(
+                RuntimeAssistantConversation.runtime_id == runtime_id,
+                RuntimeAssistantConversation.user_id == user_id,
+            )
+        )
+        updated = 0
+        for message in result.scalars().all():
+            metadata = dict(message.metadata_ or {})
+            proposal = metadata.get("action_proposal")
+            if not isinstance(proposal, dict) or str(proposal.get("id")) != str(proposal_id):
+                continue
+            metadata["approval_required"] = False
+            metadata["action_proposal"] = {
+                **proposal,
+                "status": status,
+                "requires_confirmation": False,
+            }
+            message.metadata_ = redact_sensitive(metadata)
+            updated += 1
+        if updated:
+            await self.session.flush()
+        return updated
+
     async def history(
         self,
         runtime_id: uuid.UUID,
@@ -132,7 +176,35 @@ class RuntimeAssistantRecords:
         result = await self.session.execute(
             stmt.order_by(RuntimeAssistantMessage.created_at.desc()).limit(min(max(limit, 1), 100))
         )
-        return list(reversed(result.scalars().all()))
+        messages = list(reversed(result.scalars().all()))
+
+        # Older assistant messages may have been written before confirmation
+        # status was mirrored into transcript metadata. Overlay the current
+        # action-table state on the response so those stale cards cannot block
+        # the composer after a decision made in another tab or deployment.
+        resolved_result = await self.session.execute(
+            select(ActionConfirmation.id, ActionConfirmation.status).where(
+                ActionConfirmation.user_id == user_id,
+                ActionConfirmation.status != "pending",
+            )
+        )
+        resolved = {str(item_id): str(status) for item_id, status in resolved_result.all()}
+        for message in messages:
+            metadata = dict(message.metadata_ or {})
+            proposal = metadata.get("action_proposal")
+            if not isinstance(proposal, dict):
+                continue
+            status = resolved.get(str(proposal.get("id")))
+            if not status:
+                continue
+            metadata["approval_required"] = False
+            metadata["action_proposal"] = {
+                **proposal,
+                "status": status,
+                "requires_confirmation": False,
+            }
+            message.metadata_ = metadata
+        return messages
 
     async def list_conversations(
         self, runtime_id: uuid.UUID, user_id: uuid.UUID, limit: int = 20

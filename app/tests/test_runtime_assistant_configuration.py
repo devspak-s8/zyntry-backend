@@ -126,6 +126,10 @@ def test_rebuild_is_a_separate_confirmed_action() -> None:
     assert len(plan.tool_calls) == 1
     assert plan.tool_calls[0].name == "rebuild_embeddings"
 
+    short_plan = planner.plan("rebuild")
+    assert len(short_plan.tool_calls) == 1
+    assert short_plan.tool_calls[0].name == "rebuild_embeddings"
+
 
 def test_completion_question_checks_current_config_and_deployment() -> None:
     planner = RuntimeAssistantPlanner(

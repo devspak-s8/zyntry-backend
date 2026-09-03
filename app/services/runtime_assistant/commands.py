@@ -9,6 +9,7 @@ from app.repositories import UnitOfWork
 from app.services.runtime_assistant.configuration import normalize_configuration_changes
 from app.services.runtime_assistant.permissions import check_tool_permission
 from app.services.runtime_assistant.prompts import build_tool_definitions
+from app.services.runtime_assistant.records import RuntimeAssistantRecords
 from app.services.runtime_assistant.redaction import redact_sensitive
 from app.services.runtime_assistant.schemas import ToolCall, UserRole
 from app.services.runtime_assistant.tools import RuntimeAssistantTools
@@ -102,10 +103,22 @@ class RuntimeAssistantCommandService:
             raise ValueError("Action proposal is no longer pending")
         if proposal.expires_at <= datetime.now(timezone.utc):
             proposal.status = "expired"
+            await RuntimeAssistantRecords(self.uow.session).mark_action_proposal_resolved(
+                runtime_id=runtime_id,
+                user_id=user_id,
+                proposal_id=proposal.id,
+                status="expired",
+            )
             await self.uow.commit()
             raise ValueError("Action proposal expired")
         if not confirm:
             proposal.status = "cancelled"
+            await RuntimeAssistantRecords(self.uow.session).mark_action_proposal_resolved(
+                runtime_id=runtime_id,
+                user_id=user_id,
+                proposal_id=proposal.id,
+                status="cancelled",
+            )
             await self._audit(runtime_id, project_id, user_id, proposal.action, proposal.arguments, "cancelled")
             await self.uow.commit()
             return {"status": "cancelled", "proposal_id": str(proposal.id)}
@@ -116,6 +129,12 @@ class RuntimeAssistantCommandService:
         )
         if not decision.allowed:
             proposal.status = "permission_denied"
+            await RuntimeAssistantRecords(self.uow.session).mark_action_proposal_resolved(
+                runtime_id=runtime_id,
+                user_id=user_id,
+                proposal_id=proposal.id,
+                status="permission_denied",
+            )
             await self._audit(runtime_id, project_id, user_id, proposal.action, proposal.arguments, "permission_denied", decision.reason)
             await self.uow.commit()
             raise PermissionError(decision.reason or "Permission denied")
@@ -146,6 +165,12 @@ class RuntimeAssistantCommandService:
         execution.error = redact_sensitive(call.error)
         execution.duration_ms = round(call.duration_ms or 0)
         proposal.status = "executed" if call.status == "success" else "failed"
+        await RuntimeAssistantRecords(self.uow.session).mark_action_proposal_resolved(
+            runtime_id=runtime_id,
+            user_id=user_id,
+            proposal_id=proposal.id,
+            status=proposal.status,
+        )
         await self._audit(runtime_id, project_id, user_id, proposal.action, proposal.arguments, execution.status, execution.error, execution.result, execution.duration_ms)
         await self.uow.commit()
         return {

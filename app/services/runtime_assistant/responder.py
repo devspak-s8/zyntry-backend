@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from app.core.config import settings
@@ -10,6 +11,37 @@ from app.services.runtime_assistant.redaction import redact_sensitive
 from app.services.runtime_assistant.schemas import RuntimeContext
 
 logger = logging.getLogger(__name__)
+
+
+def _strip_control_payload(text: str) -> str:
+    """Remove raw tool/action JSON if a model ignores the response contract.
+
+    Proposal details are rendered by the API metadata and the console card;
+    leaking a ``pending_action`` object into the chat is confusing and can
+    expose internal tool names. Keep the surrounding natural-language answer.
+    """
+    decoder = json.JSONDecoder()
+    search_from = 0
+    while True:
+        match = re.search(r"(?is)(?:```(?:json)?\s*|\bjson\s*)?(\{)", text[search_from:])
+        if not match:
+            break
+        brace_start = search_from + match.start(1)
+        try:
+            payload, consumed = decoder.raw_decode(text[brace_start:])
+        except json.JSONDecodeError:
+            search_from = brace_start + 1
+            continue
+        if not isinstance(payload, dict) or not any(
+            key in payload for key in ("pending_action", "action_proposal", "tool_code")
+        ):
+            search_from = brace_start + consumed
+            continue
+        start = search_from + match.start()
+        end = brace_start + consumed
+        text = f"{text[:start].rstrip()}\n{text[end:].lstrip()}".strip()
+        search_from = max(0, start - 1)
+    return text.replace("```json", "").replace("```", "").strip()
 
 
 class RuntimeAssistantResponder:
@@ -71,7 +103,7 @@ class RuntimeAssistantResponder:
                 max_tokens=900,
                 temperature=0.25,
             )
-            return content.strip() or None
+            return _strip_control_payload(content) or None
         except Exception:
             logger.exception("Runtime Assistant response generation failed; using verified fallback")
             return None
