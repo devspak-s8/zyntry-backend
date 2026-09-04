@@ -95,3 +95,36 @@ def test_unavailable_integrations_are_explained_without_entering_the_draft() -> 
     assert "not_a_real_connector" in proposed_data["unsupported_integrations"]
     assert "not supported by Zyntry yet" in response.text
     assert "coming soon" in response.text
+
+
+def test_runtime_name_extractor_handles_create_named_prompt() -> None:
+    """The common ``create a runtime named ...`` form must survive onboarding."""
+    from app.services.onboarding.models import FastOnboardingModelProvider
+
+    assert (
+        FastOnboardingModelProvider._extract_runtime_name(
+            "Create a runtime named LearnFlow Student Success Assistant.\n"
+            "This runtime supports an online learning platform."
+        )
+        == "LearnFlow Student Success Assistant"
+    )
+    assert (
+        FastOnboardingModelProvider._extract_runtime_name(
+            "Name the runtime: Atlas Operations Assistant."
+        )
+        == "Atlas Operations Assistant"
+    )
+
+
+def test_runtime_name_survives_clarification_transition() -> None:
+    """Clarification turns must not replace an explicit name with a default."""
+    engine = OnboardingEngine.__new__(OnboardingEngine)
+    config, state = engine._authorize_and_transition(
+        current_state="onboarding_started",
+        current_config={},
+        proposed_intent="clarify_requirements",
+        proposed_data={"runtime_name": "LearnFlow Student Success Assistant"},
+    )
+
+    assert state == "clarifying_requirements"
+    assert config["runtime_name"] == "LearnFlow Student Success Assistant"

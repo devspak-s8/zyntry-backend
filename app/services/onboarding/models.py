@@ -491,15 +491,42 @@ class FastOnboardingModelProvider:
 
     @staticmethod
     def _extract_runtime_name(msg: str) -> str | None:
-        match = re.search(
-            r"(?:name the runtime|runtime name|call (?:the )?runtime)\s*[:\-]?\s*[`\"']?([^`\"'\.\n]+)",
-            msg,
-            flags=re.IGNORECASE,
-        )
-        if not match:
+        """Extract an explicit runtime name from natural-language onboarding.
+
+        Onboarding messages commonly start with phrases such as
+        ``Create a runtime named LearnFlow Assistant`` or ``Name the runtime:
+        Atlas``.  The old extractor only understood the latter form, so the
+        former silently fell back to a use-case-derived name (for example,
+        ``Ai Customer Support Runtime``).  Keep this deliberately narrow: we
+        only capture text immediately following an explicit naming phrase and
+        stop at a sentence/newline boundary so the rest of a long requirements
+        prompt is never treated as part of the name.
+        """
+        if not isinstance(msg, str) or not msg.strip():
             return None
-        name = re.sub(r"\s+", " ", match.group(1)).strip(" ,:;")
-        return name[:255] if name else None
+
+        naming_patterns = (
+            # ``Create/build/provision a runtime named/called Foo``
+            r"(?:create|build|provision|configure)\s+(?:an?\s+)?runtime\s+(?:named|called|with\s+name)\s*[:\-]?\s*",
+            # ``Name the runtime Foo`` / ``Runtime name: Foo``
+            r"(?:name\s+(?:the\s+)?runtime|runtime\s+name)\s*[:\-]?\s*",
+            # ``Call the runtime Foo`` / ``Call it Foo``
+            r"call\s+(?:(?:the\s+)?runtime|it)\s*[:\-]?\s*",
+        )
+
+        for prefix in naming_patterns:
+            match = re.search(
+                prefix + r"[`\"']?([^`\"'\n.!?;]+)",
+                msg,
+                flags=re.IGNORECASE,
+            )
+            if not match:
+                continue
+            name = re.sub(r"\s+", " ", match.group(1)).strip(" ,:;.!?")
+            if name:
+                return name[:255]
+
+        return None
 
     def _default_capabilities(self, slug: str) -> list[str]:
         defn = integration_registry.get(slug)
@@ -543,6 +570,7 @@ class FastOnboardingModelProvider:
         runtime_name: str | None = None,
     ) -> str:
         uc_title = runtime_name or self._use_case_title(use_case)
+        display_name = uc_title if runtime_name else f"{uc_title} Runtime"
         strategy_labels = {
             "latency_optimized": "Low latency",
             "quality_optimized": "Maximum quality",
@@ -576,7 +604,7 @@ class FastOnboardingModelProvider:
 
         return (
             "Runtime Summary\n\n"
-            f"• Name: {uc_title} Runtime\n"
+            f"• Name: {display_name}\n"
             f"• Mode: {arch_label}\n"
             f"• Routing: {strategy_label}\n"
             f"• Environment: {environment.capitalize()}\n\n"

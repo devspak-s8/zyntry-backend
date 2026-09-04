@@ -150,6 +150,31 @@ async def test_chat_onboarding_natural_engineer_agent_flow(db_session: AsyncSess
 
 
 @pytest.mark.asyncio
+async def test_initial_prompt_preserves_explicit_runtime_name(
+    db_session: AsyncSession,
+) -> None:
+    uow = UnitOfWork(db_session)
+    onboarding = OnboardingService(uow)
+
+    user = await uow.users.create(
+        email="named_runtime_prompt@zyntry.space",
+        name="Named Runtime Prompt User",
+        is_active=True,
+    )
+    await uow.commit()
+
+    session = await onboarding.create_chat_session(
+        user_id=user.id,
+        initial_prompt=(
+            "Create a runtime named LearnFlow Student Success Assistant. "
+            "It should support an online learning platform."
+        ),
+    )
+
+    assert session["configuration"]["runtime_name"] == "LearnFlow Student Success Assistant"
+
+
+@pytest.mark.asyncio
 async def test_chat_onboarding_reset_and_fresh_session(db_session: AsyncSession) -> None:
     uow = UnitOfWork(db_session)
     onboarding = OnboardingService(uow)

@@ -140,6 +140,17 @@ class OnboardingEngine:
                 current_config={},
                 history=messages,
             )
+            # Preserve an explicit name from the initial prompt. The initial
+            # prompt follows a different path from later messages; without
+            # this merge, "Create a runtime named ..." falls back to a
+            # use-case-derived name at completion time.
+            extractor = getattr(self.model_provider, "_extract_runtime_name", None)
+            runtime_name = extractor(initial_prompt) if callable(extractor) else None
+            if runtime_name:
+                ai_resp.proposed_data = {
+                    **ai_resp.proposed_data,
+                    "runtime_name": runtime_name,
+                }
             self._filter_unavailable_integrations(ai_resp.proposed_data)
             self._append_integration_availability_notice(ai_resp)
             config, next_state = self._authorize_and_transition(
@@ -180,7 +191,10 @@ class OnboardingEngine:
         if session.state == "completed":
             msg_lower = req.message.lower().strip()
             rt_id = str(session.created_runtime_id) if session.created_runtime_id else None
-            runtime_name = session.configuration.get("use_case", "AI App").replace("_", " ").title() + " Runtime"
+            runtime_name = (
+                session.configuration.get("runtime_name")
+                or session.configuration.get("use_case", "AI App").replace("_", " ").title() + " Runtime"
+            )
             if any(k in msg_lower for k in ["console", "dashboard", "runtime", "view"]):
                 return OnboardingMessageResponse(
                     session_id=str(session.id),
@@ -603,6 +617,12 @@ class OnboardingEngine:
                 proposed_data["application_requirements"]
             )
             config["application_requirements"] = requirements.model_dump(mode="json")
+        # A name is independent of the onboarding intent. In particular, the
+        # first long prompt often asks a clarification question, and that
+        # branch must not discard an explicit name while requirements are being
+        # collected.
+        if proposed_data.get("runtime_name"):
+            config["runtime_name"] = str(proposed_data["runtime_name"]).strip()[:255]
         if "pending_requirement" in proposed_data:
             if proposed_data["pending_requirement"]:
                 config["pending_requirement"] = proposed_data["pending_requirement"]
