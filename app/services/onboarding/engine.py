@@ -140,6 +140,8 @@ class OnboardingEngine:
                 current_config={},
                 history=messages,
             )
+            self._filter_unavailable_integrations(ai_resp.proposed_data)
+            self._append_integration_availability_notice(ai_resp)
             config, next_state = self._authorize_and_transition(
                 current_state="onboarding_started",
                 current_config={},
@@ -306,12 +308,14 @@ class OnboardingEngine:
             )
 
         # Step 3: Backend Authorizes & Validates LLM Proposals
+        self._filter_unavailable_integrations(ai_resp.proposed_data)
         validated_config, next_state = self._authorize_and_transition(
             current_state=session.state,
             current_config=current_config,
             proposed_intent=ai_resp.proposed_intent,
             proposed_data=ai_resp.proposed_data,
         )
+        self._append_integration_availability_notice(ai_resp)
         validated_config = self._attach_runtime_plan(
             validated_config,
             previous_plan=current_config.get("runtime_plan"),
@@ -506,6 +510,83 @@ class OnboardingEngine:
         result["capabilities"] = capabilities
         result["integration_modes"] = integration_modes
         return result
+
+    @staticmethod
+    def _filter_unavailable_integrations(proposed_data: dict[str, Any]) -> None:
+        """Keep beta/coming-soon/unknown connectors out of a runtime draft.
+
+        This is intentionally a user-facing clarification rather than a hard
+        request failure. The requested names are retained in metadata so the
+        response can explain what happened and the user can choose another
+        source.
+        """
+        raw_integrations = proposed_data.get("integrations")
+        if not isinstance(raw_integrations, list):
+            return
+
+        available: list[str] = []
+        unsupported = [
+            item for item in proposed_data.get("unsupported_integrations", [])
+            if isinstance(item, str) and item.strip()
+        ]
+        coming_soon = [
+            item for item in proposed_data.get("coming_soon_integrations", [])
+            if isinstance(item, str) and item.strip()
+        ]
+        for item in raw_integrations:
+            slug = item.get("slug") if isinstance(item, dict) else item
+            if not isinstance(slug, str):
+                continue
+            slug = slug.strip().lower()
+            definition = integration_registry.get(slug)
+            if definition is None:
+                if slug and slug not in unsupported:
+                    unsupported.append(slug)
+                continue
+            if (
+                not definition.enabled
+                or definition.status in {"disabled", "deprecated", "coming_soon"}
+            ):
+                if definition.name not in coming_soon:
+                    coming_soon.append(definition.name)
+                continue
+            if definition.slug not in available:
+                available.append(definition.slug)
+
+        proposed_data["integrations"] = available
+        if unsupported:
+            proposed_data["unsupported_integrations"] = unsupported
+        if coming_soon:
+            proposed_data["coming_soon_integrations"] = coming_soon
+
+    @staticmethod
+    def _append_integration_availability_notice(ai_resp: OnboardingModelResponse) -> None:
+        unsupported = ai_resp.proposed_data.get("unsupported_integrations", [])
+        coming_soon = ai_resp.proposed_data.get("coming_soon_integrations", [])
+        unsupported_names = [item for item in unsupported if isinstance(item, str) and item.strip()]
+        coming_soon_names = [item for item in coming_soon if isinstance(item, str) and item.strip()]
+        notices: list[str] = []
+        if unsupported_names:
+            notices.append(
+                f"{', '.join(unsupported_names)} is not supported by Zyntry yet."
+            )
+        if coming_soon_names:
+            notices.append(
+                f"{', '.join(coming_soon_names)} is coming soon and is not available for this runtime yet."
+            )
+        if not notices:
+            return
+        ai_resp.text = (
+            "\n\n".join(notices)
+            + "\n\nI left those sources out of the runtime draft. "
+            "Would you like to continue with supported integrations, or describe another source?\n\n"
+            + ai_resp.text.strip()
+        )
+        ai_resp.suggested_actions = list(dict.fromkeys([
+            "Show supported integrations",
+            "Continue without those sources",
+            *ai_resp.suggested_actions,
+        ]))[:8]
 
     def _authorize_and_transition(
         self,

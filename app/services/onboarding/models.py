@@ -729,28 +729,6 @@ class ConfiguredOnboardingModelProvider:
             if coming_soon:
                 normalized_data["coming_soon_integrations"] = coming_soon
 
-        unsupported = normalized_data.get("unsupported_integrations", [])
-        coming_soon = normalized_data.get("coming_soon_integrations", [])
-        if isinstance(unsupported, list) or isinstance(coming_soon, list):
-            unsupported_names = [item.strip() for item in unsupported if isinstance(item, str) and item.strip()] if isinstance(unsupported, list) else []
-            coming_soon_names = [item.strip() for item in coming_soon if isinstance(item, str) and item.strip()] if isinstance(coming_soon, list) else []
-            notices: list[str] = []
-            if unsupported_names:
-                notices.append(
-                    f"{', '.join(unsupported_names)} is not supported by Zyntry yet."
-                )
-            if coming_soon_names:
-                notices.append(
-                    f"{', '.join(coming_soon_names)} is coming soon and is not available for this runtime yet."
-                )
-            if notices:
-                text = (
-                    "\n\n".join(notices)
-                    + "\n\nI left those sources out of the runtime draft. "
-                    "Would you like to continue with the supported integrations, "
-                    "or describe another source?\n\n"
-                    + text.strip()
-                )
         return OnboardingModelResponse(
             text=text.strip(),
             proposed_intent=intent,
