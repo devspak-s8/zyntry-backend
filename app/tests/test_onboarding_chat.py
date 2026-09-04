@@ -175,6 +175,39 @@ async def test_initial_prompt_preserves_explicit_runtime_name(
 
 
 @pytest.mark.asyncio
+async def test_active_legacy_session_recovers_explicit_runtime_name(
+    db_session: AsyncSession,
+) -> None:
+    uow = UnitOfWork(db_session)
+    onboarding = OnboardingService(uow)
+
+    user = await uow.users.create(
+        email="legacy_named_runtime@zyntry.space",
+        name="Legacy Named Runtime User",
+        is_active=True,
+    )
+    session = await uow.onboarding_sessions.create(
+        user_id=user.id,
+        state="clarifying_requirements",
+        messages=[
+            {
+                "role": "user",
+                "content": "Create a runtime named LearnFlow Student Success Assistant.",
+            }
+        ],
+        configuration={
+            "use_case": "ai_customer_support",
+            "runtime_name": "Ai Customer Support Runtime",
+        },
+    )
+    await uow.commit()
+
+    resumed = await onboarding.create_chat_session(user_id=user.id)
+
+    assert resumed["configuration"]["runtime_name"] == "LearnFlow Student Success Assistant"
+
+
+@pytest.mark.asyncio
 async def test_chat_onboarding_reset_and_fresh_session(db_session: AsyncSession) -> None:
     uow = UnitOfWork(db_session)
     onboarding = OnboardingService(uow)

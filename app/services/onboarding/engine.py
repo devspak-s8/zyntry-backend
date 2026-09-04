@@ -109,6 +109,25 @@ class OnboardingEngine:
 
         session = await self.uow.onboarding_sessions.get_latest_active_by_user(user_id)
         if session and not reset:
+            # Repair active sessions created before explicit-name extraction
+            # was fixed. This keeps the review card and name input correct
+            # before the user reaches the completion button.
+            config = dict(session.configuration or {})
+            recovered_name = self._runtime_name_from_messages(session.messages)
+            configured_name = config.get("runtime_name")
+            fallback_name = (
+                f"{config.get('use_case', 'AI App').replace('_', ' ').title()} Runtime"
+            )
+            if recovered_name and (
+                not configured_name
+                or str(configured_name).casefold() == fallback_name.casefold()
+            ):
+                config["runtime_name"] = recovered_name
+                session = await self.uow.onboarding_sessions.update(
+                    session,
+                    configuration=config,
+                )
+                await self.uow.commit()
             return session
 
         welcome_msg = {
