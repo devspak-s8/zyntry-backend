@@ -700,11 +700,14 @@ class ConfiguredOnboardingModelProvider:
         raw_integrations = normalized_data.get("integrations")
         if isinstance(raw_integrations, list):
             integrations: list[str] = []
+            unsupported: list[str] = []
+            coming_soon: list[str] = []
             for item in raw_integrations:
                 slug = item.get("slug") if isinstance(item, dict) else item
                 if not isinstance(slug, str):
                     continue
-                definition = integration_registry.get(slug.strip().lower())
+                requested_slug = slug.strip().lower()
+                definition = integration_registry.get(requested_slug)
                 if (
                     definition
                     and definition.enabled
@@ -712,7 +715,42 @@ class ConfiguredOnboardingModelProvider:
                     and definition.slug not in integrations
                 ):
                     integrations.append(definition.slug)
+                elif definition and (
+                    not definition.enabled
+                    or definition.status in {"disabled", "deprecated", "coming_soon"}
+                ):
+                    if definition.name not in coming_soon:
+                        coming_soon.append(definition.name)
+                elif requested_slug not in unsupported:
+                    unsupported.append(slug.strip())
             normalized_data["integrations"] = integrations
+            if unsupported:
+                normalized_data["unsupported_integrations"] = unsupported
+            if coming_soon:
+                normalized_data["coming_soon_integrations"] = coming_soon
+
+        unsupported = normalized_data.get("unsupported_integrations", [])
+        coming_soon = normalized_data.get("coming_soon_integrations", [])
+        if isinstance(unsupported, list) or isinstance(coming_soon, list):
+            unsupported_names = [item.strip() for item in unsupported if isinstance(item, str) and item.strip()] if isinstance(unsupported, list) else []
+            coming_soon_names = [item.strip() for item in coming_soon if isinstance(item, str) and item.strip()] if isinstance(coming_soon, list) else []
+            notices: list[str] = []
+            if unsupported_names:
+                notices.append(
+                    f"{', '.join(unsupported_names)} is not supported by Zyntry yet."
+                )
+            if coming_soon_names:
+                notices.append(
+                    f"{', '.join(coming_soon_names)} is coming soon and is not available for this runtime yet."
+                )
+            if notices:
+                text = (
+                    "\n\n".join(notices)
+                    + "\n\nI left those sources out of the runtime draft. "
+                    "Would you like to continue with the supported integrations, "
+                    "or describe another source?\n\n"
+                    + text.strip()
+                )
         return OnboardingModelResponse(
             text=text.strip(),
             proposed_intent=intent,
@@ -746,6 +784,12 @@ text (a concise natural-language reply), proposed_intent (one of the allowed
 intents), proposed_data (safe configuration changes), and suggested_actions
 (zero to eight short choices). Never include credentials, secrets, private
 data, hidden reasoning, or markdown outside the JSON object.
+
+If the user requests a connector that is not in the manifest, put its name in
+proposed_data.unsupported_integrations. If it is marked coming_soon or
+disabled, put its name in proposed_data.coming_soon_integrations. Do not put
+either kind in proposed_data.integrations; explain that it was left out and
+ask whether the user wants to continue with available sources.
 
 Ask a focused clarification question when the requirements extractor has not
 captured enough information. Never execute provisioning or a write action
