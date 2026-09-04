@@ -89,7 +89,11 @@ class RuleBasedRequirementsExtractor:
         pending_requirement: str | None = None,
     ) -> ApplicationRequirements:
         text = message.strip()
-        lowered = text.lower()
+        # Users often paste domains from formatted chat where periods are
+        # escaped (for example ``ocw\\.mit.edu``).  Normalize that display
+        # artifact before looking for requirements so a valid answer is not
+        # treated as an unanswered clarification.
+        lowered = text.lower().replace(r"\.", ".")
         data = current.model_dump(mode="json") if current else {}
 
         application_type = self._application_type(lowered, data.get("application_type"))
@@ -129,16 +133,7 @@ class RuleBasedRequirementsExtractor:
             data["requires_external_data"] = True
         if any(term in lowered for term in ("internal only", "no external", "without external")):
             data["requires_external_data"] = False
-        source_types: list[str] = []
-        for term, source_type in (
-            ("university", "university websites"),
-            ("academic", "academic repositories"),
-            ("public document", "public documents"),
-            ("general web", "general web"),
-            ("trusted website", "trusted websites"),
-        ):
-            if term in lowered:
-                source_types.append(source_type)
+        source_types = self._extract_external_source_types(lowered)
         if source_types:
             data["external_source_types"] = self._merge_list(
                 data.get("external_source_types"), source_types
@@ -202,6 +197,43 @@ class RuleBasedRequirementsExtractor:
         data["confidence"] = max(float(data.get("confidence") or 0), 0.55)
         data["extraction_source"] = "fallback"
         return ApplicationRequirements.model_validate(data)
+
+    @staticmethod
+    def _extract_external_source_types(text: str) -> list[str]:
+        """Extract source categories and explicit domains from an answer.
+
+        The clarification asks for *which* public sources are allowed. A
+        response can answer that with categories ("official education sites")
+        or with a concrete allowlist ("openstax.org"). Capturing both keeps
+        the requirement model useful and prevents the same question from
+        being asked again on the next turn.
+        """
+        source_types: list[str] = []
+        category_terms = (
+            (("university", "college", "accredited institution", ".edu"), "accredited institution websites"),
+            (("academic", "research repository", "academic repository"), "academic repositories"),
+            (("public education", "education website", "education websites", "official education"), "public education websites"),
+            (("government education", "government source", "official government"), "official government sources"),
+            (("official technical", "technical documentation", "official documentation"), "official technical sources"),
+            (("approved domain", "approved domains", "allowlist", "allow list"), "approved domains only"),
+            (("trusted public", "trusted website", "trusted websites", "trusted source", "trusted sources"), "trusted public websites"),
+            (("public web", "general web", "search the web"), "general public web"),
+            (("public document", "public documents"), "public documents"),
+        )
+        for terms, label in category_terms:
+            if any(term in text for term in terms):
+                source_types.append(label)
+
+        # Keep explicit hostnames as plan metadata. This deliberately excludes
+        # bare TLDs such as ``.edu``; the category above captures those rules.
+        domains = re.findall(
+            r"(?<![\w-])(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}(?![\w-])",
+            text,
+        )
+        for domain in domains:
+            if domain != "example.com" and domain not in source_types:
+                source_types.append(domain)
+        return list(dict.fromkeys(source_types))
 
     # These helpers are shared with the model adapter below. Keeping the
     # fallback implementation available preserves test/dev operation when no
@@ -363,7 +395,7 @@ class ModelBackedRequirementsExtractor:
         fallback: RuleBasedRequirementsExtractor | None = None,
     ) -> None:
         self.provider = provider if provider is not None else self._configured_provider()
-        self.model = model or getattr(settings, "ONBOARDING_MODEL", "gpt-4o-mini")
+        self.model = model or getattr(settings, "ONBOARDING_MODEL", "gemini-2.5-flash")
         self.fallback = fallback or RuleBasedRequirementsExtractor()
 
     async def extract(
@@ -411,7 +443,7 @@ class ModelBackedRequirementsExtractor:
 
     @staticmethod
     def _configured_provider() -> BaseLLMProvider | None:
-        preferred = getattr(settings, "ONBOARDING_PROVIDER", "openai").lower()
+        preferred = getattr(settings, "ONBOARDING_PROVIDER", "google").lower()
         if preferred == "google" and settings.GOOGLE_API_KEY:
             return GeminiLLMProvider(settings.GOOGLE_API_KEY)
         if preferred == "gemini" and settings.GOOGLE_API_KEY:

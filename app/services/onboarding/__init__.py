@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.services.onboarding.engine import OnboardingEngine
 from app.services.onboarding.models import (
+    ConfiguredOnboardingModelProvider,
     FastOnboardingModelProvider,
     OnboardingModelProvider,
     OnboardingModelResponse,
@@ -15,5 +16,6 @@ __all__ = [
     "OnboardingModelProvider",
     "OnboardingModelResponse",
     "FastOnboardingModelProvider",
+    "ConfiguredOnboardingModelProvider",
     "default_onboarding_model_provider",
 ]

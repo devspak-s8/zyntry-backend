@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from app.services.integrations.definitions import integration_registry
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -582,6 +585,204 @@ class FastOnboardingModelProvider:
         )
 
 
-default_onboarding_model_provider = FastOnboardingModelProvider()
+class ConfiguredOnboardingModelProvider:
+    """Model-first conversational provider for free-form runtime creation.
+
+    The model interprets the conversation and proposes a typed onboarding
+    action. The engine still validates that action against the integration
+    registry and the user's permissions before changing state. The fast
+    provider is retained only as an availability fallback when no provider
+    credential is configured or a model response cannot be validated.
+    """
+
+    _ALLOWED_INTENTS = {
+        "set_use_case",
+        "set_use_case_and_mode",
+        "set_application_type",
+        "set_application_type_and_integrations",
+        "select_integrations",
+        "quick_bootstrap",
+        "clarify_requirements",
+        "requirements_ready",
+        "confirm_configuration",
+        "execute_provisioning",
+        "modify_settings",
+    }
+
+    def __init__(self, fallback: FastOnboardingModelProvider | None = None) -> None:
+        self.fallback = fallback or FastOnboardingModelProvider()
+
+    @staticmethod
+    def _provider() -> tuple[Any | None, str]:
+        """Build the configured provider lazily to avoid import cycles."""
+        from app.core.config import settings
+        from app.services.rag import AnthropicLLMProvider, OpenAILLMProvider
+
+        preferred = getattr(settings, "ONBOARDING_PROVIDER", "google").lower()
+        model = getattr(settings, "ONBOARDING_MODEL", "gemini-2.5-flash")
+        if preferred in {"google", "gemini"} and settings.GOOGLE_API_KEY:
+            # GeminiLLMProvider lives with the shared LLM adapters used by
+            # requirements extraction. Import it lazily because that module
+            # also imports onboarding schemas during application startup.
+            from app.services.onboarding.intelligence import GeminiLLMProvider
+
+            return GeminiLLMProvider(settings.GOOGLE_API_KEY), model
+        if preferred == "openai" and settings.OPENAI_API_KEY:
+            return OpenAILLMProvider(settings.OPENAI_API_KEY), model
+        if preferred == "anthropic" and settings.ANTHROPIC_API_KEY:
+            return AnthropicLLMProvider(settings.ANTHROPIC_API_KEY), model
+        # Respect the preferred provider. Do not silently switch providers
+        # for onboarding when the user has not configured one.
+        return None, model
+
+    @staticmethod
+    def _capability_manifest() -> list[dict[str, Any]]:
+        manifest: list[dict[str, Any]] = []
+        for slug in integration_registry.list_slugs():
+            definition = integration_registry.get(slug)
+            if not definition:
+                continue
+            manifest.append(
+                {
+                    "slug": definition.slug,
+                    "name": definition.name,
+                    "status": definition.status,
+                    "enabled": definition.enabled,
+                    "connection_modes": sorted(definition.supported_connection_modes),
+                    "capabilities": [
+                        {"slug": capability.slug, "write": bool(capability.is_write)}
+                        for capability in definition.capabilities
+                    ],
+                }
+            )
+        return manifest
+
+    @staticmethod
+    def _safe_config(config: dict[str, Any]) -> dict[str, Any]:
+        safe: dict[str, Any] = {}
+        for key, value in config.items():
+            lowered = key.lower()
+            if any(secret in lowered for secret in ("password", "secret", "token", "api_key", "credential")):
+                continue
+            safe[key] = value
+        return safe
+
+    @staticmethod
+    def _parse_response(content: str) -> OnboardingModelResponse:
+        cleaned = content.strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+            cleaned = re.sub(r"\s*```$", "", cleaned)
+        start, end = cleaned.find("{"), cleaned.rfind("}")
+        if start < 0 or end < start:
+            raise ValueError("Onboarding model did not return JSON")
+        value = json.loads(cleaned[start : end + 1])
+        if not isinstance(value, dict):
+            raise ValueError("Onboarding model response must be an object")
+        intent = value.get("proposed_intent")
+        if intent not in ConfiguredOnboardingModelProvider._ALLOWED_INTENTS:
+            raise ValueError("Onboarding model returned an unsupported intent")
+        text = value.get("text")
+        proposed_data = value.get("proposed_data", {})
+        suggested_actions = value.get("suggested_actions", [])
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("Onboarding model response has no text")
+        if not isinstance(proposed_data, dict):
+            raise ValueError("Onboarding model proposed_data must be an object")
+        if not isinstance(suggested_actions, list) or not all(isinstance(item, str) for item in suggested_actions):
+            raise ValueError("Onboarding model suggested_actions must be strings")
+
+        # The model may return a display object instead of a slug despite the
+        # prompt. Normalize it here and discard unknown connectors before the
+        # engine applies any state transition. This prevents a model response
+        # from bypassing the configured capability registry.
+        normalized_data = dict(proposed_data)
+        raw_integrations = normalized_data.get("integrations")
+        if isinstance(raw_integrations, list):
+            integrations: list[str] = []
+            for item in raw_integrations:
+                slug = item.get("slug") if isinstance(item, dict) else item
+                if not isinstance(slug, str):
+                    continue
+                definition = integration_registry.get(slug.strip().lower())
+                if (
+                    definition
+                    and definition.enabled
+                    and definition.status not in {"disabled", "deprecated", "coming_soon"}
+                    and definition.slug not in integrations
+                ):
+                    integrations.append(definition.slug)
+            normalized_data["integrations"] = integrations
+        return OnboardingModelResponse(
+            text=text.strip(),
+            proposed_intent=intent,
+            proposed_data=normalized_data,
+            suggested_actions=[item.strip() for item in suggested_actions if item.strip()][:8],
+        )
+
+    async def generate_step_response(
+        self,
+        user_message: str,
+        current_state: str,
+        current_config: dict[str, Any],
+        history: list[dict[str, Any]],
+    ) -> OnboardingModelResponse:
+        provider, model = self._provider()
+        if provider is None:
+            return await self.fallback.generate_step_response(
+                user_message, current_state, current_config, history
+            )
+
+        system = """You are Zyntry's conversational runtime architect.
+Interpret the user's natural-language description of any AI application and
+propose the next onboarding action. Do not restrict the user to predefined
+use-case templates. Use the capability manifest as the source of truth for
+supported integrations and capabilities; never invent a connector or claim a
+capability that is not listed. Do not select integrations marked disabled,
+deprecated, or coming_soon.
+
+Return exactly one JSON object with these keys:
+text (a concise natural-language reply), proposed_intent (one of the allowed
+intents), proposed_data (safe configuration changes), and suggested_actions
+(zero to eight short choices). Never include credentials, secrets, private
+data, hidden reasoning, or markdown outside the JSON object.
+
+Ask a focused clarification question when the requirements extractor has not
+captured enough information. Never execute provisioning or a write action
+unless the user has explicitly confirmed it. For company data versus
+end-user OAuth, preserve the ownership stated by the user. Runtime creation
+stores a draft; project attachment and connector authorization happen later.
+"""
+        payload = {
+            "current_state": current_state,
+            "current_config": self._safe_config(current_config),
+            "recent_conversation": history[-12:],
+            "latest_message": user_message,
+            "capability_manifest": self._capability_manifest(),
+            "allowed_intents": sorted(self._ALLOWED_INTENTS),
+        }
+        try:
+            content, _ = await provider.generate(
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": json.dumps(payload, default=str)},
+                ],
+                model=model,
+                max_tokens=1400,
+                temperature=0.25,
+            )
+            return self._parse_response(content)
+        except Exception:
+            logger.exception("Onboarding conversational model failed; using fallback provider")
+            return await self.fallback.generate_step_response(
+                user_message, current_state, current_config, history
+            )
+
+    def _extract_runtime_name(self, message: str) -> str | None:
+        """Keep the engine's name extraction compatible with the fallback."""
+        return self.fallback._extract_runtime_name(message)
+
+
+default_onboarding_model_provider = ConfiguredOnboardingModelProvider()
 
 
