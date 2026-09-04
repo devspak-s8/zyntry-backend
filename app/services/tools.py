@@ -8,6 +8,8 @@ from app.repositories import UnitOfWork
 from app.schemas.tools import ToolCreate, ToolUpdate
 from app.services.connectors import registry
 from app.services.encryption import encrypt_value
+from app.services.security.outbound import validate_outbound_url
+from app.services.security.secrets import default_secret_manager
 
 
 TOOL_CATALOG: tuple[dict[str, Any], ...] = (
@@ -100,10 +102,17 @@ class ToolService:
         ]
 
     async def create_tool(self, data: ToolCreate) -> dict:
+        schema = dict(data.schema or {})
+        schema["_zyntry_custom"] = {
+            "kind": data.kind,
+            "read_only": data.read_only,
+            "database_type": data.database_type,
+            "openapi_spec": data.openapi_spec,
+        }
         tool = await self.uow.tools.create(
             name=data.name,
             description=data.description,
-            schema=data.schema,
+            schema=schema,
             implementation=data.implementation,
             project_id=data.project_id,
         )
@@ -115,7 +124,62 @@ class ToolService:
             "schema": tool.schema,
             "implementation": tool.implementation,
             "project_id": str(tool.project_id) if tool.project_id else None,
+            "created_at": tool.created_at,
+            "updated_at": tool.updated_at,
         }
+
+    async def create_openapi_tool(
+        self,
+        *,
+        name: str,
+        description: str | None,
+        project_id: str,
+        server_url: str,
+        spec: dict[str, Any],
+        read_only: bool = True,
+    ) -> dict:
+        if not isinstance(spec, dict) or not spec.get("paths"):
+            raise ValueError("OpenAPI spec must contain a paths object")
+        if not isinstance(spec.get("paths"), dict):
+            raise ValueError("OpenAPI paths must be an object")
+        if not spec.get("openapi") and not spec.get("swagger"):
+            raise ValueError("OpenAPI spec must declare openapi or swagger version")
+        safe_url = validate_outbound_url(server_url)
+        return await self.create_tool(ToolCreate(
+            name=name,
+            description=description,
+            project_id=project_id,
+            schema={"openapi": spec, "server_url": safe_url},
+            implementation=safe_url,
+            kind="openapi",
+            openapi_spec=spec,
+            read_only=read_only,
+        ))
+
+    async def create_database_tool(
+        self,
+        *,
+        name: str,
+        description: str | None,
+        project_id: str,
+        database_type: str,
+        schema: dict[str, Any] | None = None,
+        read_only: bool = True,
+    ) -> dict:
+        supported = {"postgres", "postgresql", "mysql", "mariadb", "mongodb", "sqlite", "cockroachdb", "supabase", "neon", "firestore", "bigquery"}
+        normalized = database_type.strip().lower()
+        if normalized not in supported:
+            raise ValueError(f"Unsupported database type '{database_type}'")
+        return await self.create_tool(ToolCreate(
+            name=name,
+            description=description,
+            project_id=project_id,
+            schema={"database_type": normalized, "read_only": read_only, **(schema or {})},
+            implementation=f"database://{normalized}",
+            kind="database",
+            database_type=normalized,
+            read_only=read_only,
+        ))
 
     async def update_tool(self, tool_id: str, data: ToolUpdate) -> dict:
         tool = await self.uow.tools.get(tool_id)
@@ -130,6 +194,9 @@ class ToolService:
             "description": updated.description,
             "schema": updated.schema,
             "implementation": updated.implementation,
+            "project_id": str(updated.project_id) if updated.project_id else None,
+            "created_at": updated.created_at,
+            "updated_at": updated.updated_at,
         }
 
     async def delete_tool(self, tool_id: str) -> None:
@@ -150,7 +217,7 @@ class ToolService:
 
     @staticmethod
     def _public_schema(schema: dict[str, Any] | None) -> dict[str, Any]:
-        public = dict(schema or {})
+        public = default_secret_manager.redact(dict(schema or {}))
         connection = public.get(_INTERNAL_CONNECTION_KEY)
         if isinstance(connection, dict):
             safe_connection = dict(connection)

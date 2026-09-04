@@ -20,6 +20,18 @@ def run_scheduled_syncs() -> dict:
     return run_async(_run())
 
 
+@celery_app.task(name="app.tasks.scheduler.run_scheduled_workflows")
+def run_scheduled_workflows() -> dict:
+    async def _run() -> dict:
+        from app.core.database import get_session
+        from app.repositories import UnitOfWork
+        from app.services.scheduler import SchedulerService
+
+        async for session in get_session():
+            return await SchedulerService(UnitOfWork(session)).run_pending_workflows()
+    return run_async(_run())
+
+
 @celery_app.task(name="app.tasks.scheduler.retry_failed_sync")
 def retry_failed_sync(job_id: str) -> dict:
     async def _retry() -> dict:

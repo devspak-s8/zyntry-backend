@@ -12,11 +12,12 @@ from app.api.v1.dependencies import get_current_user
 from app.api.v1.dependencies_api_key import ActionAuthContext, get_action_auth
 from app.api.v1.dependencies_tenant import require_project_membership
 from app.core.database import get_session
-from app.models.actions import ActionExecution
+from app.models.actions import ActionConfirmation, ActionExecution
 from app.models.users import User
 from app.repositories import UnitOfWork
 from app.schemas.actions import (
     ActionExecutionRead,
+    ActionConfirmationRead,
     ActionRequest,
     ActionResponse,
     WorkflowRequest,
@@ -188,6 +189,48 @@ async def list_executions(
             created_at=e.created_at.isoformat(),
         )
         for e in executions
+    ]
+
+
+@router.get("/confirmations", response_model=list[ActionConfirmationRead])
+async def list_confirmations(
+    auth: Annotated[ActionAuthContext, Depends(get_action_auth)],
+    project_id: Annotated[str | None, None] = None,
+    status_filter: Annotated[str | None, None] = None,
+    db: AsyncSession = Depends(get_session),
+) -> list[ActionConfirmationRead]:
+    """List pending and historical write approvals for the approval inbox."""
+    stmt = select(ActionConfirmation).where(ActionConfirmation.user_id == auth.user.id)
+    if project_id:
+        await require_project_membership(project_id, auth.user, db)
+        pid = uuid.UUID(project_id)
+        if auth.project_id and pid != auth.project_id:
+            raise HTTPException(status_code=403, detail="API key is not authorized for this project")
+        stmt = stmt.where(ActionConfirmation.project_id == pid)
+    elif auth.project_id:
+        stmt = stmt.where(ActionConfirmation.project_id == auth.project_id)
+    if status_filter:
+        normalized_status = status_filter.strip().lower()
+        if normalized_status not in {"pending", "running", "succeeded", "failed", "cancelled"}:
+            raise HTTPException(status_code=400, detail="Invalid confirmation status")
+        stmt = stmt.where(ActionConfirmation.status == normalized_status)
+    stmt = stmt.order_by(ActionConfirmation.created_at.desc()).limit(100)
+    result = await db.execute(stmt)
+    confirmations = result.scalars().all()
+    return [
+        ActionConfirmationRead(
+            id=str(item.id),
+            user_id=str(item.user_id),
+            project_id=str(item.project_id),
+            provider=item.provider,
+            action=item.action,
+            arguments=item.arguments or {},
+            risk=item.risk,
+            status=item.status,
+            expires_at=item.expires_at.isoformat(),
+            created_at=item.created_at.isoformat(),
+        )
+        for item in confirmations
     ]
 
 

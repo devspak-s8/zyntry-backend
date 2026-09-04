@@ -3,13 +3,15 @@ from __future__ import annotations
 import time
 import uuid
 import logging
+import json
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any
+from typing import Any, AsyncGenerator
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.features.dependencies import require_api_key_feature
@@ -41,6 +43,12 @@ from app.services.runtime_security import (
     persist_runtime_security_event,
     redact_pii,
 )
+from app.services.runtime_capabilities import (
+    authorize_runtime_request,
+    check_runtime_budget,
+    join_source_records,
+)
+from app.schemas.capabilities import CrossSourceJoinRequest, SourceRecordSet
 
 router = APIRouter()
 guardrail_service = GuardrailService()
@@ -124,7 +132,13 @@ class InvokeRequest(BaseModel):
     conversation_id: str | None = None
     idempotency_key: str | None = None
     json_schema: dict | None = None
-    actions: list[ActionRequest] = []
+    actions: list[ActionRequest] = Field(default_factory=list)
+    # Optional explicit read context.  When supplied, only these connected
+    # tools are queried and their provenance is added to the model context.
+    # This enables safe cross-source answers without invoking every connector
+    # on every request.
+    context_sources: list[str] = Field(default_factory=list, max_length=20)
+    join_on: str | None = None
 
 
 class InvokeResponse(BaseModel):
@@ -134,10 +148,11 @@ class InvokeResponse(BaseModel):
     provider: str
     latency_ms: float
     cost: float
-    warnings: list[dict] = []
-    events: list[dict] = []
-    tool_calls: list[dict] = []
-    action_results: list[ActionResponse] = []
+    warnings: list[dict] = Field(default_factory=list)
+    events: list[dict] = Field(default_factory=list)
+    tool_calls: list[dict] = Field(default_factory=list)
+    action_results: list[ActionResponse] = Field(default_factory=list)
+    source_context: dict[str, Any] | None = None
     tokens_used: int = 0
     guardrail_violations: list[str] = []
     estimated_cost: float = 0.0
@@ -169,13 +184,38 @@ async def _execute_tool(tool: Any, arguments: dict) -> dict:
     return {"name": tool.name, "status": "skipped", "reason": "unsupported_implementation"}
 
 
-@router.post("/invoke", response_model=InvokeResponse)
+@router.post("/invoke/stream", response_model=None)
+async def invoke_stream(
+    body: InvokeRequest,
+    request: Request,
+    current_user: User = Depends(require_api_key_feature("runtime_console")),
+    db: AsyncSession = Depends(get_session),
+) -> StreamingResponse:
+    """Stream lifecycle progress and the final invoke result as SSE.
+
+    Provider token streaming is exposed by ``/chat/completions``.  This
+    endpoint gives API consumers a single runtime-console stream that also
+    reports security, retrieval, routing, tool, and billing progress.
+    """
+    async def event_stream() -> AsyncGenerator[str, None]:
+        yield f"data: {json.dumps({'event': 'Request Received', 'status': 'started'})}\n\n"
+        result = await invoke(body.model_copy(update={"stream": False}), request, current_user, db)
+        for event in result.events:
+            yield f"data: {json.dumps(event, default=str)}\n\n"
+        yield f"data: {json.dumps({'event': 'Completed', 'status': 'completed', 'result': result.model_dump()}, default=str)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.post("/invoke", response_model=None)
 async def invoke(
     body: InvokeRequest,
     request: Request,
     current_user: User = Depends(require_api_key_feature("runtime_console")),
     db: AsyncSession = Depends(get_session),
-) -> InvokeResponse:
+) -> InvokeResponse | StreamingResponse:
+    if body.stream:
+        return await invoke_stream(body, request, current_user, db)
     request_id = f"req_{uuid.uuid4().hex[:12]}"
     start_time = time.perf_counter()
     events: list[dict[str, Any]] = []
@@ -215,6 +255,31 @@ async def invoke(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="API key is not authorized for this project")
     if api_key.runtime_id and (runtime is None or api_key.runtime_id != runtime.id):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="API key is not authorized for this runtime")
+
+    access_role = "developer"
+    if runtime:
+        action_requires_write = False
+        if body.actions:
+            from app.services.actions.registry import ActionRegistry
+            for action_request in body.actions:
+                try:
+                    definitions = ActionRegistry.list_actions(action_request.provider)
+                except KeyError:
+                    definitions = []
+                definition = next((item for item in definitions if item.name == action_request.action), None)
+                if requires_action_confirmation(action_request.action, definition):
+                    action_requires_write = True
+                    break
+        try:
+            access_role, _ = authorize_runtime_request(
+                runtime,
+                current_user,
+                api_key_scopes=key_scopes,
+                requires_write=action_requires_write,
+                sources=body.context_sources or None,
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 
     project_environment = str((project.settings or {}).get("environment") or "").strip().lower()
     runtime_environment = str(runtime.environment if runtime else project_environment or "development").strip().lower()
@@ -287,6 +352,12 @@ async def invoke(
         events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Runtime Loaded", "runtime_id": None, "cached": False})
 
     status_val = runtime_data.get("status")
+    events.append({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "event": "Runtime Access Evaluated",
+        "role": access_role,
+        "policy_enabled": bool(runtime and isinstance(runtime.config, dict) and (runtime.config or {}).get("access_control")),
+    })
     if status_val is not None:
         norm_status = _normalize_runtime_status(status_val)
         if not _is_runtime_ready(status_val):
@@ -372,6 +443,21 @@ async def invoke(
         output_tokens=2048,
         requests=1,
     )
+    if runtime:
+        budget_ok, budget_code, budget_policy = await check_runtime_budget(
+            db, runtime, estimated_cost=estimated_cost
+        )
+        events.append({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "event": "Runtime Budget Checked",
+            "enabled": bool(budget_policy.get("enabled")),
+            "status": "allowed" if budget_ok else "blocked",
+        })
+        if not budget_ok:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS if budget_code == "request_rate_limit_exceeded" else status.HTTP_402_PAYMENT_REQUIRED,
+                detail={"code": budget_code, "message": "Runtime usage budget exceeded", "policy": budget_policy},
+            )
     if estimated_cost > Decimal("0"):
         if wallet.balance < estimated_cost:
             raise HTTPException(
@@ -391,7 +477,7 @@ async def invoke(
                 idempotency_key=billing_idempotency_key,
                 organization_id=current_user.organization_id,
                 project_id=project.id,
-                runtime_id=uuid.UUID(body.runtime_id) if body.runtime_id else None,
+                runtime_id=runtime.id if runtime else None,
                 api_key_id=getattr(request.state, "api_key_id", None),
                 resource_type="ai_inference",
                 metadata={"estimate": True, "model": model_name, "provider": provider_name},
@@ -403,7 +489,47 @@ async def invoke(
             )
 
     router_service = ModelRouter(uow)
+    source_context: dict[str, Any] | None = None
     messages = [{"role": "user", "content": body.input}]
+    tools = await uow.tools.get_by_project(str(project.id))
+    if body.context_sources:
+        requested_sources = {item.strip().lower() for item in body.context_sources if item.strip()}
+        selected_tools = []
+        for tool in tools:
+            connection = (tool.schema or {}).get("_zyntry_connection", {}) if isinstance(tool.schema, dict) else {}
+            connector = str(connection.get("connector") or "").strip().lower()
+            candidates = {connector, tool.name.strip().lower().replace(" ", "_")}
+            if requested_sources.intersection(candidates):
+                selected_tools.append(tool)
+        if not selected_tools:
+            raise HTTPException(status_code=404, detail={"code": "sources_not_connected", "sources": sorted(requested_sources)})
+        source_sets: list[SourceRecordSet] = []
+        for tool in selected_tools:
+            args = {"input": body.input, "project_id": str(project.id), "user_id": str(current_user.id)}
+            result = await _execute_tool(tool, args)
+            tool_calls.append(result)
+            connection = (tool.schema or {}).get("_zyntry_connection", {}) if isinstance(tool.schema, dict) else {}
+            source_name = str(connection.get("connector") or tool.name).strip().lower()
+            raw_result = result.get("result")
+            records = raw_result if isinstance(raw_result, list) else (raw_result.get("records", []) if isinstance(raw_result, dict) else [])
+            if not isinstance(records, list):
+                records = []
+            source_sets.append(SourceRecordSet(source=source_name, records=[item for item in records if isinstance(item, dict)]))
+            events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Source Retrieved", "source": source_name, "status": result.get("status")})
+        if body.join_on:
+            source_context = join_source_records(CrossSourceJoinRequest(sources=source_sets, join_on=body.join_on))
+        else:
+            source_context = {
+                "sources": [item.source for item in source_sets],
+                "records": [{"source": item.source, "records": item.records} for item in source_sets],
+                "matched_records": sum(len(item.records) for item in source_sets),
+                "join_on": None,
+            }
+        messages.insert(0, {
+            "role": "system",
+            "content": "Use the following connected internal source context first. Preserve source names and do not infer records that are not present.\n" + json.dumps(source_context, default=str),
+        })
+        events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Cross-Source Context Assembled", "sources": source_context.get("sources", []), "matched_records": source_context.get("matched_records", 0)})
     try:
         if automatic_routing:
             result_text, invoked_model, invoked_provider, last_error = await router_service._invoke_with_fallback(
@@ -431,8 +557,7 @@ async def invoke(
     if last_error:
         warnings.append({"code": "PROVIDER_FAILOVER", "message": last_error})
 
-    tools = await uow.tools.get_by_project(str(project.id))
-    if tools:
+    if tools and not body.context_sources:
         for tool in tools:
             args = {"input": body.input, "project_id": str(project.id), "user_id": str(current_user.id)}
             result = await _execute_tool(tool, args)
@@ -522,6 +647,8 @@ async def invoke(
             # Tool and action payloads are part of the JSON response too. Keep
             # their shape intact while masking any PII returned by a connector.
             tool_calls = redact_pii(tool_calls)
+            if source_context is not None:
+                source_context = redact_pii(source_context)
             action_results = [
                 ActionResponse.model_validate(redact_pii(item.model_dump()))
                 for item in action_results
@@ -556,7 +683,7 @@ async def invoke(
                 idempotency_key=billing_idempotency_key,
                 organization_id=current_user.organization_id,
                 project_id=project.id,
-                runtime_id=uuid.UUID(body.runtime_id) if body.runtime_id else None,
+                runtime_id=runtime.id if runtime else None,
                 api_key_id=getattr(request.state, "api_key_id", None),
                 resource_type="ai_inference",
                 metadata={"model": model_name, "provider": provider_name},
@@ -577,7 +704,7 @@ async def invoke(
             cost=actual_cost,
             project_id=project.id,
             organization_id=current_user.organization_id,
-            runtime_id=uuid.UUID(body.runtime_id) if body.runtime_id else None,
+            runtime_id=runtime.id if runtime else None,
             api_key_id=getattr(request.state, "api_key_id", None),
             request_id=request_id,
             input_tokens=len(body.input.split()),
@@ -642,4 +769,5 @@ async def invoke(
         estimated_cost=float(estimated_cost),
         actual_cost=float(actual_cost),
         remaining_balance=float(wallet.balance),
+        source_context=source_context,
     )

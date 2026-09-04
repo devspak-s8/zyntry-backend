@@ -17,10 +17,59 @@ from app.schemas.tools import (
     ToolCreate,
     ToolRead,
     ToolUpdate,
+    OpenAPIToolCreate,
+    DatabaseToolCreate,
 )
 from app.services.tools import ToolService
 
 router = APIRouter(prefix="/tools", tags=["tools"])
+
+
+def _tool_read(tool: dict) -> ToolRead:
+    return ToolRead(
+        id=tool["id"],
+        name=tool["name"],
+        description=tool.get("description"),
+        schema=tool.get("schema", {}),
+        implementation=tool.get("implementation"),
+        project_id=tool.get("project_id"),
+        created_at=tool.get("created_at", ""),
+        updated_at=tool.get("updated_at", ""),
+    )
+
+
+@router.post("/openapi", response_model=ToolRead, status_code=status.HTTP_201_CREATED)
+async def create_openapi_tool(
+    body: OpenAPIToolCreate,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_session),
+) -> ToolRead:
+    await require_project_membership(body.project_id, current_user, db)
+    try:
+        tool = await ToolService(UnitOfWork(db)).create_openapi_tool(
+            name=body.name, description=body.description, project_id=body.project_id,
+            server_url=body.server_url, spec=body.spec, read_only=body.read_only,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _tool_read(tool)
+
+
+@router.post("/database", response_model=ToolRead, status_code=status.HTTP_201_CREATED)
+async def create_database_tool(
+    body: DatabaseToolCreate,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_session),
+) -> ToolRead:
+    await require_project_membership(body.project_id, current_user, db)
+    try:
+        tool = await ToolService(UnitOfWork(db)).create_database_tool(
+            name=body.name, description=body.description, project_id=body.project_id,
+            database_type=body.database_type, schema=body.schema, read_only=body.read_only,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _tool_read(tool)
 
 
 @router.get("/catalog", response_model=list[ToolCatalogItem])
@@ -79,19 +128,7 @@ async def list_tools(
     uow = UnitOfWork(db)
     service = ToolService(uow)
     tools = await service.list_tools(project_id)
-    return [
-        ToolRead(
-            id=t["id"],
-            name=t["name"],
-            description=t.get("description"),
-            schema=t.get("schema", {}),
-            implementation=t.get("implementation"),
-            project_id=t.get("project_id"),
-            created_at=t.get("created_at", ""),
-            updated_at=t.get("created_at", ""),
-        )
-        for t in tools
-    ]
+    return [_tool_read(t) for t in tools]
 
 
 @router.post("", response_model=ToolRead, status_code=status.HTTP_201_CREATED)
@@ -104,16 +141,7 @@ async def create_tool(
     uow = UnitOfWork(db)
     service = ToolService(uow)
     tool = await service.create_tool(body)
-    return ToolRead(
-        id=tool["id"],
-        name=tool["name"],
-        description=tool.get("description"),
-        schema=tool.get("schema", {}),
-        implementation=tool.get("implementation"),
-        project_id=tool.get("project_id"),
-        created_at="",
-        updated_at="",
-    )
+    return _tool_read(tool)
 
 
 @router.patch("/{tool_id}", response_model=ToolRead)
@@ -130,16 +158,7 @@ async def update_tool(
     await require_project_membership(str(existing.project_id), current_user, db)
     service = ToolService(uow)
     tool = await service.update_tool(tool_id, body)
-    return ToolRead(
-        id=tool["id"],
-        name=tool["name"],
-        description=tool.get("description"),
-        schema=tool.get("schema", {}),
-        implementation=tool.get("implementation"),
-        project_id=None,
-        created_at="",
-        updated_at="",
-    )
+    return _tool_read(tool)
 
 
 @router.delete("/{tool_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -51,6 +51,10 @@ dev = [
     "mypy>=1.13.0",
     "pre-commit>=4.0.0",
 ]
+ocr = [
+    "Pillow>=10.0.0",
+    "pytesseract>=0.3.13",
+]
 
 [build-system]
 requires = ["setuptools>=78.1.1"]

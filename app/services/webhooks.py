@@ -90,6 +90,25 @@ class EventService(BaseService):
             data=data or {},
         )
         await self.uow.commit()
+        # Event-triggered workflows use the same durable Celery queue as
+        # schedules.  A workflow can opt in with
+        # {"triggers": [{"event": "github.issue.created"}]}.
+        if project_id is not None:
+            workflows = await self.uow.workflows.get_by_project(project_id)
+            for workflow in workflows:
+                triggers = (workflow.definition or {}).get("triggers") or []
+                if any(
+                    isinstance(trigger, dict)
+                    and trigger.get("enabled", True)
+                    and trigger.get("event") in {event_type, "*"}
+                    for trigger in triggers
+                ):
+                    try:
+                        from app.tasks.workflows import run_workflow
+                        run_workflow.delay(str(workflow.id), data or {})
+                    except Exception:
+                        # Queue outages must not roll back the event itself.
+                        continue
         return event
 
     async def list_by_project(self, project_id: uuid.UUID, limit: int = 50, offset: int = 0) -> list[Event]:

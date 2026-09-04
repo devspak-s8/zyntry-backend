@@ -82,6 +82,57 @@ class SchedulerService:
         await self.uow.commit()
         return {"triggered": triggered, "total": len(triggered)}
 
+    async def run_pending_workflows(self) -> dict:
+        """Queue due workflow schedules and advance their checkpoints.
+
+        The workflow definition remains the source of truth, which keeps this
+        addition backwards compatible with existing workflow rows.  A worker
+        executes read-only steps; mutating steps are reported as blocked until
+        a human approves them.
+        """
+        from app.models.workflows import Workflow
+
+        now = datetime.now(timezone.utc)
+        workflows = await self.uow.workflows.list_active()
+        queued = []
+        for workflow in workflows:
+            definition = dict(workflow.definition or {})
+            schedule = dict(definition.get("schedule") or {})
+            if not schedule.get("enabled") or not schedule.get("next_run_at"):
+                continue
+            try:
+                due_at = datetime.fromisoformat(str(schedule["next_run_at"]))
+            except ValueError:
+                continue
+            if due_at > now:
+                continue
+            from app.tasks.workflows import run_workflow
+            run_workflow.delay(str(workflow.id), schedule.get("input_data") or {})
+            schedule["last_run_at"] = now.isoformat()
+            schedule["next_run_at"] = self._calculate_next_workflow_run(schedule.get("cron"), now).isoformat()
+            definition["schedule"] = schedule
+            await self.uow.workflows.update(workflow, definition=definition)
+            queued.append({"workflow_id": str(workflow.id), "next_run_at": schedule["next_run_at"]})
+        await self.uow.commit()
+        return {"queued": queued, "total": len(queued)}
+
+    @staticmethod
+    def _calculate_next_workflow_run(cron: str | None, now: datetime) -> datetime:
+        """Support common five-field cron intervals without a new dependency."""
+        if cron:
+            parts = cron.split()
+            minute = parts[0] if parts else "*"
+            if minute.startswith("*/"):
+                try:
+                    return now + timedelta(minutes=max(1, int(minute[2:])))
+                except ValueError:
+                    pass
+            if minute == "0" and len(parts) > 1 and parts[1] == "*":
+                return now + timedelta(hours=1)
+            if minute == "0" and len(parts) > 2 and parts[2] == "*":
+                return now + timedelta(days=1)
+        return now + timedelta(hours=1)
+
     async def retry_failed(self, max_retries: int = 3) -> dict:
         from app.models.knowledge import SyncJob
 

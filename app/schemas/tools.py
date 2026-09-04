@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -12,6 +12,10 @@ class ToolCreate(BaseModel):
     schema: dict[str, Any] = Field(default_factory=dict)
     implementation: str | None = None
     project_id: str | None = None
+    kind: Literal["http", "openapi", "database", "connector"] = "http"
+    openapi_spec: dict[str, Any] | None = None
+    read_only: bool = True
+    database_type: str | None = None
 
 
 class ToolRead(BaseModel):
@@ -48,6 +52,24 @@ class ToolConnectRequest(BaseModel):
     display_name: str | None = Field(default=None, max_length=255)
     config: dict[str, Any] = Field(default_factory=dict)
     credentials: dict[str, Any] = Field(default_factory=dict)
+
+
+class OpenAPIToolCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    description: str | None = None
+    project_id: str
+    server_url: str = Field(min_length=1, max_length=2048)
+    spec: dict[str, Any] = Field(min_length=1)
+    read_only: bool = True
+
+
+class DatabaseToolCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    description: str | None = None
+    project_id: str
+    database_type: str = Field(min_length=1, max_length=64)
+    schema: dict[str, Any] = Field(default_factory=dict)
+    read_only: bool = True
 
 
 class ToolConnectionStatus(BaseModel):

@@ -31,6 +31,10 @@ celery_app.conf.update(
             "task": "app.tasks.scheduler.run_scheduled_syncs",
             "schedule": 300.0,
         },
+        "run-scheduled-workflows": {
+            "task": "app.tasks.scheduler.run_scheduled_workflows",
+            "schedule": 60.0,
+        },
         "generate-billing-summary": {
             "task": "app.tasks.billing.generate_billing_summary",
             "schedule": 86400.0,

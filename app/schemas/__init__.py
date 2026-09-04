@@ -48,6 +48,20 @@ from app.schemas.runtimes import (
     RuntimeUpdate,
 )
 from app.schemas.tools import ToolCreate, ToolRead
+from app.schemas.capabilities import (
+    CrossSourceJoinRequest,
+    CrossSourceJoinResponse,
+    EvaluationCase,
+    EvaluationRunRequest,
+    EvaluationRunResponse,
+    EvaluationSuiteRead,
+    EvaluationSuiteUpdate,
+    RuntimeAccessPolicy,
+    RuntimeAccessPolicyUpdate,
+    RuntimeBudgetPolicy,
+    RuntimeBudgetPolicyUpdate,
+    RuntimeCapabilitiesRead,
+)
 from app.schemas.billing import (
     AddCreditsRequest,
     BudgetCreate,
@@ -81,6 +95,9 @@ from app.schemas.workflows import (
     WorkflowUpdate,
     WorkflowValidateRequest,
     WorkflowValidationResult,
+    WorkflowSchedule,
+    WorkflowScheduleRead,
+    WorkflowScheduleUpdate,
 )
 from app.schemas.runtime_assistant import (
     ActionType,
@@ -201,4 +218,19 @@ __all__ = [
     "AssistantResponse",
     "AssistantChatRequest",
     "AssistantChatResponse",
+    "RuntimeAccessPolicy",
+    "RuntimeAccessPolicyUpdate",
+    "RuntimeBudgetPolicy",
+    "RuntimeBudgetPolicyUpdate",
+    "RuntimeCapabilitiesRead",
+    "CrossSourceJoinRequest",
+    "CrossSourceJoinResponse",
+    "EvaluationCase",
+    "EvaluationSuiteRead",
+    "EvaluationSuiteUpdate",
+    "EvaluationRunRequest",
+    "EvaluationRunResponse",
+    "WorkflowSchedule",
+    "WorkflowScheduleRead",
+    "WorkflowScheduleUpdate",
 ]

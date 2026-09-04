@@ -24,11 +24,41 @@ from app.schemas.workflows import (
     WorkflowUpdate,
     WorkflowValidateRequest,
     WorkflowValidationResult,
+    WorkflowScheduleRead,
+    WorkflowScheduleUpdate,
 )
 from app.models.workflows import Workflow, WorkflowExecution
 from app.models.projects import Project
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
+
+
+def _schedule_from_workflow(workflow: Workflow) -> WorkflowScheduleRead:
+    schedule = (workflow.definition or {}).get("schedule") or {}
+    def _parse(value):
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value)
+        except (TypeError, ValueError):
+            return None
+    return WorkflowScheduleRead(
+        workflow_id=workflow.id,
+        enabled=bool(schedule.get("enabled", False)),
+        cron=schedule.get("cron"),
+        timezone=schedule.get("timezone", "UTC"),
+        input_data=schedule.get("input_data") or {},
+        next_run_at=_parse(schedule.get("next_run_at")),
+        last_run_at=_parse(schedule.get("last_run_at")),
+    )
+
+
+def _validate_cron(cron: str | None) -> None:
+    if not cron:
+        return
+    parts = cron.split()
+    if len(parts) != 5 or any(not part or len(part) > 32 for part in parts):
+        raise HTTPException(status_code=422, detail="cron must be a five-field expression")
 
 
 @router.get("", response_model=list[WorkflowRead])
@@ -75,10 +105,14 @@ async def create_workflow(
 ) -> WorkflowRead:
     await require_project_membership(str(body.project_id), current_user, db)
     uow = UnitOfWork(db)
+    definition = dict(body.definition or {})
+    metadata = dict(definition.get("_zyntry_metadata") or {})
+    metadata.setdefault("created_by", str(current_user.id))
+    definition["_zyntry_metadata"] = metadata
     workflow = await uow.workflows.create(
         name=body.name,
         description=body.description,
-        definition=body.definition,
+        definition=definition,
         project_id=body.project_id,
         status="draft",
     )
@@ -93,6 +127,27 @@ async def create_workflow(
         created_at=workflow.created_at,
         updated_at=workflow.updated_at,
     )
+
+
+@router.get("/schedules", response_model=list[WorkflowScheduleRead])
+async def list_workflow_schedules(
+    project_id: str | None = Query(default=None),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+    db: AsyncSession = Depends(get_session),
+) -> list[WorkflowScheduleRead]:
+    uow = UnitOfWork(db)
+    if project_id:
+        await require_project_membership(project_id, current_user, db)
+        workflows = await uow.workflows.get_by_project(uuid.UUID(project_id))
+    else:
+        result = await db.execute(
+            select(Workflow).join(Project, Project.id == Workflow.project_id).where(
+                Project.organization_id == current_user.organization_id,
+                Workflow.status != "archived",
+            )
+        )
+        workflows = list(result.scalars().all())
+    return [_schedule_from_workflow(workflow) for workflow in workflows if ((workflow.definition or {}).get("schedule") or {}).get("enabled")]
 
 
 @router.get("/{workflow_id}", response_model=WorkflowRead)
@@ -139,6 +194,14 @@ async def update_workflow(
         raise HTTPException(status_code=404, detail="Workflow not found")
     await require_project_membership(str(workflow.project_id), current_user, db)
     update_data = body.model_dump(exclude_unset=True)
+    if "definition" in update_data and isinstance(update_data["definition"], dict):
+        updated_definition = dict(update_data["definition"])
+        previous_metadata = (workflow.definition or {}).get("_zyntry_metadata") or {}
+        current_metadata = dict(updated_definition.get("_zyntry_metadata") or {})
+        if previous_metadata.get("created_by"):
+            current_metadata.setdefault("created_by", previous_metadata["created_by"])
+        updated_definition["_zyntry_metadata"] = current_metadata
+        update_data["definition"] = updated_definition
     updated = await uow.workflows.update(workflow, **update_data)
     await uow.commit()
     return WorkflowRead(
@@ -192,10 +255,45 @@ async def run_workflow(
     await uow.commit()
     try:
         steps = workflow.definition.get("sequence", [])
+        context = dict(body.input_data or {})
+        blocked: list[str] = []
+        confirmation_ids: list[str] = []
+        completed = 0
+        from app.services.actions.guardrails import requires_action_confirmation
+        from app.services.actions.registry import ActionRegistry
+        from app.services.actions.confirmations import ConfirmationService
         for step in steps:
-            pass
-        execution.status = "completed"
-        execution.output_data = {"result": "Workflow executed successfully", "steps_completed": len(steps)}
+            provider, action = step.get("provider"), step.get("action")
+            if not provider or not action:
+                completed += 1
+                continue
+            try:
+                definition = next((item for item in ActionRegistry.list_actions(provider) if item.name == action), None)
+            except KeyError:
+                definition = None
+            if requires_action_confirmation(action, definition):
+                blocked.append(f"{provider}.{action}")
+                confirmation = await ConfirmationService(uow).request(
+                    user_id=current_user.id,
+                    project_id=workflow.project_id,
+                    provider=provider,
+                    action=action,
+                    arguments=step.get("arguments") or {},
+                    risk="high" if any(item in action.lower() for item in ("delete", "remove", "archive")) else "medium",
+                )
+                confirmation_ids.append(str(confirmation.id))
+                continue
+            result = await ActionRegistry.execute(
+                provider,
+                action,
+                step.get("arguments") or {},
+                {"user_id": str(current_user.id), "project_id": str(workflow.project_id), "confirmed": False},
+                uow=uow,
+            )
+            context[action] = result
+            completed += 1
+        execution.status = "completed" if not blocked else "blocked"
+        execution.output_data = {"result": "Workflow executed successfully", "steps_completed": completed, "blocked_actions": blocked, "confirmation_ids": confirmation_ids, "context": context}
     except Exception as exc:
         execution.status = "failed"
         execution.error_message = str(exc)
@@ -211,6 +309,78 @@ async def run_workflow(
         duration_ms=execution.duration_ms,
         created_at=execution.created_at,
     )
+
+
+@router.get("/{workflow_id}/schedule", response_model=WorkflowScheduleRead)
+async def get_workflow_schedule(
+    workflow_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+    db: AsyncSession = Depends(get_session),
+) -> WorkflowScheduleRead:
+    try:
+        wid = uuid.UUID(workflow_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid workflow id") from exc
+    workflow = await UnitOfWork(db).workflows.get(wid)
+    if not workflow:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    await require_project_membership(str(workflow.project_id), current_user, db)
+    return _schedule_from_workflow(workflow)
+
+
+@router.put("/{workflow_id}/schedule", response_model=WorkflowScheduleRead)
+async def update_workflow_schedule(
+    workflow_id: str,
+    body: WorkflowScheduleUpdate,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+    db: AsyncSession = Depends(get_session),
+) -> WorkflowScheduleRead:
+    try:
+        wid = uuid.UUID(workflow_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid workflow id") from exc
+    workflow = await UnitOfWork(db).workflows.get(wid)
+    if not workflow:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    await require_project_membership(str(workflow.project_id), current_user, db)
+    _validate_cron(body.cron)
+    definition = dict(workflow.definition or {})
+    schedule = body.model_dump()
+    schedule["next_run_at"] = datetime.now(timezone.utc).isoformat() if body.enabled else None
+    schedule["last_run_at"] = None
+    definition["schedule"] = schedule
+    updated = await UnitOfWork(db).workflows.update(workflow, definition=definition)
+    await db.commit()
+    return _schedule_from_workflow(updated)
+
+
+@router.delete("/{workflow_id}/schedule", response_model=WorkflowScheduleRead)
+async def disable_workflow_schedule(
+    workflow_id: str,
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+    db: AsyncSession = Depends(get_session),
+) -> WorkflowScheduleRead:
+    try:
+        wid = uuid.UUID(workflow_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid workflow id") from exc
+    workflow = await UnitOfWork(db).workflows.get(wid)
+    if not workflow:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    await require_project_membership(str(workflow.project_id), current_user, db)
+    definition = dict(workflow.definition or {})
+    previous = definition.get("schedule") or {}
+    definition["schedule"] = {
+        "enabled": False,
+        "cron": None,
+        "timezone": previous.get("timezone", "UTC"),
+        "input_data": {},
+        "next_run_at": None,
+        "last_run_at": previous.get("last_run_at"),
+    }
+    updated = await UnitOfWork(db).workflows.update(workflow, definition=definition)
+    await db.commit()
+    return _schedule_from_workflow(updated)
 
 
 @router.post("/validate", response_model=WorkflowValidationResult)

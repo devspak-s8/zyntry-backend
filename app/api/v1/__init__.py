@@ -28,6 +28,7 @@ from app.api.v1.projects.router import router as projects_router
 from app.api.v1.providers.router import router as providers_router
 from app.api.v1.router.router import router as router_router
 from app.api.v1.runtime_assistant.router import router as runtime_assistant_router
+from app.api.v1.runtime_capabilities import router as runtime_capabilities_router
 from app.api.v1.runtimes.router import router as runtimes_router
 from app.api.v1.tools.router import router as tools_router
 from app.api.v1.users.router import router as users_router
@@ -41,6 +42,10 @@ api_router.include_router(organizations_router)
 api_router.include_router(projects_router)
 api_router.include_router(
     runtimes_router, dependencies=[Depends(require_feature("runtime_management"))]
+)
+api_router.include_router(
+    runtime_capabilities_router,
+    dependencies=[Depends(require_feature("runtime_management"))],
 )
 api_router.include_router(onboarding_router)
 api_router.include_router(integrations_router)

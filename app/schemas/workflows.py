@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -70,3 +71,20 @@ class WorkflowTestResult(BaseModel):
     output: dict | None
     error: str | None
     duration_ms: int
+
+
+class WorkflowSchedule(BaseModel):
+    enabled: bool = False
+    cron: str | None = Field(default=None, max_length=128)
+    timezone: str = "UTC"
+    input_data: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkflowScheduleUpdate(WorkflowSchedule):
+    pass
+
+
+class WorkflowScheduleRead(WorkflowSchedule):
+    workflow_id: uuid.UUID
+    next_run_at: datetime | None = None
+    last_run_at: datetime | None = None

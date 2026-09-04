@@ -22,6 +22,7 @@ from app.schemas.rag import RAGQuery, RAGResponse
 from app.services.billing import BillingService
 from app.services.guardrails import GuardrailService
 from app.services.rag import RAGPipeline
+from app.services.runtime_capabilities import authorize_runtime_request, check_runtime_budget
 
 router = APIRouter()
 guardrail_service = GuardrailService()
@@ -67,10 +68,15 @@ async def chat_completions(
     if not project_id:
         raise HTTPException(status_code=400, detail="project_id is required for RAG")
     project = await require_project_membership(project_id, current_user, db)
+    runtime = None
     if body.runtime_id:
         runtime = await require_runtime_access(body.runtime_id, current_user, db)
         if runtime.project_id != project.id:
             raise HTTPException(status_code=404, detail="Runtime not found for this project")
+        try:
+            authorize_runtime_request(runtime, current_user)
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     input_violations = guardrail_service.validate_input(question, body.json_schema)
     if input_violations:
@@ -103,6 +109,15 @@ async def chat_completions(
         vector_searches=max(1, body.top_k),
         requests=1,
     )
+    if runtime:
+        budget_ok, budget_code, budget_policy = await check_runtime_budget(
+            db, runtime, estimated_cost=estimated_cost
+        )
+        if not budget_ok:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS if budget_code == "request_rate_limit_exceeded" else status.HTTP_402_PAYMENT_REQUIRED,
+                detail={"code": budget_code, "message": "Runtime usage budget exceeded", "policy": budget_policy},
+            )
 
     wallet = await billing_service.get_wallet(current_user.id)
     if wallet.status != "active" or wallet.balance < estimated_cost:

@@ -16,6 +16,7 @@ from app.services.extractors import (
     TxtExtractor,
 )
 from app.schemas.documents import ExtractedDocument
+from app.services.ocr import extract_image
 
 
 class ExtractionService:
@@ -51,12 +52,17 @@ class ExtractionService:
         "application/xml": HtmlExtractor,
         "text/xml": HtmlExtractor,
     }
+    IMAGE_MIME_TYPES = {"image/png", "image/jpeg", "image/jpg", "image/tiff", "image/webp", "image/bmp"}
+    IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp", ".bmp"}
 
     def extract(self, file_bytes: bytes, filename: str, content_type: str) -> ExtractedDocument:
         if not file_bytes:
             raise ValueError("File bytes are empty")
 
         ext = PurePosixPath(filename).suffix.lower()
+        mime = (content_type or "").split(";")[0].strip().lower()
+        if ext in self.IMAGE_EXTENSIONS or mime in self.IMAGE_MIME_TYPES:
+            return extract_image(file_bytes, filename, content_type)
         extractor_class = self._resolve(ext, content_type)
         extractor = extractor_class()
         return extractor.extract(file_bytes, filename, content_type)
