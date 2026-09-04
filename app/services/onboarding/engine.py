@@ -602,6 +602,28 @@ class OnboardingEngine:
             *ai_resp.suggested_actions,
         ]))[:8]
 
+    def _runtime_name_from_messages(self, messages: list[dict[str, Any]] | None) -> str | None:
+        """Recover a name from an earlier user turn in an existing session.
+
+        Sessions created before the name-extraction fix may already contain a
+        use-case-derived name in their configuration. Inspecting the stored
+        user messages lets completion repair that draft without requiring the
+        user to start over.
+        """
+        extractor = getattr(self.model_provider, "_extract_runtime_name", None)
+        if not callable(extractor):
+            return None
+        for item in reversed(messages or []):
+            if item.get("role") != "user":
+                continue
+            content = item.get("content")
+            if not isinstance(content, str):
+                continue
+            name = extractor(content)
+            if name:
+                return name
+        return None
+
     def _authorize_and_transition(
         self,
         current_state: str,
@@ -802,6 +824,18 @@ class OnboardingEngine:
         if session.state == "completed":
             config = session.configuration or {}
             original_config = config
+            recovered_name = self._runtime_name_from_messages(session.messages)
+            configured_name = config.get("runtime_name")
+            requested_name = (req.runtime_name or "").strip()
+            fallback_name = (
+                f"{config.get('use_case', 'AI App').replace('_', ' ').title()} Runtime"
+            )
+            if recovered_name and (
+                not requested_name
+                or requested_name.casefold()
+                in {str(configured_name or '').casefold(), fallback_name.casefold()}
+            ):
+                config = {**config, "runtime_name": recovered_name}
             existing_policies = config.get("integration_policies", [])
             document_resource_slugs = {
                 "pdf", "docx", "txt", "csv", "markdown", "html", "json", "document_storage"
@@ -834,7 +868,15 @@ class OnboardingEngine:
             return OnboardingCompleteResponse(
                 session_id=str(session.id),
                 runtime_id=None,
-                runtime_name=req.runtime_name or config.get("runtime_name", "AI App Runtime"),
+                runtime_name=(
+                    recovered_name
+                    if recovered_name and (
+                        not requested_name
+                        or requested_name.casefold()
+                        in {str(configured_name or '').casefold(), fallback_name.casefold()}
+                    )
+                    else requested_name or config.get("runtime_name", "AI App Runtime")
+                ),
                 environment=req.environment or config.get("environment", "development"),
                 status="draft",
                 enabled_integrations=normalized_policies,
@@ -844,7 +886,18 @@ class OnboardingEngine:
             )
 
         config = session.configuration or {}
-        runtime_name = req.runtime_name or config.get("runtime_name") or f"{config.get('use_case', 'AI App').replace('_', ' ').title()} Runtime"
+        recovered_name = self._runtime_name_from_messages(session.messages)
+        configured_name = config.get("runtime_name")
+        fallback_name = f"{config.get('use_case', 'AI App').replace('_', ' ').title()} Runtime"
+        requested_name = (req.runtime_name or "").strip()
+        if recovered_name and (
+            not requested_name
+            or requested_name.casefold()
+            in {str(configured_name or '').casefold(), fallback_name.casefold()}
+        ):
+            runtime_name = recovered_name
+        else:
+            runtime_name = requested_name or configured_name or fallback_name
         env = req.environment or config.get("environment", "development")
 
         config = {**config, "runtime_name": runtime_name, "environment": env}
