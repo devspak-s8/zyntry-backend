@@ -13,6 +13,7 @@ from app.schemas.onboarding_chat import (
 )
 from app.services.apikeys import ApiKeyService
 from app.services.onboarding import OnboardingService
+from app.services.onboarding.engine import OnboardingNameMismatchError
 
 
 @pytest.mark.asyncio
@@ -172,6 +173,48 @@ async def test_initial_prompt_preserves_explicit_runtime_name(
     )
 
     assert session["configuration"]["runtime_name"] == "LearnFlow Student Success Assistant"
+
+
+@pytest.mark.asyncio
+async def test_completion_requires_review_when_submitted_name_differs(
+    db_session: AsyncSession,
+) -> None:
+    uow = UnitOfWork(db_session)
+    onboarding = OnboardingService(uow)
+    user = await uow.users.create(
+        email="name_review@zyntry.space",
+        name="Name Review User",
+        is_active=True,
+    )
+    await uow.commit()
+    session = await onboarding.create_chat_session(
+        user_id=user.id,
+        initial_prompt=(
+            "Create a runtime named LearnFlow Student Success Assistant. "
+            "It will support courses."
+        ),
+    )
+
+    with pytest.raises(OnboardingNameMismatchError) as exc_info:
+        await onboarding.complete_chat_onboarding(
+            user.id,
+            OnboardingCompleteRequest(
+                session_id=session["id"],
+                runtime_name="Different Runtime",
+            ),
+        )
+    assert exc_info.value.saved_name == "LearnFlow Student Success Assistant"
+    assert exc_info.value.requested_name == "Different Runtime"
+
+    reviewed = await onboarding.complete_chat_onboarding(
+        user.id,
+        OnboardingCompleteRequest(
+            session_id=session["id"],
+            runtime_name="Different Runtime",
+            name_reviewed=True,
+        ),
+    )
+    assert reviewed.runtime_name == "Different Runtime"
 
 
 @pytest.mark.asyncio

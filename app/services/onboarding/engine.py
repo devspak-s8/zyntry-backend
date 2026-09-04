@@ -45,6 +45,29 @@ VALID_STATES = [
 ]
 
 
+class OnboardingNameMismatchError(ValueError):
+    """The draft name and submitted name differ and require review."""
+
+    code = "onboarding_name_mismatch"
+
+    def __init__(self, saved_name: str, requested_name: str) -> None:
+        self.saved_name = saved_name
+        self.requested_name = requested_name
+        super().__init__(
+            f"The onboarding draft is named '{saved_name}', but the requested "
+            f"runtime name is '{requested_name}'. Review the name before proceeding."
+        )
+
+    def as_detail(self) -> dict[str, Any]:
+        return {
+            "code": self.code,
+            "message": str(self),
+            "review_required": True,
+            "saved_name": self.saved_name,
+            "requested_name": self.requested_name,
+        }
+
+
 class OnboardingEngine:
     def __init__(
         self,
@@ -846,6 +869,14 @@ class OnboardingEngine:
             recovered_name = self._runtime_name_from_messages(session.messages)
             configured_name = config.get("runtime_name")
             requested_name = (req.runtime_name or "").strip()
+            saved_name = str(recovered_name or configured_name or "").strip()
+            if (
+                requested_name
+                and saved_name
+                and requested_name.casefold() != saved_name.casefold()
+                and not req.name_reviewed
+            ):
+                raise OnboardingNameMismatchError(saved_name, requested_name)
             fallback_name = (
                 f"{config.get('use_case', 'AI App').replace('_', ' ').title()} Runtime"
             )
@@ -855,6 +886,11 @@ class OnboardingEngine:
                 in {str(configured_name or '').casefold(), fallback_name.casefold()}
             ):
                 config = {**config, "runtime_name": recovered_name}
+            elif requested_name and req.name_reviewed:
+                # The user explicitly reviewed and chose a different name;
+                # persist that choice so a later retry does not reopen the
+                # same mismatch dialog.
+                config = {**config, "runtime_name": requested_name}
             existing_policies = config.get("integration_policies", [])
             document_resource_slugs = {
                 "pdf", "docx", "txt", "csv", "markdown", "html", "json", "document_storage"
@@ -909,6 +945,14 @@ class OnboardingEngine:
         configured_name = config.get("runtime_name")
         fallback_name = f"{config.get('use_case', 'AI App').replace('_', ' ').title()} Runtime"
         requested_name = (req.runtime_name or "").strip()
+        saved_name = str(recovered_name or configured_name or "").strip()
+        if (
+            requested_name
+            and saved_name
+            and requested_name.casefold() != saved_name.casefold()
+            and not req.name_reviewed
+        ):
+            raise OnboardingNameMismatchError(saved_name, requested_name)
         if recovered_name and (
             not requested_name
             or requested_name.casefold()

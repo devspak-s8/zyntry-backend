@@ -36,6 +36,8 @@ from app.schemas.runtimes import (
     RuntimeBuildChunkRead,
     RuntimeBuildLogRead,
     RuntimeCreate,
+    RuntimeNameCheckRequest,
+    RuntimeNameCheckResponse,
     RuntimeHealthResponse,
     RuntimeRead,
     RuntimeTopologyEdge,
@@ -50,7 +52,7 @@ from app.schemas.runtimes import (
 from app.services.apikeys import ApiKeyService
 from app.services.health import HealthService
 from app.services.integrations.service import IntegrationService
-from app.services.runtimes import RuntimeService
+from app.services.runtimes import RuntimeCreationConflict, RuntimeService
 from app.services.security.secrets import default_secret_manager
 from app.services.runtime_security import (
     RuntimeSecurityService,
@@ -97,6 +99,20 @@ async def list_runtimes(
     return [RuntimeRead(**runtime) for runtime in unique.values()]
 
 
+@router.post("/name-check", response_model=RuntimeNameCheckResponse)
+async def check_runtime_name(
+    body: RuntimeNameCheckRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_session),
+) -> RuntimeNameCheckResponse:
+    """Check a runtime name and project binding without creating anything."""
+    if body.project_id is not None:
+        await require_project_membership(str(body.project_id), current_user, db)
+    service = RuntimeService(UnitOfWork(db))
+    result = await service.inspect_name(current_user.id, body.name, body.project_id)
+    return RuntimeNameCheckResponse(**result)
+
+
 @router.post("", response_model=RuntimeRead, status_code=status.HTTP_201_CREATED)
 async def create_runtime(
     body: RuntimeCreate,
@@ -115,6 +131,8 @@ async def create_runtime(
     service = RuntimeService(uow)
     try:
         runtime = await service.get_or_create(body, default_user_id=current_user.id)
+    except RuntimeCreationConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.as_detail()) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return RuntimeRead(**runtime)

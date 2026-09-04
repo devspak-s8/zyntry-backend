@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.runtimes import Runtime, RuntimeBuildChunk, RuntimeBuildLog
@@ -29,7 +29,13 @@ class RuntimeRepository:
 
     async def get_by_owner_and_name(self, user_id: UUID, name: str) -> Runtime | None:
         result = await self.session.execute(
-            select(Runtime).where(Runtime.user_id == user_id, Runtime.name.ilike(name))
+            # Names are compared case-insensitively, but as literal values.
+            # Using ``ilike(name)`` would treat '%' and '_' in a user-entered
+            # name as wildcards and could report the wrong runtime as a match.
+            select(Runtime).where(
+                Runtime.user_id == user_id,
+                func.lower(Runtime.name) == name.strip().lower(),
+            )
         )
         return result.scalars().first()
 

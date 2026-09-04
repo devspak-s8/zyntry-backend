@@ -27,6 +27,20 @@ class RuntimeCreate(ORMModel):
     config: dict = Field(default_factory=dict)
 
 
+class RuntimeNameCheckRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    project_id: uuid.UUID | None = None
+
+
+class RuntimeNameCheckResponse(BaseModel):
+    available: bool
+    requested_name: str
+    conflict_code: str | None = None
+    existing_runtime_id: uuid.UUID | None = None
+    existing_runtime_name: str | None = None
+    message: str
+
+
 class RuntimeUpdate(ORMModel):
     project_id: uuid.UUID | None = None
     name: str | None = Field(default=None, min_length=1, max_length=255)

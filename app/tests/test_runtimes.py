@@ -4,8 +4,10 @@ from types import SimpleNamespace
 import pytest
 from unittest.mock import AsyncMock, Mock
 
-from app.services.runtimes import RuntimeService
+from app.services.runtimes import RuntimeCreationConflict, RuntimeService
 from app.services.health import HealthService
+from app.schemas.runtimes import RuntimeCreate
+from app.repositories import UnitOfWork
 
 
 class FakeRuntimeRepo:
@@ -95,3 +97,23 @@ async def test_runtime_health_contains_response_contract_fields():
     assert health["version"] == "1"
     assert health["documents"] == 2
     assert health["errors"] == 0
+
+
+@pytest.mark.asyncio
+async def test_runtime_name_check_reports_duplicate_for_user(db_session):
+    uow = UnitOfWork(db_session)
+    user = await uow.users.create(email="duplicate_name@zyntry.space", name="Duplicate")
+    await uow.runtimes.create(user_id=user.id, name="Atlas Runtime")
+    await uow.commit()
+
+    service = RuntimeService(uow)
+    result = await service.inspect_name(user.id, " atlas runtime ")
+
+    assert result["available"] is False
+    assert result["conflict_code"] == "runtime_name_already_exists"
+    assert result["existing_runtime_name"] == "Atlas Runtime"
+    with pytest.raises(RuntimeCreationConflict):
+        await service.get_or_create(
+            RuntimeCreate(name="Atlas Runtime"),
+            default_user_id=user.id,
+        )

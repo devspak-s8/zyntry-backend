@@ -59,6 +59,10 @@ class OnboardingCompleteRequest(BaseModel):
     runtime_name: str | None = None
     environment: str = "development"
     integration_modes: dict[str, str] = Field(default_factory=dict)
+    # A name conflict/mismatch is intentionally a two-step operation. The
+    # first completion request returns a reviewable 409; the client must send
+    # this acknowledgement after the user chooses the name to keep.
+    name_reviewed: bool = False
 
 
 class OnboardingCompleteResponse(BaseModel):

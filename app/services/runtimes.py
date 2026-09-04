@@ -47,9 +47,86 @@ RUNTIME_STAGES = [
 ]
 
 
+class RuntimeCreationConflict(ValueError):
+    """A runtime name or project binding needs user review before creation."""
+
+    def __init__(self, code: str, message: str, existing_runtime: Any) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.existing_runtime_id = str(existing_runtime.id)
+        self.existing_runtime_name = existing_runtime.name
+
+    def as_detail(self) -> dict[str, Any]:
+        return {
+            "code": self.code,
+            "message": self.message,
+            "review_required": True,
+            "existing_runtime_id": self.existing_runtime_id,
+            "existing_runtime_name": self.existing_runtime_name,
+        }
+
+
 class RuntimeService:
     def __init__(self, uow: UnitOfWork) -> None:
         self.uow = uow
+
+    async def inspect_name(
+        self,
+        owner_id: uuid.UUID,
+        name: str,
+        project_id: uuid.UUID | None = None,
+    ) -> dict[str, Any]:
+        """Return a non-mutating name/binding check for review UIs."""
+        runtime_name = (name or "").strip()
+        if not runtime_name:
+            return {
+                "available": False,
+                "requested_name": runtime_name,
+                "conflict_code": "runtime_name_required",
+                "existing_runtime_id": None,
+                "existing_runtime_name": None,
+                "message": "Runtime name cannot be empty.",
+            }
+
+        duplicate = await self.uow.runtimes.get_by_owner_and_name(owner_id, runtime_name)
+        if duplicate:
+            return {
+                "available": False,
+                "requested_name": runtime_name,
+                "conflict_code": "runtime_name_already_exists",
+                "existing_runtime_id": duplicate.id,
+                "existing_runtime_name": duplicate.name,
+                "message": (
+                    f"A runtime named '{duplicate.name}' already exists. "
+                    "Review the existing runtime before proceeding."
+                ),
+            }
+
+        if project_id:
+            project_runtime = await self.uow.runtimes.get_by_project(project_id)
+            if project_runtime:
+                return {
+                    "available": False,
+                    "requested_name": runtime_name,
+                    "conflict_code": "project_runtime_name_mismatch",
+                    "existing_runtime_id": project_runtime.id,
+                    "existing_runtime_name": project_runtime.name,
+                    "message": (
+                        f"Project already has the runtime '{project_runtime.name}'. "
+                        f"The requested name '{runtime_name}' does not match. "
+                        "Review the project binding before proceeding."
+                    ),
+                }
+
+        return {
+            "available": True,
+            "requested_name": runtime_name,
+            "conflict_code": None,
+            "existing_runtime_id": None,
+            "existing_runtime_name": None,
+            "message": "Runtime name is available.",
+        }
 
     async def get_or_create(
         self, data: RuntimeCreate, default_user_id: uuid.UUID | None = None
@@ -63,12 +140,29 @@ class RuntimeService:
             raise ValueError("Runtime name cannot be empty")
         duplicate = await self.uow.runtimes.get_by_owner_and_name(owner_id, runtime_name)
         if duplicate:
-            raise ValueError(f"A runtime named '{runtime_name}' already exists")
+            raise RuntimeCreationConflict(
+                "runtime_name_already_exists",
+                (
+                    f"A runtime named '{duplicate.name}' already exists. "
+                    "Review the existing runtime before proceeding."
+                ),
+                duplicate,
+            )
 
         if data.project_id:
             existing = await self.uow.runtimes.get_by_project(data.project_id)
             if existing:
-                return self._to_read(existing)
+                if existing.name.casefold() == runtime_name.casefold():
+                    return self._to_read(existing)
+                raise RuntimeCreationConflict(
+                    "project_runtime_name_mismatch",
+                    (
+                        f"Project already has the runtime '{existing.name}'. "
+                        f"The requested name '{runtime_name}' does not match. "
+                        "Review the project binding before proceeding."
+                    ),
+                    existing,
+                )
 
         runtime = await self.uow.runtimes.create(
             user_id=owner_id,
