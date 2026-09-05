@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.api.v1.logs.router import list_logs
+from app.api.v1.runtimes.router import _runtime_integration_ui_config
 from app.services.runtime_assistant.planner import RuntimeAssistantPlanner
 from app.services.runtime_assistant.schemas import RuntimeContext, UserRole
 from app.services.runtime_assistant.service import _get_available_tools
@@ -42,3 +43,18 @@ def test_runtime_assistant_tools_remain_typed_for_planner() -> None:
     )
     planner = RuntimeAssistantPlanner(context=context, available_tools=tools)
     assert planner.tool_map
+
+
+def test_runtime_integration_ui_config_uses_registry_auth_metadata() -> None:
+    """A stale planner policy must not make an OAuth connector ask for a token."""
+    item = SimpleNamespace(
+        integration_slug="github",
+        config={"setup_kind": "credentials", "auth_type": "api_key", "display_name": "Company GitHub"},
+    )
+
+    config = _runtime_integration_ui_config(item)
+
+    assert config["setup_kind"] == "oauth"
+    assert "oauth2" in config["auth_methods"]
+    assert config["supports_end_user_oauth"] is True
+    assert config["display_name"] == "Company GitHub"

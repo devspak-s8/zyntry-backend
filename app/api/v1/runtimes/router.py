@@ -52,6 +52,7 @@ from app.schemas.runtimes import (
 from app.services.apikeys import ApiKeyService
 from app.services.health import HealthService
 from app.services.integrations.service import IntegrationService
+from app.services.integrations.definitions import integration_registry
 from app.services.runtimes import RuntimeCreationConflict, RuntimeService
 from app.services.security.secrets import default_secret_manager
 from app.services.runtime_security import (
@@ -67,6 +68,52 @@ runtime_security_service = RuntimeSecurityService()
 
 def _safe_integration_config(value: dict | None) -> dict:
     return default_secret_manager.redact(value or {})
+
+
+def _runtime_integration_ui_config(item: RuntimeIntegration) -> dict:
+    """Expose non-secret connection metadata needed by setup UIs.
+
+    Runtime integration rows intentionally store only the selected policy. The
+    auth/setup metadata lives in the canonical integration registry, so merge
+    it into the response without persisting it on the runtime row. This keeps
+    the project wizard from guessing that an OAuth connector needs a token
+    input (or that every database is PostgreSQL).
+    """
+    config = _safe_integration_config(item.config)
+    definition = integration_registry.get(item.integration_slug)
+    if definition is None:
+        return config
+
+    definition_data = definition.to_dict()
+    auth_methods = [str(method).lower() for method in definition.auth_methods]
+    if "file_upload" in auth_methods:
+        setup_kind = "document_upload"
+    elif "public_url" in auth_methods:
+        setup_kind = "web_crawler"
+    elif definition.category in {"databases", "geospatial"}:
+        setup_kind = "database"
+    elif "mcp_config" in auth_methods or "stdio" in auth_methods or "sse" in auth_methods:
+        setup_kind = "mcp"
+    elif "oauth2" in auth_methods:
+        setup_kind = "oauth"
+    else:
+        setup_kind = "credentials"
+
+    # The registry is authoritative for how a connector is set up. Runtime
+    # policy config may contain display names and connection requirements, but
+    # stale planner output must not turn an OAuth connector into a token form
+    # (or make a database look like PostgreSQL). Secret values are already
+    # redacted before this metadata is merged.
+    config["setup_kind"] = setup_kind
+    config["auth_methods"] = definition_data.get("auth_methods", auth_methods)
+    config["auth_type"] = "oauth2" if "oauth2" in auth_methods else auth_methods[0] if auth_methods else "credentials"
+    config["connection_modes"] = definition.connection_modes
+    config["supports_end_user_oauth"] = definition.supports_end_user_oauth
+    config["supports_zyntry_managed"] = definition.supports_zyntry_managed
+    config["configuration_schema"] = definition_data.get("configuration_schema", {})
+    config["credential_requirements"] = definition.credential_requirements
+    config["required_scopes"] = definition.scopes
+    return config
 
 
 @router.get("", response_model=list[RuntimeRead])
@@ -297,7 +344,7 @@ async def list_runtime_integrations(
             connection_required=i.connection_required,
             connection_status=i.connection_status,
             connection_id=i.connection_id,
-            config=_safe_integration_config(i.config),
+            config=_runtime_integration_ui_config(i),
             created_at=i.created_at,
             updated_at=i.updated_at,
         )
@@ -333,7 +380,7 @@ async def enable_runtime_integration(
             connection_required=item.connection_required,
             connection_status=item.connection_status,
             connection_id=item.connection_id,
-            config=_safe_integration_config(item.config),
+            config=_runtime_integration_ui_config(item),
             created_at=item.created_at,
             updated_at=item.updated_at,
         )
@@ -369,7 +416,7 @@ async def update_runtime_integration(
             connection_required=item.connection_required,
             connection_status=item.connection_status,
             connection_id=item.connection_id,
-            config=_safe_integration_config(item.config),
+            config=_runtime_integration_ui_config(item),
             created_at=item.created_at,
             updated_at=item.updated_at,
         )
