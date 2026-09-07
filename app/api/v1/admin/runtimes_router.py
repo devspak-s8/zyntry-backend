@@ -92,6 +92,19 @@ async def admin_regenerate_runtime(
     return {"message": "Runtime regeneration queued"}
 
 
+@router.post("/runtimes/{runtime_id}/delete")
+async def admin_delete_runtime(
+    runtime_id: str,
+    ctx: AdminContext = Depends(require_permission(Permission.RUNTIMES_WRITE)),
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, str]:
+    service = RuntimeMonitorService(db)
+    if not await service.delete_runtime(runtime_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Runtime not found")
+    await db.commit()
+    return {"message": "Runtime deleted"}
+
+
 @router.get("/runtimes/{runtime_id}/usage", response_model=RuntimeUsageRead)
 async def admin_runtime_usage(
     runtime_id: str,

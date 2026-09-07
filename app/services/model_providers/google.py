@@ -1,6 +1,9 @@
+import json
+from collections.abc import AsyncGenerator
+
 import httpx
 
-from app.services.model_providers.base import BaseModelProvider, ModelInfo
+from app.services.model_providers.base import BaseModelProvider, ModelInfo, ProviderResponse, UsageCallback, emit_usage
 
 
 class GoogleProvider(BaseModelProvider):
@@ -58,7 +61,50 @@ class GoogleProvider(BaseModelProvider):
             )
             resp.raise_for_status()
             data = resp.json()
-            return data["candidates"][0]["content"]["parts"][0]["text"]
+            return ProviderResponse(
+                data["candidates"][0]["content"]["parts"][0]["text"],
+                data.get("usageMetadata"),
+            )
+
+    async def chat_completion_stream(
+        self,
+        api_key: str,
+        model: str,
+        messages: list[dict[str, str]],
+        max_tokens: int = 2048,
+        temperature: float = 0.7,
+        on_usage: UsageCallback | None = None,
+    ) -> AsyncGenerator[str]:
+        contents = []
+        for msg in messages:
+            role = "user" if msg["role"] == "user" else "model"
+            contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+        async with httpx.AsyncClient(timeout=120) as client:
+            async with client.stream(
+                "POST",
+                f"{self.BASE_URL}/models/{model}:streamGenerateContent?alt=sse&key={api_key}",
+                headers={"Content-Type": "application/json"},
+                json={
+                    "contents": contents,
+                    "generationConfig": {
+                        "maxOutputTokens": max_tokens,
+                        "temperature": temperature,
+                    },
+                },
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    try:
+                        data = json.loads(line[6:].strip())
+                        await emit_usage(on_usage, data.get("usageMetadata"))
+                        parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+                        for part in parts:
+                            if part.get("text"):
+                                yield str(part["text"])
+                    except (ValueError, KeyError, IndexError, TypeError):
+                        continue
 
     def _get_context(self, model_id: str) -> int:
         if "2.5-pro" in model_id.lower():

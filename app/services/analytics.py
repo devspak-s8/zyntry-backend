@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import uuid
+
 from typing import Any
 
 from app.repositories import UnitOfWork
@@ -53,3 +55,7 @@ class AnalyticsService:
 
     async def get_summary(self, project_id: str) -> dict:
         return await self.uow.analytics.get_summary(project_id)
+
+    async def get_token_activity(self, project_id: str, days: int = 30) -> dict:
+        result = await self.uow.analytics.get_token_activity(uuid.UUID(project_id), days=days)
+        return {"project_id": project_id, **result}

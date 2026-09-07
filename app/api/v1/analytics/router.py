@@ -11,7 +11,7 @@ from app.api.v1.dependencies_tenant import require_project_membership
 from app.core.database import get_session
 from app.models.users import User
 from app.repositories import UnitOfWork
-from app.schemas.analytics import UsageEventCreate, UsageEventRead, UsageSummary
+from app.schemas.analytics import TokenAnalyticsResponse, UsageEventCreate, UsageEventRead, UsageSummary
 from app.services.analytics import AnalyticsService
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
@@ -77,3 +77,17 @@ async def get_usage_summary(
     service = AnalyticsService(uow)
     summary = await service.get_summary(project_id)
     return UsageSummary(**summary)
+
+
+@router.get("/tokens", response_model=TokenAnalyticsResponse)
+async def get_token_activity(
+    current_user: Annotated[User, Depends(get_current_user)],
+    project_id: str,
+    days: int = Query(default=30, ge=1, le=366),
+    db: AsyncSession = Depends(get_session),
+) -> TokenAnalyticsResponse:
+    """Daily token activity for usage charts and contribution-style heatmaps."""
+
+    await require_project_membership(project_id, current_user, db)
+    service = AnalyticsService(UnitOfWork(db))
+    return TokenAnalyticsResponse(**await service.get_token_activity(project_id, days=days))

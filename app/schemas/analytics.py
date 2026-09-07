@@ -34,3 +34,23 @@ class UsageSummary(BaseModel):
     error_count: int
     provider_breakdown: dict[str, int]
     model_breakdown: dict[str, int]
+
+
+class TokenActivityDay(BaseModel):
+    day: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cached_tokens: int = 0
+    total_tokens: int = 0
+    requests: int = 0
+    cost: float = 0.0
+
+
+class TokenAnalyticsResponse(BaseModel):
+    project_id: str
+    days: list[TokenActivityDay]
+    total_tokens: int = 0
+    total_requests: int = 0
+    total_cost: float = 0.0
+    by_model: dict[str, int] = Field(default_factory=dict)
+    by_provider: dict[str, int] = Field(default_factory=dict)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 import logging
@@ -12,6 +13,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.features.dependencies import require_api_key_feature
@@ -19,6 +21,8 @@ from app.core.config import settings
 from app.core.database import get_session
 from app.models.users import User
 from app.models.apikeys import ApiKey
+from app.models.chat import Conversation, Message
+from app.models.events import Event
 from app.repositories import UnitOfWork
 from app.schemas.actions import ActionRequest, ActionResponse
 from app.schemas.billing import InsufficientCreditsError
@@ -32,6 +36,8 @@ from app.services.billing import BillingService, InsufficientCredits
 from app.services.metered_billing import InsufficientBalanceError, MeteredBillingService
 from app.services.guardrails import GuardrailService
 from app.services.model_router import ModelRouter, RoutingGoal, RoutingPreference
+from app.services.context_manager import ContextManager
+from app.services.token_engine import CompletionUsage, TokenEngine
 from app.services.provider_credentials import resolve_provider_key
 from app.services.oauth.service import OAuthService
 from app.services.security.outbound import validate_outbound_url
@@ -126,6 +132,7 @@ class InvokeRequest(BaseModel):
     runtime_id: str | None = None
     model: str | None = None
     provider: str | None = None
+    max_tokens: int | None = Field(default=None, ge=1, le=131_072)
     goal: str = "balanced"
     stream: bool = False
     top_k: int = 5
@@ -158,6 +165,48 @@ class InvokeResponse(BaseModel):
     estimated_cost: float = 0.0
     actual_cost: float = 0.0
     remaining_balance: float | None = None
+    usage: dict[str, Any] = Field(default_factory=dict)
+    context: dict[str, Any] = Field(default_factory=dict)
+    execution: dict[str, Any] = Field(default_factory=dict)
+
+
+async def _load_recent_conversation_messages(
+    db: AsyncSession,
+    conversation_id: str | None,
+    *,
+    project_id: uuid.UUID,
+    user_id: uuid.UUID,
+    limit: int = 20,
+) -> list[dict[str, str]]:
+    """Load only conversation history owned by this project/user scope."""
+
+    if not conversation_id:
+        return []
+    try:
+        conversation_uuid = uuid.UUID(conversation_id)
+    except (TypeError, ValueError):
+        return []
+    conversation = await db.scalar(
+        select(Conversation).where(
+            Conversation.id == conversation_uuid,
+            Conversation.project_id == project_id,
+            (Conversation.user_id.is_(None) | (Conversation.user_id == user_id)),
+        )
+    )
+    if conversation is None:
+        return []
+    result = await db.execute(
+        select(Message)
+        .where(Message.conversation_id == conversation.id)
+        .order_by(Message.created_at.desc())
+        .limit(min(max(limit, 1), 50))
+    )
+    messages = list(reversed(result.scalars().all()))
+    return [
+        {"role": str(item.role), "content": str(item.content)}
+        for item in messages
+        if item.content
+    ]
 
 
 async def _execute_tool(tool: Any, arguments: dict) -> dict:
@@ -184,6 +233,22 @@ async def _execute_tool(tool: Any, arguments: dict) -> dict:
     return {"name": tool.name, "status": "skipped", "reason": "unsupported_implementation"}
 
 
+def _tool_is_read_only(tool: Any) -> bool:
+    """Return the persisted read-only flag for an automatic tool call.
+
+    Tools created through the catalog store this under ``_zyntry_custom``;
+    older tools may store it at the top level.  Unknown tools are treated as
+    read-only for compatibility, while an explicit ``false`` always blocks
+    autonomous execution.  Mutations still go through the explicit action
+    and confirmation path.
+    """
+
+    schema = tool.schema if isinstance(getattr(tool, "schema", None), dict) else {}
+    custom = schema.get("_zyntry_custom") if isinstance(schema.get("_zyntry_custom"), dict) else {}
+    value = custom.get("read_only", schema.get("read_only", True))
+    return value is not False
+
+
 @router.post("/invoke/stream", response_model=None)
 async def invoke_stream(
     body: InvokeRequest,
@@ -191,15 +256,53 @@ async def invoke_stream(
     current_user: User = Depends(require_api_key_feature("runtime_console")),
     db: AsyncSession = Depends(get_session),
 ) -> StreamingResponse:
-    """Stream lifecycle progress and the final invoke result as SSE.
+    """Stream provider output plus lifecycle progress as SSE.
 
-    Provider token streaming is exposed by ``/chat/completions``.  This
-    endpoint gives API consumers a single runtime-console stream that also
-    reports security, retrieval, routing, tool, and billing progress.
+    The invoke pipeline still performs billing and persistence once, in the
+    background task.  Provider adapters emit chunks through a queue so the
+    client receives tokens as they arrive, followed by the same structured
+    final response used by non-streaming callers.
     """
+    queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+    holder: dict[str, Any] = {"result": None, "error": None}
+
+    async def on_token(token: str) -> None:
+        await queue.put({"event": "Token", "token": token})
+
+    async def run_invoke() -> None:
+        request.state.invoke_stream_callback = on_token
+        try:
+            holder["result"] = await invoke(
+                body.model_copy(update={"stream": False}),
+                request,
+                current_user,
+                db,
+            )
+        except Exception as exc:  # pragma: no cover - exercised by clients
+            holder["error"] = exc
+        finally:
+            await queue.put(None)
+
     async def event_stream() -> AsyncGenerator[str, None]:
         yield f"data: {json.dumps({'event': 'Request Received', 'status': 'started'})}\n\n"
-        result = await invoke(body.model_copy(update={"stream": False}), request, current_user, db)
+        task = asyncio.create_task(run_invoke())
+        try:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                yield f"data: {json.dumps(item, default=str)}\n\n"
+            await task
+        finally:
+            if not task.done():
+                task.cancel()
+        if holder["error"] is not None:
+            yield f"data: {json.dumps({'event': 'Failed', 'status': 'failed', 'message': str(holder['error'])})}\n\n"
+            return
+        result = holder["result"]
+        if result is None:
+            yield f"data: {json.dumps({'event': 'Failed', 'status': 'failed', 'message': 'Invocation returned no result'})}\n\n"
+            return
         for event in result.events:
             yield f"data: {json.dumps(event, default=str)}\n\n"
         yield f"data: {json.dumps({'event': 'Completed', 'status': 'completed', 'result': result.model_dump()}, default=str)}\n\n"
@@ -380,6 +483,18 @@ async def invoke(
     dynamic_routing_enabled = bool((runtime_data.get("config") or {}).get("dynamic_routing_enabled"))
     explicit_model_selection = bool(body.provider or body.model)
     automatic_routing = dynamic_routing_enabled and not explicit_model_selection
+    context_manager = ContextManager()
+    requested_output_tokens = int(
+        body.max_tokens or (runtime_data.get("config") or {}).get("max_tokens") or 2_048
+    )
+    conversation_messages = await _load_recent_conversation_messages(
+        db,
+        body.conversation_id,
+        project_id=project.id,
+        user_id=current_user.id,
+    )
+    base_messages = [*conversation_messages, {"role": "user", "content": body.input}]
+    preflight_input_tokens = context_manager.estimate_messages(base_messages)
 
     input_violations = guardrail_service.validate_input(body.input, body.json_schema)
     if input_violations:
@@ -439,8 +554,8 @@ async def invoke(
         provider=provider_name,
         model=model_name,
         operation="invoke",
-        input_tokens=len(body.input.split()),
-        output_tokens=2048,
+        input_tokens=preflight_input_tokens,
+        output_tokens=requested_output_tokens,
         requests=1,
     )
     if runtime:
@@ -490,7 +605,7 @@ async def invoke(
 
     router_service = ModelRouter(uow)
     source_context: dict[str, Any] | None = None
-    messages = [{"role": "user", "content": body.input}]
+    messages = base_messages
     tools = await uow.tools.get_by_project(str(project.id))
     if body.context_sources:
         requested_sources = {item.strip().lower() for item in body.context_sources if item.strip()}
@@ -530,10 +645,69 @@ async def invoke(
             "content": "Use the following connected internal source context first. Preserve source names and do not infer records that are not present.\n" + json.dumps(source_context, default=str),
         })
         events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Cross-Source Context Assembled", "sources": source_context.get("sources", []), "matched_records": source_context.get("matched_records", 0)})
+
+    # A preflight requirement lets automatic routing exclude models that cannot
+    # hold this request plus a safe output reserve.  The final assembly then
+    # trims/compresses only when the selected model actually needs it.
+    raw_context_tokens = context_manager.estimate_messages(messages)
+    preflight_required_context = raw_context_tokens + requested_output_tokens + 4_096
+    preference.required_context_tokens = preflight_required_context
+    assembly = context_manager.assemble(
+        messages,
+        provider=provider_name,
+        model=model_name,
+        requested_output_tokens=requested_output_tokens,
+    )
+    messages = assembly.messages
+    events.append({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "event": "Context Budgeted",
+        **assembly.as_dict(),
+    })
+    warnings.extend({"code": "CONTEXT_OPTIMIZED", "message": item} for item in assembly.warnings)
+    stream_callback = getattr(request.state, "invoke_stream_callback", None)
+    # A streamed token can contain only half of an email, phone number, or
+    # other identifier.  Do not emit partial unredacted data when the runtime
+    # has live PII redaction enabled; the completed response is redacted below
+    # and returned in the final SSE event instead.
+    if runtime and normalize_runtime_security_policy(runtime.security_policies)["pii_redaction"]:
+        if stream_callback is not None:
+            events.append({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "event": "Token Stream Buffered",
+                "reason": "pii_redaction",
+            })
+        stream_callback = None
+
+    # Keep every model attempt in the execution record.  ModelRouter resets
+    # its per-call attempt list before each invocation, so the invoke pipeline
+    # owns the aggregate when a tool follow-up model call is performed.
+    model_attempts: list[dict[str, Any]] = []
+    config = runtime_data.get("config") if isinstance(runtime_data.get("config"), dict) else {}
+    autonomous_tool_loop = bool(config.get("autonomous_tool_loop", True))
+    try:
+        max_tool_steps = min(3, max(0, int(config.get("max_tool_steps", 3))))
+    except (TypeError, ValueError):
+        max_tool_steps = 1
+    # Never let a write action be inferred from a read-only tool loop.  The
+    # explicit action list below remains the only path for mutations.
+    if body.actions:
+        autonomous_tool_loop = False
+    potential_tool_loop = (
+        autonomous_tool_loop
+        and max_tool_steps > 0
+        and not body.context_sources
+        and any(_tool_is_read_only(tool) for tool in tools)
+    )
+    initial_stream_callback = None if potential_tool_loop else stream_callback
     try:
         if automatic_routing:
             result_text, invoked_model, invoked_provider, last_error = await router_service._invoke_with_fallback(
-                preference, provider_keys, messages
+                preference,
+                provider_keys,
+                messages,
+                max_tokens=assembly.budget.reserved_output,
+                on_token=initial_stream_callback,
             )
         else:
             configured_models = [model_name, *(runtime_data.get("fallback_models") or [])]
@@ -542,7 +716,10 @@ async def invoke(
                 configured_models,
                 provider_keys,
                 messages,
+                max_tokens=assembly.budget.reserved_output,
+                on_token=initial_stream_callback,
             )
+        model_attempts.extend(dict(item) for item in router_service.last_attempts)
     except Exception:
         if pre_reservation is not None:
             await MeteredBillingService(db).release(pre_reservation.id, reason="provider_exception")
@@ -554,15 +731,127 @@ async def invoke(
     provider_name = invoked_provider or provider_name
     model_name = invoked_model or model_name
     events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Model Selected", "model": model_name, "provider": provider_name})
+    if router_service.last_routing_reason:
+        events.append({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "event": "Routing Decision",
+            "reason": router_service.last_routing_reason,
+        })
     if last_error:
         warnings.append({"code": "PROVIDER_FAILOVER", "message": last_error})
 
-    if tools and not body.context_sources:
+    automatic_tool_results: list[dict[str, Any]] = []
+    completed_tool_steps = 0
+    if autonomous_tool_loop and max_tool_steps > 0 and tools and not body.context_sources:
+        # Run a bounded, sequential read-only loop. Each verified result is
+        # fed back to the model before the next connector is called, so a
+        # runtime can retrieve from several sources and refine its answer.
+        # Write-capable tools never enter this loop and must use ``actions``.
+        read_only_tools = [tool for tool in tools if _tool_is_read_only(tool)]
         for tool in tools:
+            if _tool_is_read_only(tool):
+                continue
+            result = {
+                "name": tool.name,
+                "status": "skipped",
+                "reason": "write_tool_requires_explicit_action",
+            }
+            tool_calls.append(result)
+            events.append({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "event": "Tool Skipped",
+                "tool": tool.name,
+                "reason": result["reason"],
+            })
+
+        for step, tool in enumerate(read_only_tools[:max_tool_steps], start=1):
             args = {"input": body.input, "project_id": str(project.id), "user_id": str(current_user.id)}
             result = await _execute_tool(tool, args)
             tool_calls.append(result)
-            events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Tool Executed", "tool": tool.name, "status": result.get("status")})
+            automatic_tool_results.append(result)
+            completed_tool_steps = step
+            events.append({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "event": "Tool Executed",
+                "tool": tool.name,
+                "status": result.get("status"),
+                "step": step,
+            })
+
+            # Every round is a model/tool boundary. Only the final planned
+            # round streams tokens to avoid showing intermediate drafts.
+            tool_context = {
+                "tool_results": [
+                    {
+                        "name": item.get("name"),
+                        "status": item.get("status"),
+                        "result": item.get("result"),
+                        "error": item.get("error"),
+                    }
+                    for item in automatic_tool_results
+                ],
+                "instruction": "Use only these verified tool results. If they are empty or failed, say so plainly; do not invent records.",
+            }
+            followup_messages = [
+                *messages,
+                {"role": "assistant", "content": result_text},
+                {"role": "system", "content": "Verified read-only tool results:\n" + json.dumps(tool_context, default=str)},
+                {"role": "user", "content": "Produce the best current answer using the verified tool results and the original request. More verified sources may be added in a later step."},
+            ]
+            followup_assembly = context_manager.assemble(
+                followup_messages,
+                provider=provider_name,
+                model=model_name,
+                requested_output_tokens=assembly.budget.reserved_output,
+            )
+            followup_estimate = await billing_service.calculate_cost(
+                provider=provider_name,
+                model=model_name,
+                operation="invoke",
+                input_tokens=followup_assembly.estimated_input_tokens,
+                output_tokens=followup_assembly.budget.reserved_output,
+                requests=1,
+            )
+            followup_allowed = True
+            if runtime:
+                followup_allowed, _, _ = await check_runtime_budget(
+                    db, runtime, estimated_cost=followup_estimate
+                )
+            if not followup_allowed:
+                warnings.append({
+                    "code": "TOOL_LOOP_BUDGET",
+                    "message": "A verified tool result was collected, but the runtime budget stopped the next synthesis step.",
+                })
+                break
+            events.append({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "event": "Tool Loop Synthesis",
+                "step": step,
+                "tool": tool.name,
+                "tool_count": len(automatic_tool_results),
+            })
+            is_final_round = step >= min(max_tool_steps, len(read_only_tools))
+            followup_text, followup_model, followup_provider, followup_error = await router_service.invoke_fixed(
+                provider_name,
+                [model_name],
+                provider_keys,
+                followup_assembly.messages,
+                max_tokens=followup_assembly.budget.reserved_output,
+                on_token=stream_callback if is_final_round else None,
+            )
+            model_attempts.extend(dict(item) for item in router_service.last_attempts)
+            if followup_text:
+                result_text = followup_text
+                invoked_model = followup_model or invoked_model
+                invoked_provider = followup_provider or invoked_provider
+                provider_name = invoked_provider or provider_name
+                model_name = invoked_model or model_name
+            elif followup_error:
+                warnings.append({
+                    "code": "TOOL_LOOP_FALLBACK",
+                    "message": "A tool result was retrieved, but synthesis failed; returning the last verified response.",
+                })
+                break
 
     action_results: list[ActionResponse] = []
     if body.actions:
@@ -655,20 +944,55 @@ async def invoke(
             ]
     latency_ms = (time.perf_counter() - start_time) * 1000
 
+    call_usages: list[CompletionUsage] = []
+    for attempt in model_attempts or router_service.last_attempts:
+        payload = attempt.get("usage")
+        if isinstance(payload, dict):
+            try:
+                call_usages.append(
+                    CompletionUsage(
+                        input_tokens=int(payload.get("input_tokens", 0) or 0),
+                        output_tokens=int(payload.get("output_tokens", 0) or 0),
+                        cached_tokens=int(payload.get("cached_tokens", 0) or 0),
+                        source=str(payload.get("source") or "estimated"),
+                    )
+                )
+            except (TypeError, ValueError):
+                continue
+    usage = TokenEngine.aggregate(call_usages) if call_usages else (
+        router_service.last_usage or CompletionUsage(
+            input_tokens=assembly.estimated_input_tokens,
+            output_tokens=TokenEngine.estimate_text(response_text),
+        )
+    )
+    execution = {
+        "model_call_count": len(call_usages),
+        "model_calls": model_attempts or router_service.last_attempts,
+        "tool_loop_enabled": bool(autonomous_tool_loop),
+        "tool_loop_steps": completed_tool_steps,
+        "tool_count": len(tool_calls),
+        "total_tokens": usage.total_tokens,
+        "usage_source": usage.source,
+    }
+    input_tokens = max(0, usage.input_tokens)
+    output_tokens = max(0, usage.output_tokens)
+    cached_tokens = max(0, usage.cached_tokens)
+
     metered = MeteredBillingService(db)
     billing_breakdown = await metered.pricing.calculate(
         provider_name,
         model_name,
-        input_tokens=len(body.input.split()),
-        output_tokens=len(response_text.split()),
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cached_tokens=cached_tokens,
         requests=0,
     )
     actual_cost = billing_breakdown["amount"]
     if actual_cost <= 0:
         actual_cost = _catalog_token_cost(
             router_service.last_invoked_candidate,
-            input_tokens=len(body.input.split()),
-            output_tokens=len(response_text.split()),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
         )
         billing_breakdown["provider_cost"] = actual_cost
         billing_breakdown["markup"] = Decimal("0")
@@ -686,14 +1010,26 @@ async def invoke(
                 runtime_id=runtime.id if runtime else None,
                 api_key_id=getattr(request.state, "api_key_id", None),
                 resource_type="ai_inference",
-                metadata={"model": model_name, "provider": provider_name},
+                metadata={
+                    "model": model_name,
+                    "provider": provider_name,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "context": assembly.as_dict(),
+                },
             )
         if reservation is not None:
             await metered.settle(
                 reservation.id,
                 actual_amount=actual_cost,
                 provider_cost=billing_breakdown["provider_cost"],
-                metadata={"model": model_name, "provider": provider_name, "latency_ms": latency_ms},
+                metadata={
+                    "model": model_name,
+                    "provider": provider_name,
+                    "latency_ms": latency_ms,
+                    "usage_source": usage.source,
+                    "context": assembly.as_dict(),
+                },
                 transaction_type="AI_INFERENCE",
             )
         await billing_service.record_usage(
@@ -707,11 +1043,19 @@ async def invoke(
             runtime_id=runtime.id if runtime else None,
             api_key_id=getattr(request.state, "api_key_id", None),
             request_id=request_id,
-            input_tokens=len(body.input.split()),
-            output_tokens=len(response_text.split()),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cached_tokens=cached_tokens,
             latency_ms=int(latency_ms),
             provider_cost=billing_breakdown["provider_cost"],
             platform_markup=billing_breakdown["markup"],
+            metadata={
+                "usage_source": usage.source,
+                "routing_mode": "automatic" if automatic_routing else "configured",
+                "routing_reason": router_service.last_routing_reason,
+                "context": assembly.as_dict(),
+                "fallback_models": list(runtime_data.get("fallback_models") or []),
+            },
         )
     except (InsufficientCredits, InsufficientBalanceError) as exc:
         if reservation is not None:
@@ -727,6 +1071,33 @@ async def invoke(
             await metered.release(reservation.id, reason="billing_failed")
         raise
 
+    # Keep one redacted, structured execution record in the tenant event
+    # stream.  The request itself is never persisted here; only telemetry
+    # needed for trace inspection and billing reconciliation is stored.
+    db.add(
+        Event(
+            project_id=project.id,
+            organization_id=project.organization_id,
+            event_type="runtime.execution.completed",
+            data={
+                "request_id": request_id,
+                "runtime_id": str(runtime.id) if runtime else None,
+                "model": model_name,
+                "provider": provider_name,
+                "routing_mode": "automatic" if automatic_routing else "configured",
+                "routing_reason": router_service.last_routing_reason,
+                "usage": usage.as_dict(),
+                "context": assembly.as_dict(),
+                "latency_ms": round(latency_ms, 2),
+                "cost": float(actual_cost),
+                "warnings": warnings,
+                "tool_count": len(tool_calls),
+                "action_count": len(action_results),
+                "execution": execution,
+            },
+        )
+    )
+
     try:
         await uow.request_logs.create(
             project_id=project.id,
@@ -735,7 +1106,7 @@ async def invoke(
             endpoint="/invoke",
             status=200,
             latency_ms=int(latency_ms),
-            tokens=len(body.input.split()) + len(response_text.split()),
+            tokens=input_tokens + output_tokens,
             provider=provider_name,
             model=model_name,
             cost=int(actual_cost),
@@ -764,10 +1135,20 @@ async def invoke(
         events=events,
         tool_calls=tool_calls,
         action_results=action_results,
-        tokens_used=len(body.input.split()) + len(response_text.split()),
+        tokens_used=input_tokens + output_tokens,
         guardrail_violations=output_violations,
         estimated_cost=float(estimated_cost),
         actual_cost=float(actual_cost),
         remaining_balance=float(wallet.balance),
         source_context=source_context,
+        usage={
+            **usage.as_dict(),
+            "provider": provider_name,
+            "model": model_name,
+            "latency_ms": round(latency_ms, 2),
+            "estimated_cost": float(estimated_cost),
+            "actual_cost": float(actual_cost),
+        },
+        context=assembly.as_dict(),
+        execution=execution,
     )

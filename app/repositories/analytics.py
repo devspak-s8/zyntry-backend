@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import UUID
 
@@ -73,4 +73,56 @@ class UsageEventRepository:
             "error_count": 0,
             "provider_breakdown": provider_breakdown,
             "model_breakdown": model_breakdown,
+        }
+
+    async def get_token_activity(self, project_id: UUID, days: int = 30) -> dict:
+        """Return daily token activity for dashboard charts/heatmaps."""
+
+        days = min(max(days, 1), 366)
+        since = datetime.now(timezone.utc) - timedelta(days=days)
+        day_expr = func.date(UsageLog.created_at)
+        result = await self.session.execute(
+            select(
+                day_expr.label("day"),
+                func.coalesce(func.sum(UsageLog.input_tokens), 0).label("input_tokens"),
+                func.coalesce(func.sum(UsageLog.output_tokens), 0).label("output_tokens"),
+                func.coalesce(func.sum(UsageLog.cached_tokens), 0).label("cached_tokens"),
+                func.count(UsageLog.id).label("requests"),
+                func.coalesce(func.sum(UsageLog.cost), 0).label("cost"),
+            )
+            .where(UsageLog.project_id == project_id, UsageLog.created_at >= since)
+            .group_by(day_expr)
+            .order_by(day_expr)
+        )
+        activity: list[dict] = []
+        for row in result.all():
+            input_tokens = int(row.input_tokens or 0)
+            output_tokens = int(row.output_tokens or 0)
+            activity.append({
+                "day": str(row.day),
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cached_tokens": int(row.cached_tokens or 0),
+                "total_tokens": input_tokens + output_tokens,
+                "requests": int(row.requests or 0),
+                "cost": float(row.cost or 0),
+            })
+
+        model_result = await self.session.execute(
+            select(UsageLog.model, func.coalesce(func.sum(UsageLog.input_tokens + UsageLog.output_tokens), 0))
+            .where(UsageLog.project_id == project_id, UsageLog.created_at >= since)
+            .group_by(UsageLog.model)
+        )
+        provider_result = await self.session.execute(
+            select(UsageLog.provider, func.coalesce(func.sum(UsageLog.input_tokens + UsageLog.output_tokens), 0))
+            .where(UsageLog.project_id == project_id, UsageLog.created_at >= since)
+            .group_by(UsageLog.provider)
+        )
+        return {
+            "days": activity,
+            "total_tokens": sum(item["total_tokens"] for item in activity),
+            "total_requests": sum(item["requests"] for item in activity),
+            "total_cost": sum(item["cost"] for item in activity),
+            "by_model": {str(row[0]): int(row[1] or 0) for row in model_result.all() if row[0]},
+            "by_provider": {str(row[0]): int(row[1] or 0) for row in provider_result.all() if row[0]},
         }

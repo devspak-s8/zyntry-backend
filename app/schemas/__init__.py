@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.schemas.analytics import UsageEventCreate, UsageEventRead
+from app.schemas.analytics import TokenActivityDay, TokenAnalyticsResponse, UsageEventCreate, UsageEventRead
 from app.schemas.apikeys import ApiKeyCreate, ApiKeyRead
 from app.schemas.auth import LoginRequest, RegisterRequest, ForgotPasswordRequest
 from app.schemas.events import EventRead, NotificationRead, NotificationUpdate, RequestLogRead
@@ -196,6 +196,8 @@ __all__ = [
     "PricingRuleCreate",
     "UsageLogRead",
     "UsageSummary",
+    "TokenActivityDay",
+    "TokenAnalyticsResponse",
     "EstimateCostRequest",
     "EstimateCostResponse",
     "InsufficientCreditsError",

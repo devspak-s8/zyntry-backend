@@ -1,6 +1,8 @@
 import httpx
+from collections.abc import AsyncGenerator
 
-from app.services.model_providers.base import BaseModelProvider, ModelInfo
+from app.services.model_providers.base import BaseModelProvider, ModelInfo, ProviderResponse, UsageCallback
+from app.services.model_providers.streaming import stream_openai_compatible
 
 
 class GroqProvider(BaseModelProvider):
@@ -56,7 +58,27 @@ class GroqProvider(BaseModelProvider):
             )
             resp.raise_for_status()
             data = resp.json()
-            return data["choices"][0]["message"]["content"]
+            return ProviderResponse(data["choices"][0]["message"]["content"], data.get("usage"))
+
+    async def chat_completion_stream(
+        self,
+        api_key: str,
+        model: str,
+        messages: list[dict[str, str]],
+        max_tokens: int = 2048,
+        temperature: float = 0.7,
+        on_usage: UsageCallback | None = None,
+    ) -> AsyncGenerator[str]:
+        async for chunk in stream_openai_compatible(
+            url=f"{self.BASE_URL}/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            on_usage=on_usage,
+        ):
+            yield chunk
 
     def _get_context(self, model_id: str) -> int:
         if "llama-3.3" in model_id.lower() or "llama-3" in model_id.lower():

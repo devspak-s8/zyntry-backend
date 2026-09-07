@@ -1,6 +1,9 @@
+import json
+from collections.abc import AsyncGenerator
+
 import httpx
 
-from app.services.model_providers.base import BaseModelProvider, ModelInfo
+from app.services.model_providers.base import BaseModelProvider, ModelInfo, ProviderResponse, UsageCallback, emit_usage
 
 
 class OpenAIProvider(BaseModelProvider):
@@ -56,7 +59,50 @@ class OpenAIProvider(BaseModelProvider):
             )
             resp.raise_for_status()
             data = resp.json()
-            return data["choices"][0]["message"]["content"]
+            return ProviderResponse(data["choices"][0]["message"]["content"], data.get("usage"))
+
+    async def chat_completion_stream(
+        self,
+        api_key: str,
+        model: str,
+        messages: list[dict[str, str]],
+        max_tokens: int = 2048,
+        temperature: float = 0.7,
+        on_usage: UsageCallback | None = None,
+    ) -> AsyncGenerator[str]:
+        async with httpx.AsyncClient(timeout=120) as client:
+            async with client.stream(
+                "POST",
+                f"{self.BASE_URL}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                    "stream": True,
+                    "stream_options": {"include_usage": True},
+                },
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    payload = line[6:].strip()
+                    if payload == "[DONE]":
+                        break
+                    try:
+                        data = json.loads(payload)
+                        await emit_usage(on_usage, data.get("usage"))
+                        delta = data.get("choices", [{}])[0].get("delta", {})
+                        content = delta.get("content")
+                        if content:
+                            yield str(content)
+                    except (ValueError, KeyError, IndexError, TypeError):
+                        continue
 
     def _get_context(self, model_id: str) -> int:
         contexts = {

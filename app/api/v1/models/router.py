@@ -14,6 +14,8 @@ from app.core.database import get_session
 from app.models.users import User
 from app.repositories import UnitOfWork
 from app.services.model_discovery import get_model_discovery
+from app.services.model_registry import list_registered_models
+from app.services.provider_health import provider_health
 from app.services.providers import ProviderService
 
 
@@ -27,6 +29,10 @@ class ModelInfo(BaseModel):
     supports_streaming: bool
     input_price_per_1k: float | None = None
     output_price_per_1k: float | None = None
+    max_output_tokens: int = 8192
+    supports_reasoning: bool = False
+    supports_structured_output: bool = False
+    supports_embeddings: bool = False
     latency_tier: str = "medium"
     quality_tier: str = "standard"
     config: dict = {}
@@ -58,6 +64,18 @@ class ModelRefreshResponse(BaseModel):
     refreshed_at: str
     providers: list[ModelProvider]
     total_models: int
+
+
+class ProviderHealthInfo(BaseModel):
+    provider: str
+    available: bool
+    consecutive_failures: int = 0
+    total_failures: int = 0
+    total_successes: int = 0
+    last_latency_ms: float | None = None
+    last_error: str | None = None
+    last_checked_at: str | None = None
+    unhealthy_until: float | None = None
 
 
 router = APIRouter(prefix="/models", tags=["models"])
@@ -177,6 +195,30 @@ async def list_model_providers(
             model_count=p["model_count"],
         ))
     return result
+
+
+@router.get("/registry", response_model=list[ModelInfo])
+async def list_model_registry(
+    provider: str | None = Query(None),
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+) -> list[ModelInfo]:
+    """Return Zyntry's provider-neutral model capability registry.
+
+    Unlike ``GET /models``, this endpoint does not call provider APIs and does
+    not require provider credentials.  It is suitable for routing preflight,
+    context budgeting, and displaying model capabilities in the console.
+    """
+
+    return [ModelInfo(**item.as_dict()) for item in list_registered_models(provider)]
+
+
+@router.get("/health", response_model=list[ProviderHealthInfo])
+async def list_provider_health(
+    current_user: Annotated[User, Depends(get_current_user)] = None,
+) -> list[ProviderHealthInfo]:
+    """Return best-effort provider availability observed by this API worker."""
+
+    return [ProviderHealthInfo(**item) for item in provider_health.snapshot()]
 
 
 @router.get("/{model_id}", response_model=ModelInfo)

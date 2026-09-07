@@ -51,6 +51,8 @@ class RuntimeAssistantResponder:
         provider = str(getattr(settings, "RUNTIME_ASSISTANT_PROVIDER", "google")).lower()
         self.model = str(getattr(settings, "RUNTIME_ASSISTANT_MODEL", "gemini-2.5-flash"))
         self.provider = GeminiLLMProvider(settings.GOOGLE_API_KEY) if provider in {"google", "gemini"} and settings.GOOGLE_API_KEY else None
+        self.provider_name = "google" if self.provider is not None else provider
+        self.last_usage: dict[str, Any] = {}
 
     async def generate(
         self,
@@ -83,7 +85,7 @@ class RuntimeAssistantResponder:
             "latest_user_message": user_message,
         })
         try:
-            content, _ = await self.provider.generate(
+            content, token_count = await self.provider.generate(
                 messages=[
                     {
                         "role": "system",
@@ -103,7 +105,9 @@ class RuntimeAssistantResponder:
                 max_tokens=900,
                 temperature=0.25,
             )
+            self.last_usage = {"total_tokens": token_count} if token_count else {}
             return _strip_control_payload(content) or None
         except Exception:
+            self.last_usage = {}
             logger.exception("Runtime Assistant response generation failed; using verified fallback")
             return None

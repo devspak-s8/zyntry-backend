@@ -28,6 +28,8 @@ class RAGQuery(BaseModel):
     filters: dict | None = None
     stream: bool = False
     conversation_id: str | None = None
+    model: str | None = None
+    provider: str | None = None
 
 
 class RAGResponse(BaseModel):
@@ -38,3 +40,5 @@ class RAGResponse(BaseModel):
     tokens_used: int = 0
     model: str = ""
     rerank_items: int = 0
+    context: dict = Field(default_factory=dict)
+    usage: dict = Field(default_factory=dict)

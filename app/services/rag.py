@@ -14,6 +14,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.repositories import UnitOfWork
 from app.schemas.rag import Citation, RAGQuery, RAGResponse, SourceDocument
+from app.services.context_manager import ContextManager
+from app.services.model_providers.base import UsageCallback, emit_usage
+from app.services.token_engine import TokenEngine
 
 
 class HybridSearchResult:
@@ -67,6 +70,7 @@ class BaseLLMProvider(ABC):
         model: str,
         max_tokens: int = 2048,
         temperature: float = 0.7,
+        on_usage: UsageCallback | None = None,
     ) -> AsyncGenerator[str, None]:
         ...
 
@@ -109,6 +113,7 @@ class OpenAILLMProvider(BaseLLMProvider):
         model: str,
         max_tokens: int = 2048,
         temperature: float = 0.7,
+        on_usage: UsageCallback | None = None,
     ) -> AsyncGenerator[str, None]:
         async with httpx.AsyncClient(timeout=120) as client:
             async with client.stream(
@@ -134,6 +139,7 @@ class OpenAILLMProvider(BaseLLMProvider):
                             break
                         try:
                             chunk = json.loads(data)
+                            await emit_usage(on_usage, chunk.get("usage"))
                             delta = chunk["choices"][0].get("delta", {})
                             content = delta.get("content", "")
                             if content:
@@ -196,6 +202,7 @@ class AnthropicLLMProvider(BaseLLMProvider):
         model: str,
         max_tokens: int = 2048,
         temperature: float = 0.7,
+        on_usage: UsageCallback | None = None,
     ) -> AsyncGenerator[str, None]:
         system_prompt = ""
         filtered_messages: list[dict[str, str]] = []
@@ -232,6 +239,11 @@ class AnthropicLLMProvider(BaseLLMProvider):
                         data = line[6:].strip()
                         try:
                             chunk = json.loads(data)
+                            if chunk.get("type") in {"message_start", "message_delta"}:
+                                await emit_usage(
+                                    on_usage,
+                                    chunk.get("message", {}).get("usage", {}) or chunk.get("usage", {}),
+                                )
                             if chunk.get("type") == "content_block_delta":
                                 content = chunk.get("delta", {}).get("text", "")
                                 if content:
@@ -359,53 +371,81 @@ class RAGPipeline:
                 tokens_used=0,
                 model="none",
                 rerank_items=rerank_items,
+                usage={
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 0,
+                    "source": "unavailable",
+                },
             )
 
-        model_name = runtime.model if runtime else "gpt-4o"
-        provider_name = runtime.provider if runtime else "openai"
+        model_name = rag_query.model or (runtime.model if runtime else "gpt-4o")
+        provider_name = rag_query.provider or (runtime.provider if runtime else "openai")
+        context_manager = ContextManager()
+        assembly = context_manager.assemble(
+            [{"role": "user", "content": prompt}],
+            provider=provider_name,
+            model=model_name,
+            requested_output_tokens=2_048,
+        )
 
         if rag_query.stream:
             return self._astream(
                 llm_provider=llm_provider,
-                prompt=prompt,
+                messages=assembly.messages,
                 citations=citations_list,
                 sources=sources_list,
                 model=model_name,
                 provider_name=provider_name,
                 rerank_items=rerank_items,
                 start_time=start_time,
+                context=assembly.as_dict(),
             )
 
         answer, tokens = await llm_provider.generate(
-            messages=[{"role": "user", "content": prompt}],
+            messages=assembly.messages,
             model=model_name,
             )
+        _, usage = TokenEngine.normalize_usage(
+            (answer, {"total_tokens": tokens}),
+            estimated_input_tokens=assembly.estimated_input_tokens,
+            estimated_output_tokens=TokenEngine.estimate_text(answer),
+        )
         latency = (time.perf_counter() - start_time) * 1000
         return RAGResponse(
             answer=answer,
             citations=citations_list,
             sources=sources_list,
             latency_ms=latency,
-            tokens_used=tokens,
+            tokens_used=usage.total_tokens,
             model=model_name,
             rerank_items=rerank_items,
+            context=assembly.as_dict(),
+            usage=usage.as_dict(),
         )
 
     async def _astream(
         self,
         llm_provider: BaseLLMProvider,
-        prompt: str,
+        messages: list[dict[str, str]],
         citations: list[Citation],
         sources: list[SourceDocument],
         model: str,
         provider_name: str,
         rerank_items: int,
         start_time: float,
+        context: dict[str, Any],
     ) -> AsyncGenerator[str, None]:
         full_answer = ""
+        stream_usage: dict[str, Any] = {}
+
+        async def capture_usage(payload: dict[str, Any]) -> None:
+            stream_usage.update(payload)
+
         async for token in llm_provider.astream(
-            messages=[{"role": "user", "content": prompt}],
+            messages=messages,
             model=model,
+            on_usage=capture_usage,
         ):
             full_answer += token
             payload = {
@@ -416,15 +456,22 @@ class RAGPipeline:
             yield json.dumps(payload)
 
         latency = (time.perf_counter() - start_time) * 1000
+        _, usage = TokenEngine.normalize_usage(
+            (full_answer, stream_usage),
+            estimated_input_tokens=int(context.get("estimated_input_tokens", 0)),
+            estimated_output_tokens=TokenEngine.estimate_text(full_answer),
+        )
         payload = {
             "done": True,
             "citations": [c.model_dump() for c in citations],
             "sources": [s.model_dump() for s in sources],
             "answer": full_answer,
             "latency_ms": latency,
-            "tokens_used": 0,
+            "tokens_used": usage.total_tokens,
             "model": model,
             "rerank_items": rerank_items,
+            "context": context,
+            "usage": usage.as_dict(),
         }
         yield json.dumps(payload)
 

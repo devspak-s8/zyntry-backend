@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 import logging
 import re
+import time
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator
 
@@ -34,6 +35,7 @@ from app.services.runtime_assistant.schemas import (
     UserRole,
 )
 from app.services.model_compatibility import provider_model_mismatch
+from app.services.token_engine import TokenEngine
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +54,8 @@ class RuntimeAssistantService:
         stream: bool = False,
         conversation_id: str | None = None,
     ) -> AssistantResponse | AsyncGenerator[str, None]:
+        started_at = time.perf_counter()
+        assistant_request_id = str(uuid.uuid4())
         role = _parse_user_role(user_role)
         context_builder = RuntimeContextBuilder(
             uow=self.uow,
@@ -141,7 +145,8 @@ class RuntimeAssistantService:
         conversation_history = await records.history(
             uuid.UUID(runtime_id), uuid.UUID(user_id), 10, conversation.id
         )
-        generated_message = await RuntimeAssistantResponder().generate(
+        responder = RuntimeAssistantResponder()
+        generated_message = await responder.generate(
             user_message=message,
             context=context,
             decision=decision,
@@ -215,6 +220,39 @@ class RuntimeAssistantService:
                 "plan_reason": plan.reasoning,
                 "configuration_error": plan.configuration_error,
                 "action_proposal_error": action_proposal_error,
+            }
+        )
+        # Runtime Assistant turns are control-plane executions too. Expose a
+        # compact, redacted telemetry envelope so the console can explain what
+        # was inspected without showing hidden reasoning or credentials.
+        assistant_usage_text = generated_message or response.message or ""
+        assistant_usage_text, assistant_usage = TokenEngine.normalize_usage(
+            (assistant_usage_text, responder.last_usage),
+            estimated_input_tokens=TokenEngine.estimate_text(message) + 4,
+            estimated_output_tokens=TokenEngine.estimate_text(assistant_usage_text),
+        )
+        response.metadata.update(
+            {
+                "request_id": assistant_request_id,
+                "usage": assistant_usage.as_dict(),
+                "execution": {
+                    "request_id": assistant_request_id,
+                    "runtime_id": runtime_id,
+                    "intent": decision.get("intent"),
+                    "response_mode": decision.get("response_mode"),
+                    "phase": "completed",
+                    "model": responder.model,
+                    "provider": responder.provider_name,
+                    "model_call_count": 1 if responder.provider is not None else 0,
+                    "tool_count": len(tool_results),
+                    "tools_used": [result.tool_call.name for result in tool_results],
+                    "successful_tools": sum(1 for result in tool_results if result.success),
+                    "evidence_count": len(evidence),
+                    "latency_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                    "errors": [result.error for result in tool_results if result.error],
+                    "confidence": _evidence_confidence(tool_results),
+                    "result": "success",
+                },
             }
         )
         if action_proposal:

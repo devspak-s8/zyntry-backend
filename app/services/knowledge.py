@@ -197,9 +197,9 @@ class KnowledgeService:
                 normalized_url = self._normalize_website_url(raw_url)
             else:
                 normalized_url = raw_url.strip()
-            validate_outbound_url(normalized_url)
-            config["url"] = normalized_url
-            config.pop("input", None)
+            # Check project-local duplicates before outbound DNS validation.
+            # A duplicate should return the deterministic conflict even when
+            # the host is temporarily unavailable in the current environment.
             existing_sources = await self.uow.knowledge_sources.get_by_project(data.project_id)
             for existing in existing_sources:
                 if existing.source_type not in {"website", "crawler"}:
@@ -208,6 +208,9 @@ class KnowledgeService:
                 existing_url = existing_config.get("url") or existing_config.get("input")
                 if isinstance(existing_url, str) and self._normalize_website_url(existing_url) == normalized_url:
                     raise ValueError("This website source is already connected to the project")
+            validate_outbound_url(normalized_url)
+            config["url"] = normalized_url
+            config.pop("input", None)
 
         credentials_encrypted = None
         if data.credentials is not None:

@@ -1,6 +1,10 @@
+import json
+from collections.abc import AsyncGenerator
+from typing import Any
+
 import httpx
 
-from app.services.model_providers.base import BaseModelProvider, ModelInfo
+from app.services.model_providers.base import BaseModelProvider, ModelInfo, ProviderResponse, UsageCallback, emit_usage
 
 
 class AnthropicProvider(BaseModelProvider):
@@ -77,7 +81,59 @@ class AnthropicProvider(BaseModelProvider):
             )
             resp.raise_for_status()
             data = resp.json()
-            return data["content"][0]["text"]
+            return ProviderResponse(data["content"][0]["text"], data.get("usage"))
+
+    async def chat_completion_stream(
+        self,
+        api_key: str,
+        model: str,
+        messages: list[dict[str, str]],
+        max_tokens: int = 2048,
+        temperature: float = 0.7,
+        on_usage: UsageCallback | None = None,
+    ) -> AsyncGenerator[str]:
+        system_prompt = ""
+        filtered_messages: list[dict[str, str]] = []
+        for msg in messages:
+            if msg.get("role") == "system":
+                system_prompt = msg["content"]
+            else:
+                filtered_messages.append(msg)
+        payload: dict[str, Any] = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": filtered_messages,
+            "stream": True,
+        }
+        if system_prompt:
+            payload["system"] = system_prompt
+        async with httpx.AsyncClient(timeout=120) as client:
+            async with client.stream(
+                "POST",
+                f"{self.BASE_URL}/messages",
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    try:
+                        data = json.loads(line[6:].strip())
+                        if data.get("type") in {"message_start", "message_delta"}:
+                            usage = data.get("message", {}).get("usage", {}) or data.get("usage", {})
+                            await emit_usage(on_usage, usage)
+                        if data.get("type") == "content_block_delta":
+                            text = data.get("delta", {}).get("text")
+                            if text:
+                                yield str(text)
+                    except (ValueError, KeyError, TypeError):
+                        continue
 
     def _get_context(self, model_id: str) -> int:
         if "opus" in model_id.lower():
