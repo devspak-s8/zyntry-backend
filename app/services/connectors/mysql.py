@@ -27,9 +27,10 @@ class MySQLConnector(BaseConnector):
     ) -> None:
         super().__init__(project_id, source_id, config, credentials)
         creds = credentials or {}
-        self._connection_string = creds.get("connection_string") or config.get("connection_string")
-        if not self._connection_string:
+        connection_string = creds.get("connection_string") or config.get("connection_string")
+        if not isinstance(connection_string, str) or not connection_string:
             raise ConnectorAuthError("MySQL connection string is required")
+        self._connection_string = connection_string
         self._target_tables = (creds.get("tables") or config.get("tables") or "*").strip()
 
     def _dsn_to_kwargs(self) -> dict:
@@ -153,7 +154,7 @@ class MySQLConnector(BaseConnector):
         return {"success": True, "message": "Connection remains valid"}
 
     def validate(self) -> dict:
-        errors = []
+        errors: list[str] = []
         if not self._connection_string:
             errors.append("Missing MySQL connection string")
         return {"valid": len(errors) == 0, "errors": errors}

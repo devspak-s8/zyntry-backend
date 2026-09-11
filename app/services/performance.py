@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any, TypeVar
 
 import httpx
@@ -68,13 +68,13 @@ class BatchProcessor:
 
     @staticmethod
     async def process_batches(
-        batches: list[list[T]],
-        processor_fn: Callable[[list[T]], R],
+        batches: list[T],
+        processor_fn: Callable[[T], Awaitable[R]],
         max_concurrency: int = 10,
     ) -> list[R]:
         semaphore = asyncio.Semaphore(max_concurrency)
 
-        async def _process_batch(batch: list[T]) -> R:
+        async def _process_batch(batch: T) -> R:
             async with semaphore:
                 return await processor_fn(batch)
 
@@ -83,7 +83,7 @@ class BatchProcessor:
 
         processed: list[R] = []
         for result in results:
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 raise result
             processed.append(result)
 
@@ -198,7 +198,7 @@ async def batch_embed(
 
 async def parallel_process(  # noqa: UP047
     items: list[T],
-    processor_fn: Callable[[T], R],
+    processor_fn: Callable[[T], Awaitable[R]],
     max_concurrency: int = 10,
 ) -> list[R]:
     semaphore = asyncio.Semaphore(max_concurrency)
@@ -212,7 +212,7 @@ async def parallel_process(  # noqa: UP047
 
     processed: list[R] = []
     for result in results:
-        if isinstance(result, Exception):
+        if isinstance(result, BaseException):
             raise result
         processed.append(result)
 

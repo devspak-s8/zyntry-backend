@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.models.actions import ActionAuditLog, ActionConfirmation, ActionExecution
 from app.repositories import UnitOfWork
+from app.services.model_compatibility import infer_provider_for_model, provider_model_mismatch
 from app.services.runtime_assistant.configuration import normalize_configuration_changes
 from app.services.runtime_assistant.permissions import check_tool_permission
 from app.services.runtime_assistant.prompts import build_tool_definitions
@@ -13,8 +14,6 @@ from app.services.runtime_assistant.records import RuntimeAssistantRecords
 from app.services.runtime_assistant.redaction import redact_sensitive
 from app.services.runtime_assistant.schemas import ToolCall, UserRole
 from app.services.runtime_assistant.tools import RuntimeAssistantTools
-from app.services.model_compatibility import infer_provider_for_model, provider_model_mismatch
-
 
 ALLOWED_COMMANDS = {
     "restart_runtime",
@@ -94,7 +93,7 @@ class RuntimeAssistantCommandService:
             arguments={"runtime_id": str(runtime_id), **safe_arguments},
             risk="high" if action in {"restart_runtime", "pause_runtime", "clear_cache"} else "medium",
             status="pending",
-            expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
+            expires_at=datetime.now(UTC) + timedelta(minutes=10),
         )
         self.uow.session.add(proposal)
         await self.uow.commit()
@@ -120,7 +119,7 @@ class RuntimeAssistantCommandService:
             raise ValueError("Action proposal not found in this runtime scope")
         if proposal.status != "pending":
             raise ValueError("Action proposal is no longer pending")
-        if proposal.expires_at <= datetime.now(timezone.utc):
+        if proposal.expires_at <= datetime.now(UTC):
             proposal.status = "expired"
             await RuntimeAssistantRecords(self.uow.session).mark_action_proposal_resolved(
                 runtime_id=runtime_id,

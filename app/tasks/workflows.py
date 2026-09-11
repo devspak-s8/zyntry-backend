@@ -3,8 +3,8 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from app.workers.celery_app import celery_app
 from app.core.database import run_async
+from app.workers.celery_app import celery_app
 
 
 @celery_app.task(name="app.tasks.workflows.run")
@@ -16,10 +16,10 @@ def run_workflow(workflow_id: str, input_data: dict | None = None) -> dict:
         from app.core.database import get_session
         from app.models.projects import Project
         from app.models.users import User
+        from app.repositories import UnitOfWork
+        from app.services.actions.confirmations import ConfirmationService
         from app.services.actions.guardrails import requires_action_confirmation
         from app.services.actions.registry import ActionRegistry
-        from app.services.actions.confirmations import ConfirmationService
-        from app.repositories import UnitOfWork
 
         async for session in get_session():
             uow = UnitOfWork(session)
@@ -100,5 +100,7 @@ def run_workflow(workflow_id: str, input_data: dict | None = None) -> dict:
                 "blocked_actions": blocked,
                 "confirmation_ids": confirmation_ids,
             }
+
+        return {"workflow_id": workflow_id, "status": "not_executed"}
 
     return run_async(_run())

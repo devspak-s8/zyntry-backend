@@ -1,20 +1,17 @@
 from __future__ import annotations
 
-import uuid
 from decimal import Decimal
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, status
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
 from app.core.database import get_session
 from app.models.billing import WalletStatus
 from app.models.users import User
-from app.repositories import UnitOfWork
-from app.schemas.billing import EstimateCostRequest, InsufficientCreditsError
-from app.services.billing import BillingService, InsufficientCredits
+from app.schemas.billing import InsufficientCreditsError
+from app.services.billing import BillingService
 
 
 async def _get_billing_service(db: AsyncSession = Depends(get_session)) -> BillingService:

@@ -1,7 +1,13 @@
-import httpx
 from collections.abc import AsyncGenerator
 
-from app.services.model_providers.base import BaseModelProvider, ModelInfo, ProviderResponse, UsageCallback
+import httpx
+
+from app.services.model_providers.base import (
+    BaseModelProvider,
+    ModelInfo,
+    ProviderResponse,
+    UsageCallback,
+)
 from app.services.model_providers.streaming import stream_openai_compatible
 
 

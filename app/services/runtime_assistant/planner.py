@@ -1,16 +1,13 @@
 from __future__ import annotations
 
-import json
 import re
 from typing import Any
 
-from app.services.runtime_assistant.prompts import build_user_prompt
 from app.services.runtime_assistant.configuration import parse_configuration_change
 from app.services.runtime_assistant.schemas import (
     RuntimeContext,
     ToolCall,
     ToolDefinition,
-    UserRole,
 )
 
 

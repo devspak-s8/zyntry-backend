@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import logging
-
+from app.core.config import settings
 from app.core.database import run_async
 from app.core.logging import get_logger
-from app.core.config import settings
 from app.services.sendbyte import SendByteError, get_sendbyte_client
 from app.workers.celery_app import celery_app
 

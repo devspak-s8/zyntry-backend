@@ -5,8 +5,11 @@ from types import SimpleNamespace
 from app.services.runtime_assistant.executor import RuntimeAssistantExecutor, ToolExecutionResult
 from app.services.runtime_assistant.planner import RuntimeAssistantPlanner
 from app.services.runtime_assistant.responder import _strip_control_payload
-from app.services.runtime_assistant.service import _context_factual_message, _verified_configuration_message
 from app.services.runtime_assistant.schemas import RuntimeContext, ToolCall, UserRole
+from app.services.runtime_assistant.service import (
+    _context_factual_message,
+    _verified_configuration_message,
+)
 
 
 def _executor() -> RuntimeAssistantExecutor:

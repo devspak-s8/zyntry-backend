@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 import json
-import uuid
-from datetime import datetime, timezone
-from typing import Any
+from datetime import UTC, datetime
 
 from app.repositories import UnitOfWork
-from app.services.runtime_assistant.permissions import PermissionDeniedError, check_tool_permission
+from app.services.runtime_assistant.permissions import check_tool_permission
 from app.services.runtime_assistant.redaction import redact_sensitive
 from app.services.runtime_assistant.schemas import (
-    ActionType,
     AssistantResponse,
     DiagnosticResult,
     OptimizationResult,
@@ -17,7 +14,6 @@ from app.services.runtime_assistant.schemas import (
     RuntimeSummary,
     ToolCall,
     ToolDefinition,
-    UserRole,
 )
 from app.services.runtime_assistant.tools import RuntimeAssistantTools
 
@@ -26,6 +22,10 @@ class ToolExecutionResult:
     def __init__(self, tool_call: ToolCall, success: bool) -> None:
         self.tool_call = tool_call
         self.success = success
+
+    @property
+    def error(self) -> str | None:
+        return self.tool_call.error
 
 
 class RuntimeAssistantExecutor:
@@ -58,7 +58,7 @@ class RuntimeAssistantExecutor:
             if not check.allowed:
                 call.status = "permission_denied"
                 call.error = check.reason
-                call.timestamp = datetime.now(timezone.utc)
+                call.timestamp = datetime.now(UTC)
                 call.duration_ms = 0.0
                 results.append(ToolExecutionResult(tool_call=call, success=False))
                 continue
@@ -167,7 +167,7 @@ class RuntimeAssistantExecutor:
                             )
                         )
 
-        health_data = {}
+        health_data: dict = {}
         for result in results:
             if result.tool_call.name == "run_health_check" and result.success:
                 health_data = result.tool_call.result or {}
@@ -206,7 +206,6 @@ class RuntimeAssistantExecutor:
         optimizations: list[OptimizationResult],
     ) -> str:
         successful = [r for r in results if r.success]
-        failed = [r for r in results if not r.success]
         result_map = {
             result.tool_call.name: result.tool_call.result
             for result in successful

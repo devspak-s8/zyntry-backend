@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
-from typing import Annotated
+from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -85,7 +84,7 @@ router = APIRouter(prefix="/models", tags=["models"])
 async def list_models(
     provider: str | None = Query(None),
     project_id: str | None = Query(None),
-    current_user: Annotated[User, Depends(get_current_user)] = None,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> list[ModelInfo]:
     if project_id:
@@ -130,7 +129,7 @@ async def list_models(
             return_exceptions=True,
         )
         for models in results:
-            if isinstance(models, Exception):
+            if isinstance(models, BaseException):
                 continue
             all_models.extend(models)
     return all_models
@@ -139,7 +138,7 @@ async def list_models(
 @router.get("/providers", response_model=list[ModelProvider])
 async def list_model_providers(
     project_id: str | None = Query(None),
-    current_user: Annotated[User, Depends(get_current_user)] = None,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> list[ModelProvider]:
     if project_id:
@@ -171,7 +170,7 @@ async def list_model_providers(
     )
     model_map: dict[str, tuple[list[dict], int]] = {}
     for r in results:
-        if isinstance(r, Exception):
+        if isinstance(r, BaseException):
             continue
         name, models, count = r
         model_map[name] = (models, count)
@@ -200,7 +199,7 @@ async def list_model_providers(
 @router.get("/registry", response_model=list[ModelInfo])
 async def list_model_registry(
     provider: str | None = Query(None),
-    current_user: Annotated[User, Depends(get_current_user)] = None,
+    current_user: User = Depends(get_current_user),
 ) -> list[ModelInfo]:
     """Return Zyntry's provider-neutral model capability registry.
 
@@ -214,7 +213,7 @@ async def list_model_registry(
 
 @router.get("/health", response_model=list[ProviderHealthInfo])
 async def list_provider_health(
-    current_user: Annotated[User, Depends(get_current_user)] = None,
+    current_user: User = Depends(get_current_user),
 ) -> list[ProviderHealthInfo]:
     """Return best-effort provider availability observed by this API worker."""
 
@@ -224,7 +223,7 @@ async def list_provider_health(
 @router.get("/{model_id}", response_model=ModelInfo)
 async def get_model(
     model_id: str,
-    current_user: Annotated[User, Depends(get_current_user)] = None,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> ModelInfo:
     discovery = get_model_discovery()
@@ -239,7 +238,7 @@ async def get_model(
 @router.post("/test", response_model=ModelTestResult)
 async def test_model(
     body: ModelTestRequest,
-    current_user: Annotated[User, Depends(get_current_user)] = None,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> ModelTestResult:
     import time
@@ -273,7 +272,7 @@ async def test_model(
 
 @router.post("/refresh", response_model=ModelRefreshResponse)
 async def refresh_models(
-    current_user: Annotated[User, Depends(get_current_user)] = None,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> ModelRefreshResponse:
     discovery = get_model_discovery()
@@ -303,7 +302,7 @@ async def refresh_models(
     )
     model_map: dict[str, tuple[list[ModelInfo], int]] = {}
     for r in results:
-        if isinstance(r, Exception):
+        if isinstance(r, BaseException):
             continue
         name, models, count = r
         model_map[name] = (models, count)
@@ -328,7 +327,7 @@ async def refresh_models(
                 model_count=0,
             ))
     return ModelRefreshResponse(
-        refreshed_at=datetime.utcnow().isoformat(),
+        refreshed_at=datetime.now(UTC).isoformat(),
         providers=refreshed,
         total_models=total_models,
     )

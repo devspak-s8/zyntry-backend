@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from app.services.model_compatibility import infer_provider_for_model, provider_model_mismatch
 from app.services.runtime_assistant.configuration import (
     configuration_change_impact,
     normalize_configuration_changes,
@@ -13,7 +14,6 @@ from app.services.runtime_assistant.configuration import (
 from app.services.runtime_assistant.planner import RuntimeAssistantPlanner
 from app.services.runtime_assistant.schemas import RuntimeContext, ToolDefinition, UserRole
 from app.services.runtime_assistant.tools import _update_runtime_configuration
-from app.services.model_compatibility import infer_provider_for_model, provider_model_mismatch
 
 
 def _context() -> RuntimeContext:

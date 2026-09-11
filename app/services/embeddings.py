@@ -2,11 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import hmac
 import json
-import time
 from abc import ABC, abstractmethod
-from typing import Any
 from uuid import UUID
 
 import httpx
@@ -425,7 +422,7 @@ async def embed_with_cache(
                 batch_texts: list[str],
                 batch_metas: list[EmbeddingMetadata],
                 batch_indices: list[int],
-            ) -> tuple[list[float], list[int]]:
+            ) -> tuple[list[list[float]], list[int]]:
                 async with semaphore:
                     results = await provider.embed(batch_texts, batch_metas, use_cache=False)
                     return results, batch_indices
@@ -437,7 +434,7 @@ async def embed_with_cache(
             batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
 
             for batch_result in batch_results:
-                if isinstance(batch_result, Exception):
+                if isinstance(batch_result, BaseException):
                     raise batch_result
                 batch_embeddings, batch_indices = batch_result
                 for idx, result in zip(batch_indices, batch_embeddings, strict=True):

@@ -1,40 +1,41 @@
 from __future__ import annotations
 
-import uuid
 import logging
 import re
 import time
-from datetime import datetime, timezone
-from typing import Any, AsyncGenerator
+import uuid
+from collections.abc import AsyncGenerator
+from typing import Any
 
-from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_session
 from app.repositories import UnitOfWork
-from app.services.runtime_assistant.context import RuntimeContextBuilder
-from app.services.runtime_assistant.configuration import configuration_change_impact
+from app.services.model_compatibility import provider_model_mismatch
 from app.services.runtime_assistant.commands import RuntimeAssistantCommandService
+from app.services.runtime_assistant.configuration import configuration_change_impact
+from app.services.runtime_assistant.context import RuntimeContextBuilder
 from app.services.runtime_assistant.diagnostics import RuntimeDiagnostics
 from app.services.runtime_assistant.executor import RuntimeAssistantExecutor
 from app.services.runtime_assistant.memory import RuntimeAssistantMemory
-from app.services.runtime_assistant.optimizer import RuntimeOptimizer
 from app.services.runtime_assistant.planner import RuntimeAssistantPlanner
 from app.services.runtime_assistant.recommendations import RuntimeRecommendations
-from app.services.runtime_assistant.records import RuntimeAssistantRecords, evidence_from_tool_results
+from app.services.runtime_assistant.records import (
+    RuntimeAssistantRecords,
+    evidence_from_tool_results,
+)
 from app.services.runtime_assistant.responder import RuntimeAssistantResponder
 from app.services.runtime_assistant.schemas import (
+    ActionType,
     AssistantMessage,
     AssistantResponse,
-    ActionType,
     DiagnosticResult,
     OptimizationResult,
     RuntimeContext,
-    ToolCall,
     ToolDefinition,
     UserRole,
 )
-from app.services.model_compatibility import provider_model_mismatch
 from app.services.token_engine import TokenEngine
 
 logger = logging.getLogger(__name__)
@@ -53,7 +54,7 @@ class RuntimeAssistantService:
         message: str,
         stream: bool = False,
         conversation_id: str | None = None,
-    ) -> AssistantResponse | AsyncGenerator[str, None]:
+    ) -> AssistantResponse | AsyncGenerator[str]:
         started_at = time.perf_counter()
         assistant_request_id = str(uuid.uuid4())
         role = _parse_user_role(user_role)
@@ -61,7 +62,7 @@ class RuntimeAssistantService:
             uow=self.uow,
             runtime_id=runtime_id,
             user_id=user_id,
-            user_role=role.value,
+            user_role=role,
         )
         context = await context_builder.build()
         records = RuntimeAssistantRecords(self.session)
@@ -329,9 +330,7 @@ class RuntimeAssistantService:
         from app.services.billing import BillingService
 
         billing_service = BillingService(self.uow.session)
-        billing_summary = await billing_service.get_usage_summary(
-            uuid.UUID(user_id) if user_id else None
-        )
+        billing_summary = await billing_service.get_usage_summary(uuid.UUID(user_id))
 
         monthly_cost = None
         if billing_summary:
@@ -396,7 +395,7 @@ class RuntimeAssistantService:
     async def run_diagnostics(
         self, runtime_id: str, user_id: str, user_role: str
     ) -> list[DiagnosticResult]:
-        role = _parse_user_role(user_role)
+        _parse_user_role(user_role)
         diagnostics = RuntimeDiagnostics(self.uow, runtime_id, user_id)
         return await diagnostics.run_full_diagnostics()
 
@@ -406,13 +405,13 @@ class RuntimeAssistantService:
         recommendations = RuntimeRecommendations(self.uow, runtime_id, user_id)
         return await recommendations.generate()
 
-    async def _stream_response(self, response: AssistantResponse) -> AsyncGenerator[str, None]:
+    async def _stream_response(self, response: AssistantResponse) -> AsyncGenerator[str]:
         yield response.message
 
 
 def _get_available_tools(user_role: UserRole) -> list[ToolDefinition]:
-    from app.services.runtime_assistant.prompts import build_tool_definitions
     from app.services.runtime_assistant.permissions import filter_available_tools
+    from app.services.runtime_assistant.prompts import build_tool_definitions
 
     all_tools = build_tool_definitions()
     allowed = filter_available_tools(user_role, [tool.model_dump() for tool in all_tools])

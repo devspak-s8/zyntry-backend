@@ -10,12 +10,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.dependencies import get_current_user
 from app.api.v1.features.dependencies import require_feature
 from app.core.database import get_session
+from app.core.logging import get_logger
 from app.models.users import User
 from app.repositories import UnitOfWork
 from app.schemas.users import UserRead, UserUpdate
 
 router = APIRouter(prefix="/users", tags=["users"])
 DEVELOPER_SETTINGS_GUARD = [Depends(require_feature("developer_settings"))]
+logger = get_logger("app.api.v1.users")
 
 
 def _require_superuser(current_user: User) -> None:
@@ -59,7 +61,7 @@ async def get_user(
     try:
         uid = uuid.UUID(user_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user id")
+        raise HTTPException(status_code=400, detail="Invalid user id") from None
 
     user = await db.get(User, uid)
     if user is None:
@@ -87,7 +89,7 @@ async def update_user(
     try:
         uid = uuid.UUID(user_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user id")
+        raise HTTPException(status_code=400, detail="Invalid user id") from None
 
     user = await db.get(User, uid)
     if user is None:
@@ -105,10 +107,11 @@ async def update_user(
             await uow.commit()
     except IntegrityError:
         await uow.rollback()
-        raise HTTPException(status_code=409, detail="Email already in use")
+        raise HTTPException(status_code=409, detail="Email already in use") from None
     except Exception as exc:
         await uow.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to update user: {exc}")
+        logger.exception("Failed to update user", extra={"user_id": str(uid)})
+        raise HTTPException(status_code=500, detail="Unable to update user") from exc
 
     return UserRead(
         id=user.id,
@@ -131,7 +134,7 @@ async def delete_user(
     try:
         uid = uuid.UUID(user_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user id")
+        raise HTTPException(status_code=400, detail="Invalid user id") from None
 
     user = await db.get(User, uid)
     if user is None:
@@ -143,7 +146,8 @@ async def delete_user(
         await uow.commit()
     except Exception as exc:
         await uow.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to delete user: {exc}")
+        logger.exception("Failed to delete user", extra={"user_id": str(uid)})
+        raise HTTPException(status_code=500, detail="Unable to delete user") from exc
 
 
 @router.get("/me/settings", response_model=dict[str, object], dependencies=DEVELOPER_SETTINGS_GUARD)
@@ -166,7 +170,8 @@ async def update_user_settings(
         await uow.commit()
     except Exception as exc:
         await uow.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to update settings: {exc}")
+        logger.exception("Failed to update user settings", extra={"user_id": str(current_user.id)})
+        raise HTTPException(status_code=500, detail="Unable to update settings") from exc
     return body
 
 
@@ -191,7 +196,8 @@ async def enable_two_factor(
         await uow.commit()
     except Exception as exc:
         await uow.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to enable 2FA: {exc}")
+        logger.exception("Failed to start two-factor setup", extra={"user_id": str(user.id)})
+        raise HTTPException(status_code=500, detail="Unable to start two-factor setup") from exc
     return {"secret": secret, "otpauth_uri": generate_totp_uri(secret, user.email), "status": "pending_verification"}
 
 
@@ -240,7 +246,8 @@ async def disable_two_factor(
         await uow.commit()
     except Exception as exc:
         await uow.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to disable 2FA: {exc}")
+        logger.exception("Failed to disable two-factor authentication", extra={"user_id": str(user.id)})
+        raise HTTPException(status_code=500, detail="Unable to disable two-factor authentication") from exc
     return {"status": "disabled"}
 
 
@@ -257,5 +264,6 @@ async def revoke_all_tokens(
         await uow.commit()
     except Exception as exc:
         await uow.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to revoke tokens: {exc}")
+        logger.exception("Failed to revoke user tokens", extra={"user_id": str(current_user.id)})
+        raise HTTPException(status_code=500, detail="Unable to revoke tokens") from exc
     return {"status": "all tokens revoked"}

@@ -7,9 +7,10 @@ execution, and memory management.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import sys
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -19,16 +20,30 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
-from app.core.database import init_models
 from app.core.logging import configure_logging
 
 configure_logging()
 logger = logging.getLogger(__name__)
 
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Start the standalone assistant without owning production migrations."""
+    settings.validate_startup()
+    if settings.AUTO_CREATE_TABLES:
+        if settings.is_production:
+            raise RuntimeError("AUTO_CREATE_TABLES cannot be enabled in production")
+        from app.core.database import init_models
+
+        await init_models()
+    logger.info("Runtime Assistant Service started successfully")
+    yield
+
+
 app = FastAPI(
     title="Zyntra Runtime Assistant",
     version="1.0.0",
     description="Standalone Runtime Assistant Service",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -48,12 +63,6 @@ async def health() -> dict[str, str]:
 @app.get("/ready")
 async def ready() -> dict[str, str]:
     return {"status": "ready", "service": "runtime-assistant"}
-
-
-@app.on_event("startup")
-async def startup() -> None:
-    await init_models()
-    logger.info("Runtime Assistant Service started successfully")
 
 
 def main() -> None:

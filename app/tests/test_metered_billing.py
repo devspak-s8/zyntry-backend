@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
 
-from app.models.billing import BillingReservation, SpendingLimit
+from app.models.billing import SpendingLimit
 from app.models.users import User
 from app.services.billing import BillingService
 from app.services.metered_billing import (
@@ -126,7 +126,7 @@ async def test_expired_reservations_are_released(db_session):
     await BillingService(db_session).add_credit(user.id, Decimal("2"), "test topup", reference_id=f"topup-{uuid.uuid4()}")
     service = MeteredBillingService(db_session)
     reservation = await service.reserve(user_id=user.id, amount=Decimal("0.75"), request_id="req-expire", idempotency_key="idem-expire")
-    reservation.expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    reservation.expires_at = datetime.now(UTC) - timedelta(minutes=1)
     await db_session.commit()
     assert await service.expire_reservations() == 1
     wallet = await BillingService(db_session).get_wallet(user.id)

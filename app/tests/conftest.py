@@ -5,15 +5,14 @@ from collections.abc import AsyncGenerator
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
-from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.ext.compiler import compiles
 
 from app.core.database import Base, get_session
-import app.models  # Ensure all models are registered in Base.metadata
 from app.main import app as fastapi_app
 
 
@@ -44,7 +43,7 @@ TestSessionLocal = async_sessionmaker(
 
 
 @pytest.fixture(autouse=True)
-async def prepare_database() -> AsyncGenerator[None, None]:
+async def prepare_database() -> AsyncGenerator[None]:
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield
@@ -53,14 +52,14 @@ async def prepare_database() -> AsyncGenerator[None, None]:
 
 
 @pytest.fixture
-async def db_session() -> AsyncGenerator[AsyncSession, None]:
+async def db_session() -> AsyncGenerator[AsyncSession]:
     async with TestSessionLocal() as session:
         yield session
 
 
 @pytest.fixture
-async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
-    async def override_get_session() -> AsyncGenerator[AsyncSession, None]:
+async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient]:
+    async def override_get_session() -> AsyncGenerator[AsyncSession]:
         yield db_session
 
     fastapi_app.dependency_overrides[get_session] = override_get_session

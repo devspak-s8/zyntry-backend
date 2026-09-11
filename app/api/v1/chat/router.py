@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from datetime import datetime, timezone
-from typing import Annotated, AsyncGenerator
+from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
@@ -15,9 +16,9 @@ from app.api.v1.dependencies import get_current_user
 from app.api.v1.dependencies_tenant import require_project_membership, require_runtime_access
 from app.core.config import settings
 from app.core.database import get_session
-from app.models.users import User
 from app.models.billing import TransactionType
 from app.models.events import Event
+from app.models.users import User
 from app.repositories import UnitOfWork
 from app.schemas.rag import RAGQuery, RAGResponse
 from app.services.billing import BillingService
@@ -112,6 +113,7 @@ async def chat_completions(
         and body.model.strip().lower() in {"auto", "automatic", "dynamic"}
     )
     if dynamic_chat_routing:
+        assert runtime is not None
         provider_keys: dict[str, str] = {}
         for provider_name, setting_name in (
             ("openai", "OPENAI_API_KEY"),
@@ -237,14 +239,14 @@ async def chat_completions(
             and normalize_runtime_security_policy(runtime.security_policies)["pii_redaction"]
         )
 
-        async def sse_generator() -> AsyncGenerator[str, None]:
+        async def sse_generator() -> AsyncGenerator[str]:
             nonlocal full_answer
             source_count = 0
             rerank_items = 0
             provider_usage: dict | None = None
             try:
                 result = await pipeline.query(rag_query)
-                if hasattr(result, "__anext__"):
+                if not isinstance(result, RAGResponse):
                     async for chunk in result:
                         payload = json.loads(chunk) if isinstance(chunk, str) else chunk
                         full_answer += payload.get("token", "")
@@ -259,13 +261,12 @@ async def chat_completions(
                         if not buffer_output_for_redaction:
                             yield f"data: {json.dumps(payload)}\n\n"
                 else:
-                    answer = result.answer if isinstance(result, RAGResponse) else str(result)
-                    full_answer = answer
-                    source_count = len(result.sources) if isinstance(result, RAGResponse) else 0
-                    rerank_items = result.rerank_items if isinstance(result, RAGResponse) else 0
-                    provider_usage = result.usage if isinstance(result, RAGResponse) else None
+                    full_answer = result.answer
+                    source_count = len(result.sources)
+                    rerank_items = result.rerank_items
+                    provider_usage = result.usage
                     if not buffer_output_for_redaction:
-                        yield f"data: {json.dumps({'token': answer, 'done': False})}\n\n"
+                        yield f"data: {json.dumps({'token': result.answer, 'done': False})}\n\n"
 
                 latency_ms = int((time.perf_counter() - start_time) * 1000)
                 if buffer_output_for_redaction:
@@ -469,8 +470,8 @@ async def chat_completions(
             provider=body.provider,
             model=body.model,
             cost=int(actual_cost),
-            started_at=datetime.fromtimestamp(start_time, tz=timezone.utc).isoformat(),
-            completed_at=datetime.now(timezone.utc).isoformat(),
+            started_at=datetime.fromtimestamp(start_time, tz=UTC).isoformat(),
+            completed_at=datetime.now(UTC).isoformat(),
             user_id=current_user.id,
             ip="",
         )

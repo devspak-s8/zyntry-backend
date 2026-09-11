@@ -42,7 +42,7 @@ class SystemHealthService:
         start = time.time()
         try:
             async with engine.connect() as conn:
-                result = await conn.execute(text("SELECT 1"))
+                await conn.execute(text("SELECT 1"))
                 duration = (time.time() - start) * 1000
                 return {"service": "PostgreSQL", "status": HealthStatus.HEALTHY.value, "duration_ms": round(duration, 2), "details": {"message": "Database responding"}}
         except Exception as e:
@@ -105,7 +105,6 @@ class SystemHealthService:
         return {"service": "Storage", "status": status, "details": {"total_gb": round(usage.total / (1024**3), 2), "used_gb": round(usage.used / (1024**3), 2), "percent": percent}}
 
     async def check_external_apis(self) -> dict[str, Any]:
-        results = {}
         urls_to_check = []
         try:
             from app.core.config import settings

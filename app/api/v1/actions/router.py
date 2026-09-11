@@ -16,8 +16,8 @@ from app.models.actions import ActionConfirmation, ActionExecution
 from app.models.users import User
 from app.repositories import UnitOfWork
 from app.schemas.actions import (
-    ActionExecutionRead,
     ActionConfirmationRead,
+    ActionExecutionRead,
     ActionRequest,
     ActionResponse,
     WorkflowRequest,
@@ -285,6 +285,6 @@ async def reject_confirmation(
         if pending.user_id != auth.user.id and not auth.user.is_superuser:
             raise HTTPException(status_code=404, detail="Confirmation not found")
         await require_project_membership(str(pending.project_id), auth.user, db)
-        confirmation = await service.reject(confirmation_id_uuid)
+        await service.reject(confirmation_id_uuid)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

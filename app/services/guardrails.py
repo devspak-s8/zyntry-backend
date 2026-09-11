@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any
 
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
 
 class JSONSchemaGuardrail:
@@ -85,25 +85,25 @@ class GuardrailService:
     def validate_input(self, text: str, json_schema: dict[str, Any] | None = None) -> list[str]:
         violations = []
         ok, msg = self.token_guardrail.check_input(text)
-        if not ok:
+        if not ok and msg:
             violations.append(msg)
         if json_schema:
             guard = JSONSchemaGuardrail(json_schema)
             ok, msg = guard.validate(text)
-            if not ok:
+            if not ok and msg:
                 violations.append(f"Schema validation failed: {msg}")
         return violations
 
     def validate_output(self, text: str, json_schema: dict[str, Any] | None = None) -> list[str]:
         violations = []
         ok, msg = self.token_guardrail.check_output(text)
-        if not ok:
+        if not ok and msg:
             violations.append(msg)
         violations.extend(self.markdown_guardrail.check(text))
         if json_schema:
             guard = JSONSchemaGuardrail(json_schema)
             ok, msg = guard.validate(text)
-            if not ok:
+            if not ok and msg:
                 violations.append(f"Schema validation failed: {msg}")
         return violations
 

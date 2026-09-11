@@ -5,6 +5,7 @@ from typing import Any
 
 from fastapi import WebSocket
 
+
 class AdminWebSocketManager:
     def __init__(self) -> None:
         self.active_connections: dict[str, list[WebSocket]] = {}

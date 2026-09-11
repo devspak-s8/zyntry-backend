@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import UTC, datetime
 from typing import Any
 
@@ -10,7 +11,6 @@ from app.services.connectors import registry
 from app.services.encryption import encrypt_value
 from app.services.security.outbound import validate_outbound_url
 from app.services.security.secrets import default_secret_manager
-
 
 TOOL_CATALOG: tuple[dict[str, Any], ...] = (
     {"key": "github", "name": "GitHub", "description": "Connect repositories and code metadata.", "category": "Development", "auth_type": "oauth", "credential_fields": [], "config_fields": []},
@@ -85,7 +85,7 @@ class ToolService:
 
     async def list_tools(self, project_id: str | None = None) -> list[dict]:
         if project_id:
-            tools = await self.uow.tools.get_by_project(project_id)
+            tools = await self.uow.tools.get_by_project(uuid.UUID(project_id))
         else:
             tools = []
         return [
@@ -109,12 +109,13 @@ class ToolService:
             "database_type": data.database_type,
             "openapi_spec": data.openapi_spec,
         }
+        project_id = uuid.UUID(data.project_id) if data.project_id else None
         tool = await self.uow.tools.create(
             name=data.name,
             description=data.description,
             schema=schema,
             implementation=data.implementation,
-            project_id=data.project_id,
+            project_id=project_id,
         )
         await self.uow.commit()
         return {
@@ -182,7 +183,7 @@ class ToolService:
         ))
 
     async def update_tool(self, tool_id: str, data: ToolUpdate) -> dict:
-        tool = await self.uow.tools.get(tool_id)
+        tool = await self.uow.tools.get(uuid.UUID(tool_id))
         if not tool:
             raise ValueError("Tool not found")
         update_data = data.model_dump(exclude_unset=True)
@@ -200,7 +201,7 @@ class ToolService:
         }
 
     async def delete_tool(self, tool_id: str) -> None:
-        tool = await self.uow.tools.get(tool_id)
+        tool = await self.uow.tools.get(uuid.UUID(tool_id))
         if not tool:
             raise ValueError("Tool not found")
         await self.uow.tools.delete(tool)
@@ -245,7 +246,7 @@ class ToolService:
         if key in _OAUTH_CONNECTORS:
             raise ValueError("This connector must be connected with OAuth")
 
-        tools = await self.uow.tools.get_by_project(project_id)
+        tools = await self.uow.tools.get_by_project(uuid.UUID(project_id))
         existing = next(
             (tool for tool in tools if (tool.schema or {}).get(_INTERNAL_CONNECTION_KEY, {}).get("connector") == key),
             None,
@@ -305,7 +306,7 @@ class ToolService:
         catalog_item = _CATALOG_BY_KEY.get(key)
         if catalog_item is None or key not in _OAUTH_CONNECTORS:
             raise ValueError("Unsupported OAuth tool connector")
-        tools = await self.uow.tools.get_by_project(project_id)
+        tools = await self.uow.tools.get_by_project(uuid.UUID(project_id))
         existing = next(
             (tool for tool in tools if (tool.schema or {}).get(_INTERNAL_CONNECTION_KEY, {}).get("connector") == key),
             None,
@@ -341,7 +342,7 @@ class ToolService:
         key = connector_key.lower()
         if key not in _CATALOG_BY_KEY:
             raise ValueError("Unsupported tool connector")
-        tools = await self.uow.tools.get_by_project(project_id)
+        tools = await self.uow.tools.get_by_project(uuid.UUID(project_id))
         tool = next(
             (item for item in tools if (item.schema or {}).get(_INTERNAL_CONNECTION_KEY, {}).get("connector") == key),
             None,

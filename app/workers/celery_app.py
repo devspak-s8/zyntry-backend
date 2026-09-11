@@ -51,6 +51,10 @@ celery_app.conf.update(
             "task": "app.tasks.billing.expire_billing_reservations",
             "schedule": 60.0,
         },
+        "monitor-provider-funding": {
+            "task": "app.tasks.billing.monitor_provider_funding",
+            "schedule": 300.0,
+        },
         "run-security-scan": {
             "task": "app.tasks.security.run_security_scan",
             "schedule": 3600.0,

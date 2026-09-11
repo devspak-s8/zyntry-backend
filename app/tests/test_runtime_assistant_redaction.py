@@ -1,11 +1,12 @@
-from app.services.runtime_assistant.redaction import redact_sensitive
+import uuid
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-import uuid
+
 import pytest
 
 from app.services.runtime_assistant.memory import RuntimeAssistantMemory
-from datetime import datetime, timezone
+from app.services.runtime_assistant.redaction import redact_sensitive
 
 
 def test_redacts_nested_credentials_and_bearer_tokens() -> None:
@@ -27,7 +28,7 @@ def test_redacts_nested_credentials_and_bearer_tokens() -> None:
 
 
 def test_redaction_normalizes_json_unsafe_runtime_values() -> None:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     result = redact_sensitive({"observed_at": now, "id": uuid.uuid4()})
     assert result["observed_at"] == now.isoformat()
     assert isinstance(result["id"], str)

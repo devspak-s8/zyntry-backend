@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
 
 from sqlalchemy import select
 
@@ -49,6 +48,8 @@ class WebhookService(BaseService):
 
     async def deliver_event(self, event_type: str, project_id: uuid.UUID | None, data: dict) -> None:
         from app.tasks.webhooks import deliver_webhook_task
+        if project_id is None:
+            return
         subs = await self.list_subscriptions(project_id)
         for sub in subs:
             if sub.active and (not sub.events or event_type in sub.events):
@@ -192,7 +193,7 @@ class NotificationService(BaseService):
 
     async def mark_all_read(self, user_id: uuid.UUID) -> None:
         result = await self.session.execute(
-            select(Notification).where(Notification.user_id == user_id, Notification.read == False)
+            select(Notification).where(Notification.user_id == user_id, Notification.read.is_(False))
         )
         for notification in result.scalars().all():
             notification.read = True

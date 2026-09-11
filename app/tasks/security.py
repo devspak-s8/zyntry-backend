@@ -14,15 +14,16 @@ logger = get_logger("app.tasks.security")
 @celery_app.task(name="app.tasks.security.run_security_scan")
 def run_security_scan_task() -> dict[str, Any]:
     async def _run() -> dict[str, Any]:
+        from sqlalchemy import select
+
+        from app.admin.models import LoginEvent, SecurityAlert
         from app.admin.repositories import (
+            IPRecordRepository,
             LoginEventRepository,
             SecurityAlertRepository,
-            IPRecordRepository,
         )
         from app.admin.services.notifications import AdminNotificationService
         from app.core.database import async_session_factory
-        from sqlalchemy import select
-        from app.admin.models import LoginEvent, IPRecord
 
         async with async_session_factory() as db:
             ip_repo = IPRecordRepository(db)
@@ -33,14 +34,13 @@ def run_security_scan_task() -> dict[str, Any]:
             since = datetime.now(UTC) - timedelta(hours=1)
             result = await db.execute(
                 select(LoginEvent.ip_address)
-                .where(LoginEvent.created_at >= since, LoginEvent.success == False)
+                .where(LoginEvent.created_at >= since, LoginEvent.success.is_(False))
                 .distinct()
             )
             suspicious_ips = [r[0] for r in result.scalars().all() if r[0]]
 
             alerts_created = 0
             for ip_address in suspicious_ips:
-                record = await ip_repo.get_by_ip(ip_address)
                 failed_count = await login_repo.get_failures_by_ip(ip_address, hours=1)
 
                 if failed_count >= 5:
@@ -77,15 +77,17 @@ def run_security_scan_task() -> dict[str, Any]:
 @celery_app.task(name="app.tasks.security.analyze_ip")
 def analyze_ip_task(ip_address: str) -> dict[str, Any]:
     async def _run() -> dict[str, Any]:
+        from sqlalchemy import select
         from sqlalchemy import update as sql_update
-        from app.admin.repositories import IPRecordRepository
+
+        from app.admin.models import IPRecord
         from app.admin.services.security_engine import SecurityEngine
         from app.core.database import async_session_factory
-        from app.admin.models import IPRecord
 
         async with async_session_factory() as db:
             engine = SecurityEngine(db)
-            record = await engine.enrich_ip_record(ip_address)
+            record = await db.scalar(select(IPRecord).where(IPRecord.ip_address == ip_address))
+            record = await engine.enrich_ip_record(ip_address, record)
             risk_score = await engine.calculate_risk_score(
                 threat_types=[],
                 ip_address=ip_address,
@@ -111,10 +113,11 @@ def analyze_ip_task(ip_address: str) -> dict[str, Any]:
 @celery_app.task(name="app.tasks.security.detect_api_abuse")
 def detect_api_abuse_task(api_key_id: str, threshold: int = 1000, time_window_hours: int = 1) -> dict[str, Any]:
     async def _run() -> dict[str, Any]:
+        from sqlalchemy import select
+
         from app.admin.services.security_engine import SecurityEngine
         from app.core.database import async_session_factory
         from app.models.apikeys import ApiKey
-        from sqlalchemy import select
 
         async with async_session_factory() as db:
             engine = SecurityEngine(db)
@@ -222,23 +225,24 @@ def unban_ip_task(ip_address: str) -> bool:
 @celery_app.task(name="app.tasks.security.expire_bans")
 def expire_bans_task() -> int:
     async def _run() -> int:
-        from app.core.database import async_session_factory
-        from app.admin.models import IPRecord
         from sqlalchemy import update as sql_update
+
+        from app.admin.models import IPRecord
+        from app.core.database import async_session_factory
 
         async with async_session_factory() as db:
             now = datetime.now(UTC)
             result = await db.execute(
                 sql_update(IPRecord)
                 .where(
-                    IPRecord.is_banned == True,
+                    IPRecord.is_banned.is_(True),
                     IPRecord.ban_type == "temporary",
                     IPRecord.ban_expires_at <= now,
                 )
                 .values(is_banned=False, ban_type=None, ban_reason=None, ban_expires_at=None)
             )
             await db.commit()
-            count = result.rowcount
+            count = int(getattr(result, "rowcount", 0) or 0)
             logger.info("Expired temporary IP bans", extra={"count": count})
             return count
 

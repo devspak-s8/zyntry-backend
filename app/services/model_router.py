@@ -6,8 +6,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from app.services.model_providers.base import ModelInfo, ProviderResponse
 from app.services.model_providers import PROVIDER_REGISTRY
+from app.services.model_providers.base import ModelInfo, ProviderResponse
 from app.services.model_registry import list_registered_models, model_info_for
 from app.services.provider_health import FailoverManager, failover_manager
 from app.services.token_engine import CompletionUsage, TokenEngine
@@ -101,7 +101,7 @@ class ModelRouter:
         max_tokens: int = 2048,
         temperature: float = 0.7,
         on_token: Callable[[str], Awaitable[None]] | None = None,
-    ) -> tuple[str, int, str, str] | None:
+    ) -> tuple[str | None, str, str, str]:
         self.last_invoked_candidate = None
         self.last_usage = None
         self.last_attempts = []
@@ -114,11 +114,14 @@ class ModelRouter:
             streamed_any = False
             stream_usage: dict[str, Any] = {}
 
-            async def capture_usage(payload: dict[str, Any]) -> None:
+            async def capture_usage(
+                payload: dict[str, Any],
+                usage_sink: dict[str, Any] = stream_usage,
+            ) -> None:
                 # Streaming APIs may send input and output usage in separate
                 # frames. Keep both instead of replacing the earlier frame.
-                stream_usage.update(payload)
-            attempt = {
+                usage_sink.update(payload)
+            attempt: dict[str, Any] = {
                 "provider": candidate.provider_name,
                 "model": candidate.model_info.id,
                 "status": "started",
@@ -223,9 +226,12 @@ class ModelRouter:
             streamed_any = False
             stream_usage: dict[str, Any] = {}
 
-            async def capture_usage(payload: dict[str, Any]) -> None:
-                stream_usage.update(payload)
-            attempt = {
+            async def capture_usage(
+                payload: dict[str, Any],
+                usage_sink: dict[str, Any] = stream_usage,
+            ) -> None:
+                usage_sink.update(payload)
+            attempt: dict[str, Any] = {
                 "provider": provider_key,
                 "model": model_name,
                 "status": "started",

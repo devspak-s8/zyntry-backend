@@ -7,6 +7,9 @@ from app.admin.constants import Permission
 from app.admin.dependencies import AdminContext, require_permission
 from app.admin.schemas import (
     BillingOverviewRead,
+    ProviderFundingRead,
+    ProviderFundingReconcile,
+    ProviderFundingUpdate,
     WalletAdjustRequest,
     WalletCreditRequest,
     WalletDebitRequest,
@@ -17,8 +20,80 @@ from app.admin.schemas import (
 )
 from app.admin.services.billing_admin import BillingAdminService
 from app.core.database import get_session
+from app.services.provider_funding import ProviderFundingService
 
 router = APIRouter(prefix="/admin", tags=["admin-billing"])
+
+
+@router.get("/billing/provider-funding", response_model=list[ProviderFundingRead])
+async def admin_list_provider_funding(
+    ctx: AdminContext = Depends(require_permission(Permission.BILLING_READ)),
+    db: AsyncSession = Depends(get_session),
+) -> list[ProviderFundingRead]:
+    accounts = await ProviderFundingService(db).list_accounts()
+    return [ProviderFundingRead(**ProviderFundingService.serialize(account)) for account in accounts]
+
+
+@router.put("/billing/provider-funding/{provider}", response_model=ProviderFundingRead)
+async def admin_configure_provider_funding(
+    provider: str,
+    body: ProviderFundingUpdate,
+    ctx: AdminContext = Depends(require_permission(Permission.BILLING_WRITE)),
+    db: AsyncSession = Depends(get_session),
+) -> ProviderFundingRead:
+    try:
+        account = await ProviderFundingService(db).configure(
+            provider,
+            account_label=body.account_label,
+            currency=body.currency,
+            funding_mode=body.funding_mode,
+            monitor_enabled=body.monitor_enabled,
+            auto_top_up_enabled=body.auto_top_up_enabled,
+            current_balance=body.current_balance,
+            estimated_balance=body.estimated_balance,
+            minimum_balance=body.minimum_balance,
+            target_balance=body.target_balance,
+            max_top_up=body.max_top_up,
+            daily_top_up_limit=body.daily_top_up_limit,
+            payment_method_ref=body.payment_method_ref,
+            external_account_ref=body.external_account_ref,
+            metadata=body.metadata,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    return ProviderFundingRead(**ProviderFundingService.serialize(account))
+
+
+@router.post("/billing/provider-funding/{provider}/check", response_model=ProviderFundingRead)
+async def admin_check_provider_funding(
+    provider: str,
+    ctx: AdminContext = Depends(require_permission(Permission.BILLING_READ)),
+    db: AsyncSession = Depends(get_session),
+) -> ProviderFundingRead:
+    service = ProviderFundingService(db)
+    account = await service.get_account(provider)
+    if account is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Provider funding account not found")
+    return ProviderFundingRead(**await service.check_account(account))
+
+
+@router.post("/billing/provider-funding/{provider}/reconcile", response_model=ProviderFundingRead)
+async def admin_reconcile_provider_funding(
+    provider: str,
+    body: ProviderFundingReconcile,
+    ctx: AdminContext = Depends(require_permission(Permission.BILLING_WRITE)),
+    db: AsyncSession = Depends(get_session),
+) -> ProviderFundingRead:
+    try:
+        account = await ProviderFundingService(db).reconcile(
+            provider,
+            body.balance,
+            external_id=body.external_id,
+            metadata=body.metadata,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return ProviderFundingRead(**ProviderFundingService.serialize(account))
 
 
 @router.get("/billing/overview", response_model=BillingOverviewRead)

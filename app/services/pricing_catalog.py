@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Versioned, server-owned pricing catalogue.
 
 Values are provider cost per token (not per 1K tokens).  A pricing rule's
@@ -7,13 +5,14 @@ Values are provider cost per token (not per 1K tokens).  A pricing rule's
 edited; a new version supersedes them instead.
 """
 
-from datetime import datetime, timezone
+from __future__ import annotations
+
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from sqlalchemy import select
 
 from app.models.billing import PricingRule
-
 
 DEFAULT_PRICING_CATALOG = (
     {"provider": "openai", "model": "gpt-4o-mini", "operation": "input_tokens", "unit": "token", "price_per_unit": Decimal("0.00000015")},
@@ -47,7 +46,7 @@ DEFAULT_PRICING_CATALOG = (
 async def seed_pricing_catalog(session) -> int:
     """Insert missing catalogue entries without changing existing pricing."""
     created = 0
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     for item in DEFAULT_PRICING_CATALOG:
         provider = item["provider"]
         result = await session.execute(select(PricingRule).where(

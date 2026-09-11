@@ -3,10 +3,9 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import defaultdict
-from typing import Callable
+from collections.abc import Callable
 
 from fastapi import Request, Response
-from fastapi.security import HTTPAuthorizationCredentials
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.core.config import settings
@@ -35,9 +34,11 @@ class InMemoryRateLimiter:
 
 
 class RedisRateLimiter:
-    def __init__(self, redis_url: str) -> None:
+    def __init__(self, redis_url: str, *, fail_open: bool = False) -> None:
         self._redis_url = redis_url
+        self._fail_open = fail_open
         self._client = None
+        self.available = True
 
     async def _get_client(self):
         if self._client is None:
@@ -62,6 +63,7 @@ class RedisRateLimiter:
             pipeline.zcard(key)
             pipeline.expire(key, window + 1)
             results = await pipeline.execute()
+            self.available = True
             count = results[2]
             remaining = max(0, limit - count)
             if count >= limit:
@@ -69,7 +71,11 @@ class RedisRateLimiter:
                 return False, 0, reset
             return True, remaining - 1, int(now_ts + window)
         except Exception:
-            return True, limit - 1, int(time.time() + window)
+            self.available = False
+            logger.exception("Redis rate limiter unavailable")
+            if self._fail_open:
+                return True, limit - 1, int(time.time() + window)
+            return False, 0, int(time.time() + window)
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -77,10 +83,18 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self.limit = limit
         self.window = window
+        self._limiter: RedisRateLimiter | InMemoryRateLimiter
         if settings.REDIS_HOST and settings.REDIS_PORT:
-            self._limiter = RedisRateLimiter(settings.redis_url)
+            self._limiter = RedisRateLimiter(
+                settings.redis_url,
+                fail_open=settings.RATE_LIMIT_FAIL_OPEN,
+            )
         else:
             self._limiter = InMemoryRateLimiter()
+        # A process-local limiter preserves protection and availability during
+        # a Redis outage. It is deliberately not treated as a distributed
+        # substitute; Redis is still required for cross-instance enforcement.
+        self._local_fallback = InMemoryRateLimiter()
 
     async def dispatch(self, request: Request, call_next):
         if request.url.path == "/health" or not request.url.path.startswith("/api"):
@@ -98,6 +112,14 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         key = f"user:{user_id}:{base_key}" if user_id else f"ip:{base_key}"
 
         allowed, remaining, reset = await self._limiter.is_allowed(key, self.limit, self.window)
+        if (
+            not allowed
+            and isinstance(self._limiter, RedisRateLimiter)
+            and not self._limiter.available
+        ):
+            allowed, remaining, reset = await self._local_fallback.is_allowed(
+                key, self.limit, self.window
+            )
 
         response = Response() if not allowed else None
         if response is None:

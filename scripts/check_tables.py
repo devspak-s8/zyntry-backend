@@ -1,11 +1,13 @@
 import asyncio
 import sys
 from pathlib import Path
+
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.core.config import settings
+
 
 async def main():
     url = settings.DATABASE_URL

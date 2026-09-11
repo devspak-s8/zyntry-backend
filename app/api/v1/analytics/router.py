@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
@@ -11,7 +11,12 @@ from app.api.v1.dependencies_tenant import require_project_membership
 from app.core.database import get_session
 from app.models.users import User
 from app.repositories import UnitOfWork
-from app.schemas.analytics import TokenAnalyticsResponse, UsageEventCreate, UsageEventRead, UsageSummary
+from app.schemas.analytics import (
+    TokenAnalyticsResponse,
+    UsageEventCreate,
+    UsageEventRead,
+    UsageSummary,
+)
 from app.services.analytics import AnalyticsService
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
@@ -38,7 +43,7 @@ async def list_usage_events(
             provider=e.get("provider"),
             project_id=e.get("project_id"),
             metadata=e.get("metadata", {}),
-            created_at=e.get("created_at") or datetime.now(timezone.utc),
+            created_at=e.get("created_at") or datetime.now(UTC),
         )
         for e in events
     ]
@@ -62,7 +67,7 @@ async def create_usage_event(
         provider=event.get("provider"),
         project_id=event.get("project_id"),
         metadata=event.get("metadata", {}),
-        created_at="",
+        created_at=datetime.now(UTC),
     )
 
 

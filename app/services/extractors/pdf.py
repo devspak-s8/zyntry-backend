@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from io import BytesIO
 from typing import Any
 
 from pypdf import PdfReader
@@ -23,7 +24,7 @@ class PdfExtractor(BaseExtractor):
         tables: list[Table] = []
 
         try:
-            reader = PdfReader(file_bytes)
+            reader = PdfReader(BytesIO(file_bytes))
             metadata["pages"] = len(reader.pages)
             metadata["is_encrypted"] = reader.is_encrypted
 
@@ -70,8 +71,13 @@ class PdfExtractor(BaseExtractor):
                         paragraphs.append(Paragraph(text=stripped))
 
                 try:
-                    extracted_tables = page.extract_tables(
-                        settings={"vertical_strategy": "text", "horizontal_strategy": "text"}
+                    extract_tables = getattr(page, "extract_tables", None)
+                    extracted_tables = (
+                        extract_tables(
+                            settings={"vertical_strategy": "text", "horizontal_strategy": "text"}
+                        )
+                        if callable(extract_tables)
+                        else []
                     )
                 except Exception:
                     extracted_tables = []

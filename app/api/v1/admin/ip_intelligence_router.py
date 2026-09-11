@@ -31,7 +31,7 @@ async def admin_list_ips(
     ips = await service.list_ips(limit=limit, offset=offset, min_risk=min_risk, is_banned=is_banned, country=country)
     return [
         IPRecordRead(
-            id=str(ip.id) if ip.id else None,
+            id=str(ip.id),
             ip_address=ip.ip_address,
             country=ip.country,
             city=ip.city,
@@ -142,7 +142,7 @@ async def admin_top_ips_by_risk(
     ips = await service.get_top_ips_by_risk(limit=limit)
     return [
         IPRecordRead(
-            id=str(ip.id) if ip.id else None,
+            id=str(ip.id),
             ip_address=ip.ip_address,
             country=ip.country,
             city=ip.city,

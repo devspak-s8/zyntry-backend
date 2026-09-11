@@ -18,7 +18,6 @@ from app.schemas.capabilities import (
     EvaluationCaseResult,
 )
 
-
 ROLE_DEFAULTS: dict[str, dict[str, Any]] = {
     "owner": {"can_invoke": True, "can_read_sources": True, "can_use_tools": True, "can_write": True},
     "admin": {"can_invoke": True, "can_read_sources": True, "can_use_tools": True, "can_write": True},
@@ -121,7 +120,7 @@ def authorize_runtime_request(
         if not role_policy["can_read_sources"]:
             raise PermissionError(f"Role '{role}' cannot read runtime sources")
         allowed = set(role_policy.get("allowed_sources") or [])
-        if allowed and not set(item.lower() for item in sources).issubset(allowed):
+        if allowed and not {item.lower() for item in sources}.issubset(allowed):
             raise PermissionError("One or more requested sources are not allowed for this role")
     return role, policy
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import UUID
 
 from app.repositories import UnitOfWork
 
@@ -32,7 +33,8 @@ class SelfHealingService:
         self.uow = uow
 
     async def run_diagnostics(self, runtime_id: str) -> dict[str, Any]:
-        chunks = await self.uow.runtime_build_chunks.get_by_runtime(runtime_id)
+        runtime_uuid = UUID(runtime_id)
+        chunks = await self.uow.runtime_build_chunks.get_by_runtime(runtime_uuid)
         embeddings_count = len(chunks)
 
         failed_embeddings = sum(1 for c in chunks if not c.embedded)
@@ -50,7 +52,8 @@ class SelfHealingService:
         }
 
     async def repair_failed_embeddings(self, runtime_id: str) -> dict[str, Any]:
-        chunks = await self.uow.runtime_build_chunks.get_by_runtime(runtime_id)
+        runtime_uuid = UUID(runtime_id)
+        chunks = await self.uow.runtime_build_chunks.get_by_runtime(runtime_uuid)
         failed = [c for c in chunks if not c.embedded and not c.indexed]
         repaired = 0
         for chunk in failed:

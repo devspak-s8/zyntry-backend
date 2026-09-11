@@ -9,8 +9,8 @@ from uuid import uuid4
 import pytest
 
 from app.core.config import settings
-from app.services.oauth.service import OAuthError, OAuthService
 from app.services.integrations import IntegrationService
+from app.services.oauth.service import OAuthError, OAuthService
 from app.services.tools import ToolService
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from decimal import Decimal
 
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 
 from app.models.billing import Budget, PricingRule, UsageLog, Wallet, WalletTransaction
 from app.repositories.base import BaseRepository
@@ -51,7 +51,7 @@ class PricingRuleRepository(BaseRepository[PricingRule]):
     model = PricingRule
 
     async def list_active(self, provider: str | None = None, operation: str | None = None) -> list[PricingRule]:
-        stmt = select(self.model).where(self.model.active == True)
+        stmt = select(self.model).where(self.model.active.is_(True))
         if provider:
             stmt = stmt.where(self.model.provider == provider)
         if operation:
@@ -63,7 +63,7 @@ class PricingRuleRepository(BaseRepository[PricingRule]):
         result = await self.session.execute(
             select(self.model).where(
                 self.model.provider == provider,
-                self.model.active == True,
+                self.model.active.is_(True),
             )
         )
         return list(result.scalars().all())
@@ -72,7 +72,7 @@ class PricingRuleRepository(BaseRepository[PricingRule]):
         stmt = select(self.model).where(
             self.model.provider == provider,
             self.model.operation == operation,
-            self.model.active == True,
+            self.model.active.is_(True),
         )
         if model:
             stmt = stmt.where(self.model.model == model)

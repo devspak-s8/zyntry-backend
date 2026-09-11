@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
@@ -50,7 +50,7 @@ class AssistantMessage(BaseModel):
 
     role: str
     content: str
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     tool_calls: list[ToolCall] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 

@@ -5,7 +5,11 @@ from uuid import UUID
 
 from app.models.integrations import RuntimeIntegration
 from app.repositories import UnitOfWork
-from app.schemas.integrations import IntegrationDefinitionRead, RuntimeIntegrationCreate, RuntimeIntegrationUpdate
+from app.schemas.integrations import (
+    IntegrationDefinitionRead,
+    RuntimeIntegrationCreate,
+    RuntimeIntegrationUpdate,
+)
 from app.services.integrations.definitions import integration_registry
 from app.services.tools import ToolService
 
@@ -49,7 +53,7 @@ class IntegrationService:
         changed = False
         for item in items:
             defn = integration_registry.get(item.integration_slug)
-            supports_hybrid = bool(defn) and {
+            supports_hybrid = defn is not None and {
                 "zyntry_managed",
                 "end_user_oauth",
             }.issubset(defn.connection_modes)
@@ -241,7 +245,7 @@ class IntegrationService:
         if purpose in {"source", "both"}:
             if provider not in SOURCE_CONNECTORS:
                 raise ValueError(f"{provider} is not available as a knowledge source")
-            sources = await self.uow.knowledge_sources.get_by_project(project_id)
+            sources = await self.uow.knowledge_sources.get_by_project(UUID(project_id))
             source = next(
                 (
                     item

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.constants import Permission
@@ -133,7 +134,7 @@ def _to_read(log: RequestLog, usage: UsageLog | None) -> RequestLogRead:
         input_tokens=usage.input_tokens if usage else None,
         output_tokens=usage.output_tokens if usage else None,
         total_tokens=(usage.input_tokens + usage.output_tokens) if usage else log.tokens,
-        cost=float(usage.cost) if usage else (float(log.cost) if log.cost is not None else None),
+        cost=(usage.cost if usage else (Decimal(str(log.cost)) if log.cost is not None else None)),
         latency_ms=log.latency_ms,
         status_code=log.status,
         knowledge_chunks=(usage.vector_searches if usage else None),

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -46,7 +46,7 @@ async def test_action_memory_serializes_datetime_results() -> None:
         memory_records=SimpleNamespace(create=AsyncMock()),
         commit=AsyncMock(),
     )
-    timestamp = datetime.now(timezone.utc)
+    timestamp = datetime.now(UTC)
     await RuntimeAssistantMemory(uow, str(runtime_id)).save_action(
         "get_runtime_summary", {"last_build": timestamp}
     )

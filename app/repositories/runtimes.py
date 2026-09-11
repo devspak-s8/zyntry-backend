@@ -145,6 +145,12 @@ class RuntimeBuildChunkRepository:
         await self.session.flush()
         return instances
 
+    async def update(self, instance: RuntimeBuildChunk, **kwargs: object) -> RuntimeBuildChunk:
+        for key, value in kwargs.items():
+            setattr(instance, key, value)
+        await self.session.flush()
+        return instance
+
     async def delete(self, instance: RuntimeBuildChunk) -> None:
         await self.session.delete(instance)
         await self.session.flush()

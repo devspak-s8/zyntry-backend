@@ -4,6 +4,7 @@ import mimetypes
 from pathlib import PurePosixPath
 from typing import BinaryIO
 
+from app.schemas.documents import ExtractedDocument
 from app.services.extractors import (
     BaseExtractor,
     CsvExtractor,
@@ -15,7 +16,6 @@ from app.services.extractors import (
     PdfExtractor,
     TxtExtractor,
 )
-from app.schemas.documents import ExtractedDocument
 from app.services.ocr import extract_image
 
 

@@ -99,7 +99,7 @@ class IPIntelligenceService:
     async def unban_ip(self, ip_address: str) -> IPRecord | None:
         return await self._repo.unban_ip(ip_address)
 
-    async def whitelist_ip(self, ip_address: str) -> IPRecord:
+    async def whitelist_ip(self, ip_address: str) -> IPRecord | None:
         record = await self._repo.get_by_ip(ip_address)
         if record:
             record.is_banned = False
@@ -110,17 +110,22 @@ class IPIntelligenceService:
         return record
 
     async def blacklist_ip(self, ip_address: str, reason: str | None = None) -> IPRecord:
-        return await self._repo.ban_ip(ip_address, ban_type="permanent", reason=reason)
+        return await self._repo.ban_ip(
+            ip_address,
+            ban_type="permanent",
+            reason=reason,
+            duration_hours=None,
+        )
 
     async def rate_limit_ip(self, ip_address: str, limit: int = 100, window_seconds: int = 60) -> bool:
         key = f"admin:ratelimit:{ip_address}"
         current = await redis_cache.get(key)
         if current is None:
-            await redis_cache.set(key, 1, expire=window_seconds)
+            await redis_cache.set(key, 1, ttl=window_seconds)
             return True
         if int(current) >= limit:
             return False
-        await redis_cache.incr(key)
+        await redis_cache.client.incr(key)
         return True
 
     async def get_ip_stats(self, ip_address: str) -> dict[str, Any]:

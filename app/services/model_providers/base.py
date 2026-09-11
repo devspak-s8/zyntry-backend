@@ -1,8 +1,7 @@
 from abc import ABC, abstractmethod
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
-
+from typing import Any
 
 UsageCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
 
@@ -12,14 +11,17 @@ async def emit_usage(callback: UsageCallback | None, usage: Any) -> None:
     if not callback or not isinstance(usage, dict) or not usage:
         return
     result = callback(usage)
-    if hasattr(result, "__await__"):
+    if result is not None:
         await result
 
 
 class ProviderResponse(str):
     """Text-compatible provider response carrying optional usage metadata."""
 
-    def __new__(cls, content: str, usage: dict[str, Any] | None = None):
+    usage: dict[str, Any]
+    content: str
+
+    def __new__(cls, content: str, usage: dict[str, Any] | None = None) -> "ProviderResponse":
         value = super().__new__(cls, content)
         value.usage = usage or {}
         value.content = content

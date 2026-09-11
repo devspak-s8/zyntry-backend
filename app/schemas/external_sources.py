@@ -4,7 +4,6 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-
 ExternalStrategy = Literal[
     "internal_only",
     "internal_then_external",

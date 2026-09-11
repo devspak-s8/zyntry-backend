@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
-import uuid
 from typing import Any
 
 from sqlalchemy import func, select
@@ -11,10 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.admin.models import WalletFreeze
 from app.admin.repositories import WalletFreezeRepository
 from app.models.billing import Wallet, WalletTransaction
-from app.schemas.billing import RefundRequest
-from app.services.billing import BillingService, InsufficientCredits
 from app.models.organizations import Organization
 from app.models.users import User
+from app.schemas.billing import RefundRequest
+from app.services.billing import BillingService, InsufficientCredits
 
 
 class BillingAdminService:
@@ -24,7 +24,6 @@ class BillingAdminService:
 
     async def get_billing_overview(self) -> dict[str, Any]:
         now = datetime.now(UTC)
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
         wallet_balance = await self.db.scalar(select(func.coalesce(func.sum(Wallet.balance), 0)).where(Wallet.status == "active"))
@@ -40,7 +39,7 @@ class BillingAdminService:
         profit = platform_revenue
         profit_margin = (profit / credits_used) if credits_used else Decimal("0")
 
-        top_customers = []
+        top_customers: list[dict[str, Any]] = []
         monthly_revenue = await self.db.scalar(
             select(func.coalesce(func.sum(UsageLog.cost), 0)).where(UsageLog.created_at >= month_start)
         ) or Decimal("0")
@@ -208,7 +207,7 @@ class BillingAdminService:
         return {"success": True, "message": "Wallet frozen"}
 
     async def unfreeze_wallet(self, user_id: str, reason: str | None = None) -> dict[str, Any]:
-        result = await self.db.execute(select(WalletFreeze).where(WalletFreeze.user_id == user_id, WalletFreeze.is_frozen == True))
+        result = await self.db.execute(select(WalletFreeze).where(WalletFreeze.user_id == user_id, WalletFreeze.is_frozen.is_(True)))
         freeze = result.scalar_one_or_none()
         if freeze:
             freeze.is_frozen = False

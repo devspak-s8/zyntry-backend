@@ -1,17 +1,15 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
-from functools import partial
+from datetime import UTC, datetime
 
 import httpx
-import hmac
-import hashlib
 from celery import shared_task
 
-from app.core.config import settings
 from app.core.database import run_async
 from app.models.webhook_deliveries import WebhookDelivery
 from app.models.webhook_subscriptions import WebhookSubscription
@@ -51,7 +49,7 @@ def deliver_webhook_task(self, subscription_id: str, event_type: str, data: dict
                     return {"status": "in_progress", "event_id": delivery_event_id}
                 if existing.status == "failed":
                     retry_after = existing.received_at.timestamp() + _exponential_backoff(existing.error.count(str(existing.error)) if existing.error else 0)
-                    if datetime.now(timezone.utc).timestamp() < retry_after:
+                    if datetime.now(UTC).timestamp() < retry_after:
                         return {"status": "backoff", "event_id": delivery_event_id}
 
             await processed_repo.create(
@@ -60,14 +58,14 @@ def deliver_webhook_task(self, subscription_id: str, event_type: str, data: dict
                 event_type=event_type,
                 status="processing",
                 payload={"subscription_id": subscription_id, "data": data},
-                received_at=datetime.now(timezone.utc),
+                received_at=datetime.now(UTC),
             )
             await session.commit()
 
             payload = {
                 "id": delivery_event_id,
                 "type": event_type,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "project_id": str(sub.project_id),
                 "organization_id": getattr(sub, "organization_id", None),
                 "data": data,
@@ -88,13 +86,13 @@ def deliver_webhook_task(self, subscription_id: str, event_type: str, data: dict
                 # introduced and prevents DNS changes from turning a public
                 # URL into a private destination.
                 target_url = validate_outbound_url(sub.url)
-                start = datetime.now(timezone.utc)
+                start = datetime.now(UTC)
                 async with httpx.AsyncClient(
                     timeout=sub.timeout_seconds,
                     follow_redirects=False,
                 ) as client:
                     response = await client.post(target_url, json=payload)
-                    latency_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
+                    latency_ms = int((datetime.now(UTC) - start).total_seconds() * 1000)
                     response_status = response.status_code
                     response_body = response.text[:4096] if response.text else None
 
@@ -106,7 +104,7 @@ def deliver_webhook_task(self, subscription_id: str, event_type: str, data: dict
                         response_body=response_body,
                         latency_ms=latency_ms,
                         attempts=attempts,
-                        delivered_at=datetime.now(timezone.utc),
+                        delivered_at=datetime.now(UTC),
                     )
                     session.add(delivery)
 
@@ -117,7 +115,7 @@ def deliver_webhook_task(self, subscription_id: str, event_type: str, data: dict
                         processed = await processed_repo.get_by_event_id(delivery_event_id)
                         if processed:
                             processed.status = "failed"
-                            processed.error = f"HTTP {response.status_code}: {response_body[:200]}"
+                            processed.error = f"HTTP {response.status_code}: {(response_body or '')[:200]}"
                             await session.commit()
                         raise Exception(f"Webhook failed with {response.status_code}")
             except Exception as exc:

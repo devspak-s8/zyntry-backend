@@ -1,14 +1,14 @@
-from __future__ import annotations
-
 """Concurrency-safe metered billing primitives.
 
 This module is deliberately independent from payment/top-up providers.  It owns
 the accounting that happens after a wallet has been funded.
 """
 
+from __future__ import annotations
+
 import uuid
-from datetime import datetime, timedelta, timezone
-from decimal import Decimal, ROUND_UP
+from datetime import UTC, datetime, timedelta
+from decimal import ROUND_UP, Decimal
 from typing import Any
 
 from sqlalchemy import func, select
@@ -24,7 +24,6 @@ from app.models.billing import (
     Wallet,
     WalletStatus,
 )
-
 
 MONEY_QUANTUM = Decimal("0.0001")
 SPENDING_TRANSACTION_TYPES = (
@@ -62,7 +61,7 @@ class PricingService:
         self.session = session
 
     async def rules(self, provider: str, operation: str, model: str | None = None, at: datetime | None = None) -> list[PricingRule]:
-        at = at or datetime.now(timezone.utc)
+        at = at or datetime.now(UTC)
         stmt = select(PricingRule).where(
             PricingRule.provider.in_([provider, "*"]),
             PricingRule.operation == operation,
@@ -108,13 +107,15 @@ class PricingService:
                     "pricing_rule_id": str(rule.id),
                     "pricing_version": rule.version,
                 }
-        for operation, quantity in (resource_components or {}).items():
-            if quantity <= 0 or operation in components:
+        for operation, resource_quantity in (resource_components or {}).items():
+            if resource_quantity <= 0 or operation in components:
                 continue
-            customer, provider_cost, rule = await self.price(provider, model, operation, quantity)
+            customer, provider_cost, rule = await self.price(
+                provider, model, operation, resource_quantity
+            )
             if rule is not None:
                 components[operation] = {
-                    "quantity": quantity,
+                    "quantity": resource_quantity,
                     "customer_cost": customer,
                     "provider_cost": provider_cost,
                     "markup": customer - provider_cost,
@@ -136,10 +137,10 @@ class SpendingLimitService:
             return now.replace(hour=0, minute=0, second=0, microsecond=0)
         if period == "monthly":
             return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        return datetime(1970, 1, 1, tzinfo=timezone.utc)
+        return datetime(1970, 1, 1, tzinfo=UTC)
 
     async def check(self, *, amount: Decimal, user_id: uuid.UUID, organization_id: uuid.UUID | None = None, project_id: uuid.UUID | None = None, runtime_id: uuid.UUID | None = None, api_key_id: uuid.UUID | None = None, now: datetime | None = None, exclude_reservation_id: uuid.UUID | None = None) -> None:
-        now = now or datetime.now(timezone.utc)
+        now = now or datetime.now(UTC)
         scopes = [("user", user_id)]
         for scope, value in (("organization", organization_id), ("project", project_id), ("runtime", runtime_id), ("api_key", api_key_id)):
             if value is not None:
@@ -194,7 +195,7 @@ class MeteredBillingService:
             raise InsufficientBalanceError(amount, wallet.balance)
         wallet.balance -= amount
         wallet.reserved_balance += amount
-        reservation = BillingReservation(wallet_id=wallet.id, user_id=user_id, organization_id=organization_id, project_id=project_id, runtime_id=runtime_id, api_key_id=api_key_id, request_id=request_id, idempotency_key=idempotency_key, estimated_amount=amount, currency=wallet.currency, resource_type=resource_type, expires_at=datetime.now(timezone.utc) + timedelta(seconds=max(1, ttl_seconds)), metadata_=metadata or {})
+        reservation = BillingReservation(wallet_id=wallet.id, user_id=user_id, organization_id=organization_id, project_id=project_id, runtime_id=runtime_id, api_key_id=api_key_id, request_id=request_id, idempotency_key=idempotency_key, estimated_amount=amount, currency=wallet.currency, resource_type=resource_type, expires_at=datetime.now(UTC) + timedelta(seconds=max(1, ttl_seconds)), metadata_=metadata or {})
         self.session.add(reservation)
         try:
             await self.session.flush()
@@ -268,7 +269,7 @@ class MeteredBillingService:
 
     async def expire_reservations(self, *, limit: int = 100, now: datetime | None = None) -> int:
         """Release abandoned reservations so reserved funds cannot become stranded."""
-        now = now or datetime.now(timezone.utc)
+        now = now or datetime.now(UTC)
         result = await self.session.execute(
             select(BillingReservation.id)
             .where(BillingReservation.status == "reserved", BillingReservation.expires_at <= now)
@@ -288,7 +289,7 @@ class MeteredBillingService:
             return {"ok": True, "wallet_id": None, "mismatches": []}
         settled_spend = await self.session.scalar(select(func.coalesce(func.sum(BillingLedger.amount), 0)).where(BillingLedger.user_id == user_id, BillingLedger.status == "settled", BillingLedger.transaction_type.in_([TransactionType.AI_INFERENCE, TransactionType.EMBEDDING, TransactionType.RERANKING, TransactionType.RAG, TransactionType.STORAGE, TransactionType.COMPUTE, TransactionType.INTEGRATION])))
         reserved = await self.session.scalar(select(func.coalesce(func.sum(BillingReservation.estimated_amount), 0)).where(BillingReservation.wallet_id == wallet.id, BillingReservation.status == "reserved"))
-        expired = await self.session.scalar(select(func.count()).select_from(BillingReservation).where(BillingReservation.wallet_id == wallet.id, BillingReservation.status == "reserved", BillingReservation.expires_at <= datetime.now(timezone.utc)))
+        expired = await self.session.scalar(select(func.count()).select_from(BillingReservation).where(BillingReservation.wallet_id == wallet.id, BillingReservation.status == "reserved", BillingReservation.expires_at <= datetime.now(UTC)))
         mismatches: list[str] = []
         if money(wallet.reserved_balance) != money(reserved or 0):
             mismatches.append("reserved_balance")

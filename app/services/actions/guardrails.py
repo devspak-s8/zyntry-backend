@@ -3,7 +3,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-
 # Some providers historically marked mutating operations as ``risk='low'``.
 # Keep the policy safe even when a connector's metadata is incomplete.
 WRITE_ACTION_PREFIXES = (

@@ -3,7 +3,13 @@ from collections.abc import AsyncGenerator
 
 import httpx
 
-from app.services.model_providers.base import BaseModelProvider, ModelInfo, ProviderResponse, UsageCallback, emit_usage
+from app.services.model_providers.base import (
+    BaseModelProvider,
+    ModelInfo,
+    ProviderResponse,
+    UsageCallback,
+    emit_usage,
+)
 
 
 class OpenAIProvider(BaseModelProvider):

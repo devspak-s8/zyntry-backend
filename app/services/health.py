@@ -66,7 +66,7 @@ class HealthService:
             if (cache_hits + cache_misses) > 0
             else 0.0
         )
-        error_count = sum(m.value for m in metrics if m.metric_type == "error")
+        error_count = int(sum(m.value for m in metrics if m.metric_type == "error"))
         index_size = runtime.index_size
         storage_usage = index_size + self._get_cache_size_estimate(rid)
         memory_usage_mb = self._estimate_memory_usage(runtime)
@@ -81,7 +81,7 @@ class HealthService:
             cache_hit_rate=cache_hit_rate,
             index_size=index_size,
             error_count=error_count,
-            total_operations=max(1, cache_hits + cache_misses + error_count),
+            total_operations=max(1, int(cache_hits + cache_misses + error_count)),
         )
         # Absence of telemetry is not evidence of degradation. A newly built
         # runtime previously received an artificial score of 50 because it had
@@ -118,7 +118,7 @@ class HealthService:
             "retrieval_quality": round(retrieval_quality, 2),
         }
 
-    async def record_metric(self, runtime_id: str, metric_type: str, value: float) -> None:
+    async def record_metric(self, runtime_id: str, metric_type: str, value: float) -> HealthMetric:
         rid = uuid.UUID(runtime_id)
         runtime = await self.uow.runtimes.get(rid)
         if not runtime:

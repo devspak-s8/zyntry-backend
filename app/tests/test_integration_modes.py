@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import uuid
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.users import User
 from app.repositories import UnitOfWork
 from app.schemas.integrations import (
     ConnectionDirectCreate,
@@ -12,14 +10,12 @@ from app.schemas.integrations import (
 )
 from app.services.connections.service import ConnectionService
 from app.services.integrations.service import IntegrationService
-from app.services.runtimes import RuntimeService
 
 
 @pytest.mark.asyncio
 async def test_mode_a_zyntry_managed_connection(db_session: AsyncSession) -> None:
     """Mode A: Customer connects their own PostgreSQL/GitHub directly to Zyntry."""
     uow = UnitOfWork(db_session)
-    runtime_service = RuntimeService(uow)
     integration_service = IntegrationService(uow)
     connection_service = ConnectionService(uow)
 
@@ -104,7 +100,7 @@ async def test_mode_b_byo_user_connections_and_isolation(db_session: AsyncSessio
     assert dev_managed is None
 
     # 2. End User Alice connects her GitHub account
-    alice_conn = await connection_service.create_direct_connection(
+    await connection_service.create_direct_connection(
         user_id=None,
         data=ConnectionDirectCreate(
             integration_slug="github",
@@ -118,7 +114,7 @@ async def test_mode_b_byo_user_connections_and_isolation(db_session: AsyncSessio
     )
 
     # 3. End User Bob connects his GitHub account
-    bob_conn = await connection_service.create_direct_connection(
+    await connection_service.create_direct_connection(
         user_id=None,
         data=ConnectionDirectCreate(
             integration_slug="github",

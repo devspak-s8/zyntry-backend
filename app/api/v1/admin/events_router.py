@@ -48,7 +48,7 @@ async def admin_list_events(
     )
     return [
         EventTimelineRead(
-            id=str(e.id) if e.id else None,
+            id=str(e.id),
             request_id=e.request_id,
             event_type=e.event_type,
             title=e.title,
@@ -62,7 +62,7 @@ async def admin_list_events(
             model=e.model,
             latency_ms=e.latency_ms,
             status_code=e.status_code,
-            cost=float(e.cost) if e.cost else None,
+            cost=e.cost,
             data=e.data,
         )
         for e in events
@@ -105,7 +105,7 @@ async def admin_live_events(
     events = await service.list_events(limit=limit, offset=0)
     return [
         EventTimelineRead(
-            id=str(e.id) if e.id else None,
+            id=str(e.id),
             request_id=e.request_id,
             event_type=e.event_type,
             title=e.title,
@@ -119,7 +119,7 @@ async def admin_live_events(
             model=e.model,
             latency_ms=e.latency_ms,
             status_code=e.status_code,
-            cost=float(e.cost) if e.cost else None,
+            cost=e.cost,
             data=e.data,
         )
         for e in events

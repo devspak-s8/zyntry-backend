@@ -3,12 +3,13 @@ from __future__ import annotations
 import hashlib
 import hmac
 import time
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pytest_mock import MockerFixture
 
-from app.services.bachs import BachsService, BachsError, verify_bachs_signature
+from app.services.bachs import BachsError, BachsService, verify_bachs_signature
 
 
 @pytest.fixture

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import csv
 import io
-from typing import Any
 
 from app.extractors.base import BaseExtractor, ExtractedDocument, Heading, Paragraph, Table
 

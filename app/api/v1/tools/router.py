@@ -1,24 +1,25 @@
 from __future__ import annotations
 
+import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
+from app.api.v1.dependencies_tenant import require_project_membership
 from app.core.database import get_session
 from app.models.users import User
 from app.repositories import UnitOfWork
-from app.api.v1.dependencies_tenant import require_project_membership
 from app.schemas.tools import (
+    DatabaseToolCreate,
+    OpenAPIToolCreate,
     ToolCatalogItem,
-    ToolConnectRequest,
     ToolConnectionStatus,
+    ToolConnectRequest,
     ToolCreate,
     ToolRead,
     ToolUpdate,
-    OpenAPIToolCreate,
-    DatabaseToolCreate,
 )
 from app.services.tools import ToolService
 
@@ -44,6 +45,8 @@ async def create_openapi_tool(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> ToolRead:
+    if body.project_id is None:
+        raise HTTPException(status_code=400, detail="project_id is required")
     await require_project_membership(body.project_id, current_user, db)
     try:
         tool = await ToolService(UnitOfWork(db)).create_openapi_tool(
@@ -137,6 +140,8 @@ async def create_tool(
     current_user: Annotated[User, Depends(get_current_user)],
     db: AsyncSession = Depends(get_session),
 ) -> ToolRead:
+    if body.project_id is None:
+        raise HTTPException(status_code=400, detail="project_id is required")
     await require_project_membership(body.project_id, current_user, db)
     uow = UnitOfWork(db)
     service = ToolService(uow)
@@ -152,7 +157,7 @@ async def update_tool(
     db: AsyncSession = Depends(get_session),
 ) -> ToolRead:
     uow = UnitOfWork(db)
-    existing = await uow.tools.get(tool_id)
+    existing = await uow.tools.get(uuid.UUID(tool_id))
     if existing is None:
         raise HTTPException(status_code=404, detail="Tool not found")
     await require_project_membership(str(existing.project_id), current_user, db)
@@ -168,7 +173,7 @@ async def delete_tool(
     db: AsyncSession = Depends(get_session),
 ) -> None:
     uow = UnitOfWork(db)
-    existing = await uow.tools.get(tool_id)
+    existing = await uow.tools.get(uuid.UUID(tool_id))
     if existing is None:
         raise HTTPException(status_code=404, detail="Tool not found")
     await require_project_membership(str(existing.project_id), current_user, db)

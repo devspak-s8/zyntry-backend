@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -12,15 +13,15 @@ from app.admin.dependencies import (
     require_permission,
     require_super_admin,
 )
+from app.admin.models import SecurityAlert
 from app.admin.schemas import (
     AlertTimelineEvent,
     SecurityAlertAction,
     SecurityAlertRead,
 )
-from app.admin.services.security_actions import SecurityActionsService
 from app.admin.services.audit_log import AuditLogService
+from app.admin.services.security_actions import SecurityActionsService
 from app.admin.services.security_engine import SecurityEngine
-from app.admin.models import SecurityAlert
 from app.core.database import get_session
 
 router = APIRouter(prefix="/admin", tags=["admin-security"])
@@ -50,7 +51,7 @@ async def admin_list_alerts(
     )
     return [
         SecurityAlertRead(
-            id=str(a.id) if a.id else None,
+            id=str(a.id),
             alert_type=a.alert_type,
             risk_score=a.risk_score,
             risk_level=a.risk_level,
@@ -114,11 +115,11 @@ async def admin_get_alert(
     db: AsyncSession = Depends(get_session),
 ) -> SecurityAlertRead:
     engine = SecurityEngine(db)
-    alert = await engine._alert_repo.get_by_id(alert_id)
+    alert = await engine._alert_repo.get(uuid.UUID(alert_id))
     if alert is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alert not found")
     return SecurityAlertRead(
-        id=str(alert.id) if alert.id else None,
+        id=str(alert.id),
         alert_type=alert.alert_type,
         risk_score=alert.risk_score,
         risk_level=alert.risk_level,

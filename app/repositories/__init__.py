@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from app.core.database import AsyncSession
-from app.repositories.actions import ActionAuditLogRepository, ActionConfirmationRepository, ActionExecutionRepository
+from app.repositories.actions import (
+    ActionAuditLogRepository,
+    ActionConfirmationRepository,
+    ActionExecutionRepository,
+)
 from app.repositories.analytics import UsageEventRepository
 from app.repositories.apikeys import ApiKeyRepository
 from app.repositories.billing import (
@@ -14,7 +18,10 @@ from app.repositories.billing import (
 from app.repositories.embedding_cache import EmbeddingCacheRepository
 from app.repositories.events import EventRepository
 from app.repositories.health_metrics import HealthMetricRepository, RuntimeHealthCheckRepository
-from app.repositories.integrations import IntegrationConnectionRepository, RuntimeIntegrationRepository
+from app.repositories.integrations import (
+    IntegrationConnectionRepository,
+    RuntimeIntegrationRepository,
+)
 from app.repositories.knowledge import (
     DocumentRepository,
     KnowledgeBaseRepository,
@@ -24,14 +31,22 @@ from app.repositories.knowledge import (
 )
 from app.repositories.memory import MemoryRecordRepository
 from app.repositories.notifications import NotificationRepository
-from app.repositories.oauth import OAuthConnectionRepository, OAuthProviderRepository, OAuthStateRepository
+from app.repositories.oauth import (
+    OAuthConnectionRepository,
+    OAuthProviderRepository,
+    OAuthStateRepository,
+)
 from app.repositories.onboarding import OnboardingStateRepository
 from app.repositories.onboarding_session import OnboardingSessionRepository
 from app.repositories.organizations import OrganizationRepository
 from app.repositories.projects import ProjectRepository
 from app.repositories.providers import ProviderConnectionRepository
 from app.repositories.request_logs import RequestLogRepository
-from app.repositories.runtimes import RuntimeBuildChunkRepository, RuntimeBuildLogRepository, RuntimeRepository
+from app.repositories.runtimes import (
+    RuntimeBuildChunkRepository,
+    RuntimeBuildLogRepository,
+    RuntimeRepository,
+)
 from app.repositories.tools import ToolRepository
 from app.repositories.users import UserRepository
 from app.repositories.webhook_deliveries import WebhookDeliveryRepository

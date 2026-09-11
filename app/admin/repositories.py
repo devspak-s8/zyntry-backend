@@ -81,7 +81,7 @@ class AdminAuditLogRepository(BaseRepository[AdminAuditLog]):
 
 class IPAllowListRepository(BaseRepository[IPAllowList]):
     async def list_active(self) -> list[IPAllowList]:
-        result = await self.db.execute(select(IPAllowList).where(IPAllowList.is_active == True))
+        result = await self.db.execute(select(IPAllowList).where(IPAllowList.is_active.is_(True)))
         return list(result.scalars().all())
 
     async def get_by_ip(self, ip_address: str) -> IPAllowList | None:
@@ -146,7 +146,7 @@ class IPRecordRepository(BaseRepository[IPRecord]):
         return record
 
     async def is_banned(self, ip_address: str) -> bool:
-        result = await self.db.execute(select(IPRecord).where(IPRecord.ip_address == ip_address, IPRecord.is_banned == True))
+        result = await self.db.execute(select(IPRecord).where(IPRecord.ip_address == ip_address, IPRecord.is_banned.is_(True)))
         record = result.scalar_one_or_none()
         if record is None:
             return False
@@ -157,7 +157,7 @@ class IPRecordRepository(BaseRepository[IPRecord]):
         return False
 
     async def list_banned(self, limit: int = 50, offset: int = 0) -> list[IPRecord]:
-        result = await self.db.execute(select(IPRecord).where(IPRecord.is_banned == True).limit(limit).offset(offset))
+        result = await self.db.execute(select(IPRecord).where(IPRecord.is_banned.is_(True)).limit(limit).offset(offset))
         return list(result.scalars().all())
 
     async def list_by_risk(self, min_score: int = 70, limit: int = 50, offset: int = 0) -> list[IPRecord]:
@@ -182,12 +182,12 @@ class UserFingerprintRepository(BaseRepository[UserFingerprint]):
 class LoginEventRepository(BaseRepository[LoginEvent]):
     async def get_failures_by_ip(self, ip_address: str, hours: int = 1) -> int:
         since = datetime.now(UTC) - timedelta(hours=hours)
-        result = await self.db.execute(select(func.count()).select_from(LoginEvent).where(LoginEvent.ip_address == ip_address, LoginEvent.success == False, LoginEvent.created_at >= since))
+        result = await self.db.execute(select(func.count()).select_from(LoginEvent).where(LoginEvent.ip_address == ip_address, LoginEvent.success.is_(False), LoginEvent.created_at >= since))
         return result.scalar() or 0
 
     async def get_failures_by_user(self, user_id: uuid.UUID, hours: int = 1) -> int:
         since = datetime.now(UTC) - timedelta(hours=hours)
-        result = await self.db.execute(select(func.count()).select_from(LoginEvent).where(LoginEvent.user_id == user_id, LoginEvent.success == False, LoginEvent.created_at >= since))
+        result = await self.db.execute(select(func.count()).select_from(LoginEvent).where(LoginEvent.user_id == user_id, LoginEvent.success.is_(False), LoginEvent.created_at >= since))
         return result.scalar() or 0
 
     async def get_events_by_ip(self, ip_address: str, limit: int = 50, offset: int = 0) -> list[LoginEvent]:
@@ -238,10 +238,11 @@ class SecurityAlertRepository(BaseRepository[SecurityAlert]):
         result = await self.db.execute(select(SecurityAlert).where(SecurityAlert.id == alert_id))
         alert = result.scalar_one_or_none()
         if alert:
-            alert.status = status
-            if acknowledged_by and status == AlertStatus.ACKNOWLEDGED:
+            status_value = AlertStatus(status)
+            alert.status = status_value
+            if acknowledged_by and status_value == AlertStatus.ACKNOWLEDGED:
                 alert.acknowledged_by = acknowledged_by
-            if status == AlertStatus.RESOLVED:
+            if status_value == AlertStatus.RESOLVED:
                 alert.resolved_at = datetime.now(UTC)
             await self.db.flush()
         return alert
@@ -257,7 +258,7 @@ class FeatureFlagRepository(BaseRepository[FeatureFlag]):
         if scope:
             stmt = stmt.where(FeatureFlag.scope == scope)
         if enabled_only:
-            stmt = stmt.where(FeatureFlag.enabled == True)
+            stmt = stmt.where(FeatureFlag.enabled.is_(True))
         stmt = stmt.limit(limit).offset(offset)
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
@@ -277,7 +278,7 @@ class NotificationConfigRepository(BaseRepository[NotificationConfig]):
 
 class AdminEventRepository(BaseRepository[AdminEvent]):
     async def list_unread(self, limit: int = 50, offset: int = 0) -> list[AdminEvent]:
-        result = await self.db.execute(select(AdminEvent).where(AdminEvent.is_read == False).order_by(AdminEvent.created_at.desc()).limit(limit).offset(offset))
+        result = await self.db.execute(select(AdminEvent).where(AdminEvent.is_read.is_(False)).order_by(AdminEvent.created_at.desc()).limit(limit).offset(offset))
         return list(result.scalars().all())
 
     async def list_all(
@@ -291,7 +292,7 @@ class AdminEventRepository(BaseRepository[AdminEvent]):
         if category:
             stmt = stmt.where(AdminEvent.category == category)
         if unread_only:
-            stmt = stmt.where(AdminEvent.is_read == False)
+            stmt = stmt.where(AdminEvent.is_read.is_(False))
         stmt = stmt.limit(limit).offset(offset)
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
@@ -299,7 +300,7 @@ class AdminEventRepository(BaseRepository[AdminEvent]):
 
 class WalletFreezeRepository(BaseRepository[WalletFreeze]):
     async def get_active_by_user(self, user_id: uuid.UUID) -> WalletFreeze | None:
-        result = await self.db.execute(select(WalletFreeze).where(WalletFreeze.user_id == user_id, WalletFreeze.is_frozen == True))
+        result = await self.db.execute(select(WalletFreeze).where(WalletFreeze.user_id == user_id, WalletFreeze.is_frozen.is_(True)))
         return result.scalar_one_or_none()
 
     async def is_frozen(self, user_id: uuid.UUID) -> bool:
@@ -309,7 +310,7 @@ class WalletFreezeRepository(BaseRepository[WalletFreeze]):
 
 class OrganizationLockRepository(BaseRepository[OrganizationLock]):
     async def get_active_by_org(self, organization_id: uuid.UUID) -> OrganizationLock | None:
-        result = await self.db.execute(select(OrganizationLock).where(OrganizationLock.organization_id == organization_id, OrganizationLock.is_locked == True))
+        result = await self.db.execute(select(OrganizationLock).where(OrganizationLock.organization_id == organization_id, OrganizationLock.is_locked.is_(True)))
         return result.scalar_one_or_none()
 
     async def is_locked(self, organization_id: uuid.UUID) -> bool:

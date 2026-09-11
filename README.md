@@ -43,10 +43,29 @@ app/
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+# Use the pinned file for a reproducible production/local environment.
+pip install -r requirements.lock
+# requirements.txt remains the editable dependency manifest for upgrades.
 cp .env.example .env
 alembic upgrade head
 uvicorn app.main:app --reload
 ```
 
 API docs available at `http://localhost:8000/docs`.
+
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for service boundaries and
+[`docs/RELEASE_RUNBOOK.md`](docs/RELEASE_RUNBOOK.md) for quality checks,
+integration contracts, migrations, and deployment procedures.
+
+To run the default unit suite:
+
+```bash
+pytest -q
+```
+
+Real Postgres, Redis, and provider checks are opt-in and require the private
+test credentials described in the release runbook:
+
+```bash
+pytest -m integration -q
+```

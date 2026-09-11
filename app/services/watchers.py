@@ -490,7 +490,14 @@ class WatcherManager:
             watcher = self._watchers.get(source_id)
             if watcher is None:
                 source_type = connector.config.get("source_type", "").lower()
-                watcher_map = {
+                watcher_map: dict[
+                    str,
+                    type[GitHubWatcher]
+                    | type[GoogleDriveWatcher]
+                    | type[NotionWatcher]
+                    | type[SlackWatcher]
+                    | type[PostgresWatcher],
+                ] = {
                     "github": GitHubWatcher,
                     "google_drive": GoogleDriveWatcher,
                     "notion": NotionWatcher,

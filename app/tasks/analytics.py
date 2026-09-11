@@ -19,11 +19,12 @@ def generate_usage_report_task(
     end_date: str | None = None,
 ) -> dict[str, Any]:
     async def _run() -> dict[str, Any]:
+        from sqlalchemy import func, select
+
         from app.core.database import async_session_factory
+        from app.models.knowledge import Document
         from app.models.projects import Project
         from app.models.runtimes import Runtime
-        from app.models.knowledge import Document
-        from sqlalchemy import func, select
 
         async with async_session_factory() as db:
             end = datetime.fromisoformat(end_date) if end_date else datetime.now(UTC)
@@ -81,9 +82,10 @@ def track_usage_event_task(
     metadata: dict[str, Any] | None = None,
 ) -> str:
     async def _run() -> str:
+        from decimal import Decimal as Dec
+
         from app.core.database import async_session_factory
         from app.models.billing import UsageLog
-        from decimal import Decimal as Dec
 
         async with async_session_factory() as db:
             event = UsageLog(
@@ -117,10 +119,11 @@ def generate_provider_usage_task(
     end_date: str | None = None,
 ) -> dict[str, Any]:
     async def _run() -> dict[str, Any]:
+        from sqlalchemy import func, select
+
         from app.core.database import async_session_factory
         from app.models.billing import UsageLog
         from app.models.projects import Project
-        from sqlalchemy import func, select
 
         async with async_session_factory() as db:
             end = datetime.fromisoformat(end_date) if end_date else datetime.now(UTC)
@@ -172,10 +175,11 @@ def generate_cost_report_task(
     end_date: str | None = None,
 ) -> dict[str, Any]:
     async def _run() -> dict[str, Any]:
+        from sqlalchemy import func, select
+
         from app.core.database import async_session_factory
         from app.models.billing import UsageLog
         from app.models.projects import Project
-        from sqlalchemy import func, select
 
         async with async_session_factory() as db:
             end = datetime.fromisoformat(end_date) if end_date else datetime.now(UTC)
@@ -238,9 +242,10 @@ def generate_runtime_stats_task(
     end_date: str | None = None,
 ) -> dict[str, Any]:
     async def _run() -> dict[str, Any]:
+        from sqlalchemy import func, select
+
         from app.core.database import async_session_factory
         from app.models.billing import UsageLog
-        from sqlalchemy import func, select
 
         async with async_session_factory() as db:
             end = datetime.fromisoformat(end_date) if end_date else datetime.now(UTC)

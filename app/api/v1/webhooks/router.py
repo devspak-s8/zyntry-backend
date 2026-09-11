@@ -1,27 +1,27 @@
 from __future__ import annotations
 
+import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
+from app.api.v1.dependencies_tenant import require_project_membership
 from app.core.database import get_session
 from app.models.users import User
-from app.models.webhook_deliveries import WebhookDelivery
-from app.models.webhook_subscriptions import WebhookSubscription
-from app.repositories import UnitOfWork
-from app.schemas.webhooks import WebhookDeliveryRead, WebhookSubscriptionCreate, WebhookSubscriptionRead
-from app.services.webhooks import WebhookService
-from app.api.v1.dependencies_tenant import require_project_membership
+from app.schemas.webhooks import (
+    WebhookDeliveryRead,
+    WebhookSubscriptionCreate,
+    WebhookSubscriptionRead,
+)
 from app.services.security.outbound import validate_outbound_url
-import uuid
+from app.services.webhooks import WebhookService
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
 
-def _safe_secret(value: str | None) -> None:
+def _safe_secret(value: str | None) -> str | None:
     # Webhook signing material is write-only. The caller receives it only
     # during creation through a separate secure channel, never from reads.
     return None
@@ -36,7 +36,7 @@ async def list_webhooks(
     try:
         pid = uuid.UUID(project_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid project id")
+        raise HTTPException(status_code=400, detail="Invalid project id") from None
     await require_project_membership(project_id, current_user, db)
     service = WebhookService(db)
     subs = await service.list_subscriptions(pid)
@@ -64,7 +64,7 @@ async def create_webhook(
     try:
         pid = uuid.UUID(project_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid project id")
+        raise HTTPException(status_code=400, detail="Invalid project id") from None
     await require_project_membership(project_id, current_user, db)
     try:
         validate_outbound_url(body.url)
@@ -92,7 +92,7 @@ async def delete_webhook(
     try:
         wid = uuid.UUID(webhook_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid webhook id")
+        raise HTTPException(status_code=400, detail="Invalid webhook id") from None
     service = WebhookService(db)
     sub = await service.get_subscription(wid)
     if sub is None:
@@ -152,7 +152,7 @@ async def list_webhook_deliveries(
     try:
         wid = uuid.UUID(webhook_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid webhook id")
+        raise HTTPException(status_code=400, detail="Invalid webhook id") from None
     service = WebhookService(db)
     sub = await service.get_subscription(wid)
     if sub is None:
@@ -186,7 +186,7 @@ async def replay_webhook_delivery(
         wid = uuid.UUID(webhook_id)
         did = uuid.UUID(delivery_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid id")
+        raise HTTPException(status_code=400, detail="Invalid id") from None
     service = WebhookService(db)
     sub = await service.get_subscription(wid)
     if sub is None:

@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, Integer, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import Integer, func, select
 
 from app.repositories import UnitOfWork
 
@@ -178,7 +177,7 @@ class ObservabilityService:
 
     async def get_document_count(self, runtime_id: str, hours: int = 24) -> int:
         rid = uuid.UUID(runtime_id)
-        since = datetime.now(timezone.utc) - timedelta(hours=hours)
+        since = datetime.now(UTC) - timedelta(hours=hours)
         result = await self.uow.session.execute(
             select(func.sum(self.uow.analytics.model.quantity))
             .where(self.uow.analytics.model.project_id == rid)
@@ -190,7 +189,7 @@ class ObservabilityService:
 
     async def get_chunk_count(self, runtime_id: str, hours: int = 24) -> int:
         rid = uuid.UUID(runtime_id)
-        since = datetime.now(timezone.utc) - timedelta(hours=hours)
+        since = datetime.now(UTC) - timedelta(hours=hours)
         result = await self.uow.session.execute(
             select(func.sum(self.uow.analytics.model.quantity))
             .where(self.uow.analytics.model.project_id == rid)
@@ -202,7 +201,7 @@ class ObservabilityService:
 
     async def get_embedding_count(self, runtime_id: str, hours: int = 24) -> int:
         rid = uuid.UUID(runtime_id)
-        since = datetime.now(timezone.utc) - timedelta(hours=hours)
+        since = datetime.now(UTC) - timedelta(hours=hours)
         result = await self.uow.session.execute(
             select(func.sum(self.uow.analytics.model.quantity))
             .where(self.uow.analytics.model.project_id == rid)
@@ -214,7 +213,7 @@ class ObservabilityService:
 
     async def get_index_size(self, runtime_id: str, hours: int = 24) -> int:
         rid = uuid.UUID(runtime_id)
-        since = datetime.now(timezone.utc) - timedelta(hours=hours)
+        since = datetime.now(UTC) - timedelta(hours=hours)
         result = await self.uow.session.execute(
             select(func.sum(self.uow.analytics.model.quantity))
             .where(self.uow.analytics.model.project_id == rid)
@@ -228,14 +227,14 @@ class ObservabilityService:
         self, runtime_id: str, hours: int = 24
     ) -> dict[str, Any]:
         rid = uuid.UUID(runtime_id)
-        since = datetime.now(timezone.utc) - timedelta(hours=hours)
+        since = datetime.now(UTC) - timedelta(hours=hours)
         result = await self.uow.session.execute(
             select(
                 self.uow.analytics.model.provider,
                 self.uow.analytics.model.model,
                 func.count(self.uow.analytics.model.id).label("request_count"),
                 func.avg(
-                    self.uow.analytics.model.metadata["latency_ms"].astext.cast(
+                    self.uow.analytics.model.metadata_["latency_ms"].astext.cast(
                         Integer
                     )
                 ).label("avg_latency_ms"),
@@ -262,15 +261,15 @@ class ObservabilityService:
         self, runtime_id: str, hours: int = 24
     ) -> dict[str, int]:
         rid = uuid.UUID(runtime_id)
-        since = datetime.now(timezone.utc) - timedelta(hours=hours)
+        since = datetime.now(UTC) - timedelta(hours=hours)
         result = await self.uow.session.execute(
             select(
                 func.sum(
-                    self.uow.analytics.model.metadata["input_tokens"]
+                    self.uow.analytics.model.metadata_["input_tokens"]
                     .astext.cast(Integer)
                 ).label("input_tokens"),
                 func.sum(
-                    self.uow.analytics.model.metadata["output_tokens"]
+                    self.uow.analytics.model.metadata_["output_tokens"]
                     .astext.cast(Integer)
                 ).label("output_tokens"),
                 func.sum(self.uow.analytics.model.quantity).label("total_tokens"),
@@ -290,7 +289,7 @@ class ObservabilityService:
         self, runtime_id: str, hours: int = 24
     ) -> dict[str, Any]:
         rid = uuid.UUID(runtime_id)
-        since = datetime.now(timezone.utc) - timedelta(hours=hours)
+        since = datetime.now(UTC) - timedelta(hours=hours)
         result = await self.uow.session.execute(
             select(
                 self.uow.analytics.model.metric,
@@ -318,17 +317,17 @@ class ObservabilityService:
         self, runtime_id: str, hours: int = 24
     ) -> dict[str, int]:
         rid = uuid.UUID(runtime_id)
-        since = datetime.now(timezone.utc) - timedelta(hours=hours)
+        since = datetime.now(UTC) - timedelta(hours=hours)
         result = await self.uow.session.execute(
             select(
-                self.uow.analytics.model.metadata["category"].astext.label("category"),
+                self.uow.analytics.model.metadata_["category"].astext.label("category"),
                 func.sum(self.uow.analytics.model.quantity).label("count"),
             )
             .where(self.uow.analytics.model.project_id == rid)
             .where(self.uow.analytics.model.metric == "error")
             .where(self.uow.analytics.model.created_at >= since)
             .group_by(
-                self.uow.analytics.model.metadata["category"].astext
+                self.uow.analytics.model.metadata_["category"].astext
             )
         )
         rows = result.all()
@@ -336,7 +335,7 @@ class ObservabilityService:
 
     async def get_cache_hit_rate(self, runtime_id: str, hours: int = 24) -> float:
         rid = uuid.UUID(runtime_id)
-        since = datetime.now(timezone.utc) - timedelta(hours=hours)
+        since = datetime.now(UTC) - timedelta(hours=hours)
         result = await self.uow.session.execute(
             select(
                 func.sum(
@@ -370,7 +369,7 @@ class ObservabilityService:
         self, runtime_id: str, hours: int = 24
     ) -> float:
         rid = uuid.UUID(runtime_id)
-        since = datetime.now(timezone.utc) - timedelta(hours=hours)
+        since = datetime.now(UTC) - timedelta(hours=hours)
         result = await self.uow.session.execute(
             select(func.avg(self.uow.analytics.model.quantity))
             .where(self.uow.analytics.model.project_id == rid)

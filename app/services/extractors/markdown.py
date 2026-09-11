@@ -1,8 +1,17 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
-from app.extractors.base import BaseExtractor, CodeBlock, ExtractedDocument, Heading, Link, ListItem, Paragraph
+from app.extractors.base import (
+    BaseExtractor,
+    CodeBlock,
+    ExtractedDocument,
+    Heading,
+    Link,
+    ListItem,
+    Paragraph,
+)
 
 
 class MarkdownExtractor(BaseExtractor):
@@ -36,7 +45,6 @@ class MarkdownExtractor(BaseExtractor):
                 )
             )
 
-        stripped_headings = "\n".join(m.group(0) for m in self.HEADING_RE.finditer(raw))
         split_sections = re.split(r"#{1,6}\s+.+", raw)
         for section in split_sections:
             lines = section.splitlines()

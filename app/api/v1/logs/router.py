@@ -3,13 +3,13 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
 
 from app.api.v1.dependencies import get_current_user
 from app.core.database import get_session
-from app.models.users import User
 from app.models.request_logs import RequestLog
+from app.models.users import User
 from app.schemas.events import RequestLogRead
 
 router = APIRouter(prefix="/logs", tags=["logs"])
@@ -29,7 +29,7 @@ async def list_logs(
     try:
         pid = uuid.UUID(project_id)
     except ValueError:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid project id")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid project id") from None
 
     from app.models.projects import Project
     project = await db.get(Project, pid)
@@ -47,15 +47,15 @@ async def list_logs(
     logs = result.scalars().all()
     return [
         RequestLogRead(
-            id=l.id,
-            project_id=l.project_id,
-            method=l.method,
-            path=l.endpoint,
-            status_code=l.status,
-            latency_ms=l.latency_ms,
-            tokens_used=l.tokens or 0,
-            model=l.model,
-            created_at=l.created_at.isoformat() if l.created_at else "",
+            id=log.id,
+            project_id=log.project_id,
+            method=log.method,
+            path=log.endpoint,
+            status_code=log.status,
+            latency_ms=log.latency_ms,
+            tokens_used=log.tokens or 0,
+            model=log.model,
+            created_at=log.created_at.isoformat() if log.created_at else "",
         )
-        for l in logs
+        for log in logs
     ]

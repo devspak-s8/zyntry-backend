@@ -7,6 +7,7 @@ import secrets
 import struct
 import time
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -109,9 +110,9 @@ def decode_token(token: str) -> dict[str, Any]:
             issuer=settings.ADMIN_JWT_ISSUER,
         )
     except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired") from None
     except jwt.InvalidTokenError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token") from None
 
 
 def extract_token_from_request(request: Request) -> str | None:
@@ -128,7 +129,7 @@ def get_client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
-def check_ip_allowlist(ip_address: str, allowlist: list[IPAllowList]) -> bool:
+def check_ip_allowlist(ip_address: str, allowlist: Sequence[IPAllowList]) -> bool:
     for entry in allowlist:
         if entry.ip_address == ip_address and entry.is_active:
             return True
@@ -329,7 +330,7 @@ class AdminAuth:
         admin_user.mfa_enabled = True
         await self.db.commit()
 
-        return {"secret": secret, "uri": generate_totp_uri(secret, admin_user.user_id)}
+        return {"secret": secret, "uri": generate_totp_uri(secret, str(admin_user.user_id))}
 
     async def verify_mfa(self, admin_id: uuid.UUID, code: str) -> dict[str, Any]:
         result = await self.db.execute(select(AdminUser).where(AdminUser.id == admin_id))
@@ -347,7 +348,7 @@ class AdminAuth:
         active_sessions = await self.db.execute(
             select(AdminSession).where(
                 AdminSession.admin_user_id == admin_id,
-                AdminSession.revoked == False,
+                AdminSession.revoked.is_(False),
             )
         )
         for session in active_sessions.scalars().all():

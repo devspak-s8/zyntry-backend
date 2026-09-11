@@ -6,11 +6,11 @@ from typing import Any
 
 from sqlalchemy import select
 
+from app.core.security import hash_token
 from app.models.oauth import OAuthProvider
 from app.models.onboarding import ProviderConnection
 from app.repositories import UnitOfWork
 from app.schemas.providers import ProviderConnectionCreate
-from app.core.security import hash_token
 from app.services.model_providers import PROVIDER_REGISTRY
 from app.services.security.secrets import default_secret_manager
 

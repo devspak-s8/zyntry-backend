@@ -1,8 +1,8 @@
 import uuid
+from types import SimpleNamespace
 
 import pytest
 from starlette.requests import Request
-from types import SimpleNamespace
 
 from app.services.runtime_security import (
     RuntimeSecurityService,

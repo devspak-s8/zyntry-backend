@@ -1,17 +1,18 @@
 from __future__ import annotations
 
+import httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.repositories import UnitOfWork
 from app.schemas.integrations import (
     ConnectionAuthorizeRequest,
-    ConnectionDirectCreate,
     RuntimeIntegrationCreate,
 )
 from app.services.connections.service import ConnectionService
 from app.services.integrations.service import IntegrationService
-from app.services.security.secrets import SecretManager, default_secret_manager
+from app.services.security.secrets import SecretManager
 
 
 @pytest.mark.asyncio
@@ -42,7 +43,36 @@ async def test_secret_manager_operations() -> None:
 
 
 @pytest.mark.asyncio
-async def test_connection_oauth_authorize_and_callback(db_session: AsyncSession) -> None:
+async def test_connection_oauth_authorize_and_callback(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _TokenResponse:
+        status_code = 200
+
+        @staticmethod
+        def json() -> dict[str, str | int]:
+            return {
+                "access_token": "provider-access-token",
+                "refresh_token": "provider-refresh-token",
+                "expires_in": 3600,
+                "scope": "channels:read channels:history search:read chat:write",
+                "token_type": "Bearer",
+            }
+
+    class _TokenClient:
+        async def __aenter__(self) -> _TokenClient:
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def post(self, *_: object, **__: object) -> _TokenResponse:
+            return _TokenResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **_: _TokenClient())
+    monkeypatch.setattr(settings, "SLACK_CLIENT_ID", "test-slack-client")
+    monkeypatch.setattr(settings, "SLACK_CLIENT_SECRET", "test-slack-secret")
+
     uow = UnitOfWork(db_session)
     connection_service = ConnectionService(uow)
     integration_service = IntegrationService(uow)

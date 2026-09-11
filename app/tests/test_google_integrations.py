@@ -8,7 +8,6 @@ from app.services.connectors.google_services import GoogleSheetsConnector
 from app.services.integrations.definitions import integration_registry
 from app.services.onboarding.models import FastOnboardingModelProvider
 
-
 GOOGLE_SLUGS = {
     "google_people",
     "google_sheets",

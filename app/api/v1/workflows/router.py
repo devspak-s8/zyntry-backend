@@ -1,34 +1,32 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
-from typing import Annotated
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
 from app.api.v1.dependencies_tenant import require_project_membership
 from app.core.database import get_session
+from app.models.projects import Project
 from app.models.users import User
+from app.models.workflows import Workflow
 from app.repositories import UnitOfWork
 from app.schemas.workflows import (
     WorkflowCreate,
     WorkflowExecutionRead,
     WorkflowRead,
     WorkflowRunRequest,
+    WorkflowScheduleRead,
+    WorkflowScheduleUpdate,
     WorkflowTestRequest,
     WorkflowTestResult,
     WorkflowUpdate,
     WorkflowValidateRequest,
     WorkflowValidationResult,
-    WorkflowScheduleRead,
-    WorkflowScheduleUpdate,
 )
-from app.models.workflows import Workflow, WorkflowExecution
-from app.models.projects import Project
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
 
@@ -64,7 +62,7 @@ def _validate_cron(cron: str | None) -> None:
 @router.get("", response_model=list[WorkflowRead])
 async def list_workflows(
     project_id: str | None = Query(None),
-    current_user: Annotated[User, Depends(get_current_user)] = None,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> list[WorkflowRead]:
     uow = UnitOfWork(db)
@@ -72,7 +70,7 @@ async def list_workflows(
         try:
             pid = uuid.UUID(project_id)
         except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid project id")
+            raise HTTPException(status_code=400, detail="Invalid project id") from None
         await require_project_membership(project_id, current_user, db)
         workflows = await uow.workflows.get_by_project(pid)
     else:
@@ -100,7 +98,7 @@ async def list_workflows(
 @router.post("", response_model=WorkflowRead, status_code=status.HTTP_201_CREATED)
 async def create_workflow(
     body: WorkflowCreate,
-    current_user: Annotated[User, Depends(get_current_user)] = None,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> WorkflowRead:
     await require_project_membership(str(body.project_id), current_user, db)
@@ -132,7 +130,7 @@ async def create_workflow(
 @router.get("/schedules", response_model=list[WorkflowScheduleRead])
 async def list_workflow_schedules(
     project_id: str | None = Query(default=None),
-    current_user: Annotated[User, Depends(get_current_user)] = None,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> list[WorkflowScheduleRead]:
     uow = UnitOfWork(db)
@@ -153,14 +151,14 @@ async def list_workflow_schedules(
 @router.get("/{workflow_id}", response_model=WorkflowRead)
 async def get_workflow(
     workflow_id: str,
-    current_user: Annotated[User, Depends(get_current_user)] = None,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> WorkflowRead:
     uow = UnitOfWork(db)
     try:
         wid = uuid.UUID(workflow_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid workflow id")
+        raise HTTPException(status_code=400, detail="Invalid workflow id") from None
     workflow = await uow.workflows.get(wid)
     if not workflow:
         raise HTTPException(status_code=404, detail="Workflow not found")
@@ -181,14 +179,14 @@ async def get_workflow(
 async def update_workflow(
     workflow_id: str,
     body: WorkflowUpdate,
-    current_user: Annotated[User, Depends(get_current_user)] = None,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> WorkflowRead:
     uow = UnitOfWork(db)
     try:
         wid = uuid.UUID(workflow_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid workflow id")
+        raise HTTPException(status_code=400, detail="Invalid workflow id") from None
     workflow = await uow.workflows.get(wid)
     if not workflow:
         raise HTTPException(status_code=404, detail="Workflow not found")
@@ -219,14 +217,14 @@ async def update_workflow(
 @router.delete("/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_workflow(
     workflow_id: str,
-    current_user: Annotated[User, Depends(get_current_user)] = None,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> None:
     uow = UnitOfWork(db)
     try:
         wid = uuid.UUID(workflow_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid workflow id")
+        raise HTTPException(status_code=400, detail="Invalid workflow id") from None
     workflow = await uow.workflows.get(wid)
     if not workflow:
         raise HTTPException(status_code=404, detail="Workflow not found")
@@ -238,7 +236,7 @@ async def delete_workflow(
 @router.post("/run", response_model=WorkflowExecutionRead)
 async def run_workflow(
     body: WorkflowRunRequest,
-    current_user: Annotated[User, Depends(get_current_user)] = None,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> WorkflowExecutionRead:
     uow = UnitOfWork(db)
@@ -259,9 +257,9 @@ async def run_workflow(
         blocked: list[str] = []
         confirmation_ids: list[str] = []
         completed = 0
+        from app.services.actions.confirmations import ConfirmationService
         from app.services.actions.guardrails import requires_action_confirmation
         from app.services.actions.registry import ActionRegistry
-        from app.services.actions.confirmations import ConfirmationService
         for step in steps:
             provider, action = step.get("provider"), step.get("action")
             if not provider or not action:
@@ -314,7 +312,7 @@ async def run_workflow(
 @router.get("/{workflow_id}/schedule", response_model=WorkflowScheduleRead)
 async def get_workflow_schedule(
     workflow_id: str,
-    current_user: Annotated[User, Depends(get_current_user)] = None,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> WorkflowScheduleRead:
     try:
@@ -332,7 +330,7 @@ async def get_workflow_schedule(
 async def update_workflow_schedule(
     workflow_id: str,
     body: WorkflowScheduleUpdate,
-    current_user: Annotated[User, Depends(get_current_user)] = None,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> WorkflowScheduleRead:
     try:
@@ -346,7 +344,7 @@ async def update_workflow_schedule(
     _validate_cron(body.cron)
     definition = dict(workflow.definition or {})
     schedule = body.model_dump()
-    schedule["next_run_at"] = datetime.now(timezone.utc).isoformat() if body.enabled else None
+    schedule["next_run_at"] = datetime.now(UTC).isoformat() if body.enabled else None
     schedule["last_run_at"] = None
     definition["schedule"] = schedule
     updated = await UnitOfWork(db).workflows.update(workflow, definition=definition)
@@ -357,7 +355,7 @@ async def update_workflow_schedule(
 @router.delete("/{workflow_id}/schedule", response_model=WorkflowScheduleRead)
 async def disable_workflow_schedule(
     workflow_id: str,
-    current_user: Annotated[User, Depends(get_current_user)] = None,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> WorkflowScheduleRead:
     try:
@@ -386,7 +384,7 @@ async def disable_workflow_schedule(
 @router.post("/validate", response_model=WorkflowValidationResult)
 async def validate_workflow(
     body: WorkflowValidateRequest,
-    current_user: Annotated[User, Depends(get_current_user)] = None,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> WorkflowValidationResult:
     definition = body.definition
@@ -414,18 +412,19 @@ async def validate_workflow(
 @router.post("/test", response_model=WorkflowTestResult)
 async def test_workflow(
     body: WorkflowTestRequest,
-    current_user: Annotated[User, Depends(get_current_user)] = None,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> WorkflowTestResult:
     definition = body.definition
-    input_data = body.input_data or {}
-    start = datetime.now(timezone.utc)
+    start = datetime.now(UTC)
     try:
         sequence = definition.get("sequence", [])
         for step in sequence:
             step_type = step.get("type")
             if step_type == "model":
-                model = step.get("settings", {}).get("primaryModel", "Gemini 2.5 Pro")
+                # Model validation is performed by the runtime planner; this
+                # endpoint only verifies that the step is structurally valid.
+                step.get("settings", {})
             elif step_type == "knowledge":
                 pass
             elif step_type == "memory":
@@ -435,10 +434,10 @@ async def test_workflow(
             elif step_type == "validator":
                 pass
         result = {"result": "Test completed successfully", "steps_processed": len(sequence)}
-        duration = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
+        duration = int((datetime.now(UTC) - start).total_seconds() * 1000)
         return WorkflowTestResult(success=True, output=result, error=None, duration_ms=duration)
     except Exception as exc:
-        duration = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
+        duration = int((datetime.now(UTC) - start).total_seconds() * 1000)
         return WorkflowTestResult(success=False, output=None, error=str(exc), duration_ms=duration)
 
 
@@ -447,14 +446,14 @@ async def list_workflow_executions(
     workflow_id: str,
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
-    current_user: Annotated[User, Depends(get_current_user)] = None,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> list[WorkflowExecutionRead]:
     uow = UnitOfWork(db)
     try:
         wid = uuid.UUID(workflow_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid workflow id")
+        raise HTTPException(status_code=400, detail="Invalid workflow id") from None
     executions = await uow.workflow_executions.get_by_workflow(wid, limit=limit, offset=offset)
     workflow = await uow.workflows.get(wid)
     if workflow is None:

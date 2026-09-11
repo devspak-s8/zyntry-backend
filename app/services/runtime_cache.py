@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import uuid
 from typing import Any
 
 import redis.asyncio as aioredis

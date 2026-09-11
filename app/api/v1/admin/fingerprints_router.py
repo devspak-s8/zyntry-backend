@@ -28,7 +28,7 @@ async def admin_list_fingerprints(
     fingerprints = await service.list_flagged(min_risk=min_risk, limit=limit, offset=offset)
     return [
         FingerprintDetailRead(
-            id=str(fp.id) if fp.id else None,
+            id=str(fp.id),
             user_id=str(fp.user_id) if fp.user_id else None,
             organization_id=str(fp.organization_id) if fp.organization_id else None,
             fingerprint_hash=fp.fingerprint_hash,
@@ -63,7 +63,7 @@ async def admin_user_fingerprints(
     fingerprints = await service.get_user_fingerprints(user_id, limit=limit, offset=offset)
     return [
         FingerprintDetailRead(
-            id=str(fp.id) if fp.id else None,
+            id=str(fp.id),
             user_id=str(fp.user_id) if fp.user_id else None,
             organization_id=str(fp.organization_id) if fp.organization_id else None,
             fingerprint_hash=fp.fingerprint_hash,
@@ -126,7 +126,7 @@ async def admin_flagged_fingerprints(
     fingerprints = await service.list_flagged(min_risk=min_risk, limit=limit, offset=offset)
     return [
         FingerprintDetailRead(
-            id=str(fp.id) if fp.id else None,
+            id=str(fp.id),
             user_id=str(fp.user_id) if fp.user_id else None,
             organization_id=str(fp.organization_id) if fp.organization_id else None,
             fingerprint_hash=fp.fingerprint_hash,
@@ -160,7 +160,7 @@ async def admin_get_fingerprint(
     if fp is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Fingerprint not found")
     return FingerprintDetailRead(
-        id=str(fp.id) if fp.id else None,
+        id=str(fp.id),
         user_id=str(fp.user_id) if fp.user_id else None,
         organization_id=str(fp.organization_id) if fp.organization_id else None,
         fingerprint_hash=fp.fingerprint_hash,

@@ -1,6 +1,6 @@
 import uuid
-from types import SimpleNamespace
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest

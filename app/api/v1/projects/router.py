@@ -57,7 +57,7 @@ def _to_read(p: Project, runtime_id: uuid.UUID | None = None) -> ProjectRead:
         settings=p.settings or {},
         status=p.status or "ready",
         connected_providers=[pr.name for pr in p.providers] if p.providers else [],
-        hasBuiltRuntime=p.has_built_runtime,
+        has_built_runtime=p.has_built_runtime,
         runtime_id=runtime_id,
     )
 
@@ -204,11 +204,11 @@ async def create_project(
     except IntegrityError:
         await uow.rollback()
         await _release_idempotency_lock(idempotency_lock_key, lock_token)
-        raise HTTPException(status_code=409, detail="Project with this slug already exists")
+        raise HTTPException(status_code=409, detail="Project with this slug already exists") from None
     except Exception as exc:
         await uow.rollback()
         await _release_idempotency_lock(idempotency_lock_key, lock_token)
-        raise HTTPException(status_code=500, detail=f"Failed to create project: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to create project: {exc}") from exc
 
     await _invalidate_projects_cache(org_id)
 
@@ -233,7 +233,7 @@ async def create_project(
         settings=proj.settings or {},
         status=proj.status or "ready",
         connected_providers=[],
-        hasBuiltRuntime=proj.has_built_runtime,
+        has_built_runtime=proj.has_built_runtime,
         runtime_id=None,
     )
     try:
@@ -262,7 +262,7 @@ async def get_project(
     try:
         pid = uuid.UUID(project_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid project id")
+        raise HTTPException(status_code=400, detail="Invalid project id") from None
 
     stmt = select(Project).where(Project.id == pid).options(selectinload(Project.providers))
     result = await db.execute(stmt)
@@ -402,7 +402,7 @@ async def update_project(
     try:
         pid = uuid.UUID(project_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid project id")
+        raise HTTPException(status_code=400, detail="Invalid project id") from None
 
     proj = await db.get(Project, pid)
     if proj is None or proj.organization_id != current_user.organization_id:
@@ -453,10 +453,10 @@ async def update_project(
         raise
     except IntegrityError:
         await uow.rollback()
-        raise HTTPException(status_code=409, detail="Project with this slug already exists")
+        raise HTTPException(status_code=409, detail="Project with this slug already exists") from None
     except Exception as exc:
         await uow.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to update project: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to update project: {exc}") from exc
 
     await _invalidate_projects_cache(proj.organization_id)
 
@@ -480,7 +480,7 @@ async def delete_project(
     try:
         pid = uuid.UUID(project_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid project id")
+        raise HTTPException(status_code=400, detail="Invalid project id") from None
 
     proj = await db.get(Project, pid)
     if proj is None or proj.organization_id != current_user.organization_id:
@@ -493,6 +493,6 @@ async def delete_project(
         await uow.commit()
     except Exception as exc:
         await uow.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to delete project: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete project: {exc}") from exc
 
     await _invalidate_projects_cache(org_id)

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 from pathlib import PurePath
-import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
@@ -11,11 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.dependencies import get_current_user
 from app.api.v1.dependencies_tenant import require_project_membership
 from app.api.v1.features.dependencies import require_feature
+from app.core.config import settings
 from app.core.database import get_session
 from app.core.ws_events import emit_knowledge_sync_log, emit_knowledge_sync_updated
-from app.models.users import User
 from app.models.knowledge import KnowledgeBase, KnowledgeSource, SyncJob
-from app.core.config import settings
+from app.models.users import User
 from app.repositories import UnitOfWork
 from app.schemas.documents import FileUploadCreate
 from app.schemas.knowledge import (
@@ -184,7 +184,7 @@ async def upload_document_file(
         source=source.strip() if source and source.strip() else None,
     )
 
-    kb = await _require_kb_access(body.knowledge_base_id, current_user, db)
+    await _require_kb_access(body.knowledge_base_id, current_user, db)
     filename = (file.filename or "uploaded_file").strip()
     extension = PurePath(filename).suffix.lower()
     allowed_extensions = {
@@ -378,7 +378,7 @@ async def test_source_connection(
     try:
         result = await service.test_source(source_id)
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     return result
 
 
@@ -397,7 +397,7 @@ async def discover_source_metadata(
     try:
         result = await service.discover_source(source_id)
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     return result
 
 

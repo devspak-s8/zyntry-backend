@@ -8,13 +8,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.constants import Permission
 from app.admin.dependencies import AdminContext, require_permission
+from app.admin.models import AdminAuditLog
 from app.admin.schemas import (
     AuditLogEntryRead,
     AuditLogSummaryRead,
 )
-from app.admin.services.audit_log import AuditLogService
 from app.core.database import get_session
-from app.admin.models import AdminAuditLog
 
 router = APIRouter(prefix="/admin", tags=["admin-audit-logs"])
 
@@ -49,7 +48,7 @@ async def admin_list_audit_logs(
     logs = result.scalars().all()
     return [
         AuditLogEntryRead(
-            id=str(log.id) if log.id else None,
+            id=str(log.id),
             admin_user_id=str(log.admin_user_id) if log.admin_user_id else None,
             user_id=str(log.user_id) if log.user_id else None,
             action=log.action,

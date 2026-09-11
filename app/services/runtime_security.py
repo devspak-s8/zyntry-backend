@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import ipaddress
 import re
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import Request
 
 from app.core.redis import redis_client
 from app.services.actions.guardrails import GuardrailService as ActionGuardrailService
-
 
 DEFAULT_RUNTIME_SECURITY_POLICY: dict[str, Any] = {
     # Safe request protection is on for newly created and legacy runtimes.
@@ -274,13 +273,13 @@ class RuntimeSecurityService:
     async def _is_blocked(self, runtime_id: str, client_ip: str, policy: dict[str, Any]) -> bool:
         try:
             return bool(await self.redis.get(self._block_key(runtime_id, client_ip)))
-        except Exception:
+        except Exception as exc:
             if policy["redis_failure_mode"] == "fail_closed":
                 raise RuntimeSecurityViolation(
                     status_code=503,
                     code="security_unavailable",
                     message="Runtime security controls are temporarily unavailable. Please retry shortly.",
-                )
+                ) from exc
             return False
 
     async def _enforce_rate_limit(
@@ -303,13 +302,13 @@ class RuntimeSecurityService:
                 )
         except RuntimeSecurityViolation:
             raise
-        except Exception:
+        except Exception as exc:
             if policy["redis_failure_mode"] == "fail_closed":
                 raise RuntimeSecurityViolation(
                     status_code=503,
                     code="security_unavailable",
                     message="Runtime security controls are temporarily unavailable. Please retry shortly.",
-                )
+                ) from exc
             return
 
     async def _record_violation(
@@ -331,13 +330,13 @@ class RuntimeSecurityService:
                     "1",
                     ex=policy["ban_duration_seconds"],
                 )
-        except Exception:
+        except Exception as exc:
             if policy["redis_failure_mode"] == "fail_closed":
                 raise RuntimeSecurityViolation(
                     status_code=503,
                     code="security_unavailable",
                     message="Runtime security controls are temporarily unavailable. Please retry shortly.",
-                )
+                ) from exc
             return
 
     @staticmethod

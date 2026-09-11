@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_session
 from app.models.organizations import Organization
 from app.models.projects import Project
+from app.models.runtimes import Runtime
 from app.models.users import User
 
 
@@ -52,7 +53,7 @@ async def require_project_membership(
     try:
         pid = uuid.UUID(project_id)
     except ValueError:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid project id")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid project id") from None
     project = await db.get(Project, pid)
     if project is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
@@ -69,7 +70,7 @@ async def require_organization_membership(
     try:
         oid = uuid.UUID(organization_id)
     except ValueError:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid organization id")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid organization id") from None
     org = await db.get(Organization, oid)
     if org is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found")
@@ -82,14 +83,12 @@ async def require_runtime_access(
     runtime_id: str | uuid.UUID,
     current_user: User,
     db: AsyncSession,
-) -> "Runtime":
+) -> Runtime:
     """Load a runtime only when it belongs to the caller's tenant/project.
 
     Runtime identifiers are untrusted input.  Every route and background
     entrypoint should perform this check before reading or mutating a runtime.
     """
-    from app.models.runtimes import Runtime
-
     try:
         rid = runtime_id if isinstance(runtime_id, uuid.UUID) else uuid.UUID(str(runtime_id))
     except (TypeError, ValueError) as exc:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import select
@@ -21,7 +21,7 @@ class EmbeddingCacheRepository:
         embedding_model: str,
         provider: str,
     ) -> EmbeddingCache | None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         result = await self.session.execute(
             select(EmbeddingCache).where(
                 EmbeddingCache.project_id == project_id,
@@ -57,7 +57,7 @@ class EmbeddingCacheRepository:
         return cache_entry
 
     async def delete_expired(self) -> int:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         result = await self.session.execute(
             select(EmbeddingCache).where(
                 EmbeddingCache.expires_at.is_not(None),

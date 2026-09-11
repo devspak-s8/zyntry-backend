@@ -10,7 +10,11 @@ from app.core.config import settings
 from app.models.integrations import IntegrationConnection
 from app.models.oauth import OAuthState
 from app.repositories import UnitOfWork
-from app.schemas.integrations import ConnectionAuthorizeRequest, ConnectionAuthorizeResponse, ConnectionDirectCreate
+from app.schemas.integrations import (
+    ConnectionAuthorizeRequest,
+    ConnectionAuthorizeResponse,
+    ConnectionDirectCreate,
+)
 from app.services.integrations.auth_providers import default_github_provider, default_oauth_provider
 from app.services.integrations.definitions import integration_registry
 from app.services.security.secrets import SecretManager, default_secret_manager

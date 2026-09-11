@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,7 +45,7 @@ class EmbeddingCacheService:
         metadata: dict | None = None,
         ttl_days: int = 30,
     ) -> None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         expires_at = now + timedelta(days=ttl_days) if ttl_days > 0 else None
         entry = EmbeddingCache(
             project_id=project_id,

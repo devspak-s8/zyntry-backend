@@ -30,6 +30,17 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/providers", tags=["providers"])
 
 
+def _as_datetime(value: object) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+    return datetime.now(UTC)
+
+
 @router.post("/test-connection", tags=["providers"])
 async def test_provider_connection(
     body: ProviderTestRequest,
@@ -132,8 +143,8 @@ async def list_provider_connections(
             status=c["status"],
             last_tested_at=c.get("last_tested_at"),
             is_active=bool(c.get("is_active", False)),
-            created_at=c.get("created_at", ""),
-            updated_at=c.get("created_at", ""),
+            created_at=_as_datetime(c.get("created_at")),
+            updated_at=_as_datetime(c.get("updated_at") or c.get("created_at")),
         )
         for c in connections
     ]
@@ -226,8 +237,8 @@ async def connect_provider(
         status=result["status"],
         last_tested_at=result.get("last_tested_at"),
         is_active=bool(result.get("is_active", False)),
-        created_at=result.get("created_at") or "",
-        updated_at=result.get("updated_at") or "",
+        created_at=_as_datetime(result.get("created_at")),
+        updated_at=_as_datetime(result.get("updated_at") or result.get("created_at")),
     )
     if not result.get("requires_oauth"):
         try:
@@ -299,8 +310,8 @@ async def update_provider_connection(
         status=updated.status,
         last_tested_at=updated.last_tested_at,
         is_active=updated.is_active,
-        created_at=updated.created_at.isoformat() if updated.created_at else "",
-        updated_at=updated.updated_at.isoformat() if updated.updated_at else "",
+        created_at=updated.created_at or datetime.now(UTC),
+        updated_at=updated.updated_at or datetime.now(UTC),
     )
     await emit_provider_updated(
         str(current_user.id),

@@ -26,14 +26,17 @@ class MongoDBConnector(BaseConnector):
     ) -> None:
         super().__init__(project_id, source_id, config, credentials)
         creds = credentials or {}
-        self._connection_string = creds.get("connection_string") or config.get("connection_string")
-        if not self._connection_string:
+        connection_string = creds.get("connection_string") or config.get("connection_string")
+        if not isinstance(connection_string, str) or not connection_string:
             raise ConnectorAuthError("MongoDB connection string is required")
+        self._connection_string = connection_string
         self._target_collections = (creds.get("tables") or config.get("tables") or "*").strip()
         self._client = None
         self._db_name = self._extract_db_name()
 
     def _extract_db_name(self) -> str | None:
+        if not self._connection_string:
+            return None
         try:
             parsed = self._connection_string.split("?", 1)[0]
             if "/" in parsed:
@@ -139,7 +142,7 @@ class MongoDBConnector(BaseConnector):
         return {"success": True, "message": "Connection remains valid"}
 
     def validate(self) -> dict:
-        errors = []
+        errors: list[str] = []
         if not self._connection_string:
             errors.append("Missing MongoDB connection string")
         return {"valid": len(errors) == 0, "errors": errors}

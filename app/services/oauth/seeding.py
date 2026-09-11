@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import TypedDict
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -8,7 +10,16 @@ from app.models.oauth import OAuthProvider
 from app.services.oauth.service import OAuthService
 
 
-_PROVIDERS = {
+class OAuthProviderSeed(TypedDict):
+    display_name: str
+    client_id: str
+    client_secret: str
+    auth_url: str
+    token_url: str
+    scopes: list[str]
+
+
+_PROVIDERS: dict[str, OAuthProviderSeed] = {
     "github": {
         "display_name": "GitHub",
         "client_id": "GITHUB_CLIENT_ID",

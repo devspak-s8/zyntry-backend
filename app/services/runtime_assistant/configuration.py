@@ -13,7 +13,6 @@ from typing import Any
 
 from app.schemas.runtimes import RuntimeUpdate
 
-
 CONFIG_KEYS = frozenset(
     {
         "temperature",

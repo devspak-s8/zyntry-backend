@@ -38,8 +38,8 @@ class UsageAnalyticsService:
             .limit(10)
         )
         top_users = []
-        for row in top_users_result:
-            top_users.append({"user_id": str(row[0]) if row[0] else "", "request_count": row[1] or 0, "total_cost": float(row[2] or 0)})
+        for user_row in top_users_result:
+            top_users.append({"user_id": str(user_row[0]) if user_row[0] else "", "request_count": user_row[1] or 0, "total_cost": float(user_row[2] or 0)})
 
         top_api_keys_result = await self.db.execute(
             select(UsageLog.api_key_id, func.count(), func.sum(UsageLog.cost))
@@ -71,8 +71,8 @@ class UsageAnalyticsService:
             .limit(10)
         )
         top_providers = []
-        for row in top_providers_result:
-            top_providers.append({"provider": row[0] or "", "request_count": row[1] or 0, "total_cost": float(row[2] or 0)})
+        for provider_row in top_providers_result:
+            top_providers.append({"provider": provider_row[0] or "", "request_count": provider_row[1] or 0, "total_cost": float(provider_row[2] or 0)})
 
         top_runtimes_result = await self.db.execute(
             select(UsageLog.runtime_id, func.count(), func.sum(UsageLog.cost))

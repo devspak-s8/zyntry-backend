@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -63,7 +64,7 @@ class SecurityEngine:
 
     async def analyze_payload(self, content: str, content_type: str = "text") -> dict[str, Any]:
         patterns = self._get_patterns()
-        result = {"threats": [], "risk_score": 0}
+        result: dict[str, Any] = {"threats": [], "risk_score": 0}
 
         for name, pattern_list in patterns.items():
             for pattern in pattern_list:
@@ -135,18 +136,15 @@ class SecurityEngine:
         return min(100, score)
 
     async def check_brute_force(self, ip_address: str, time_window: int = 60, threshold: int = 5) -> dict[str, Any]:
-        since = datetime.now(UTC) - timedelta(seconds=time_window)
         count = await self._login_repo.get_failures_by_ip(ip_address, hours=time_window // 60)
         return {"detected": count >= threshold, "count": count, "threshold": threshold, "ip_address": ip_address}
 
     async def check_ddos(self, ip_address: str, time_window: int = 60, threshold: int = 100) -> dict[str, Any]:
-        since = datetime.now(UTC) - timedelta(seconds=time_window)
         count = await self._login_repo.get_failures_by_ip(ip_address, hours=time_window // 60)
         return {"detected": count >= threshold, "count": count, "threshold": threshold, "ip_address": ip_address}
 
     async def check_excessive_failed_auth(self, user_id: str, time_window: int = 60, threshold: int = 3) -> dict[str, Any]:
-        since = datetime.now(UTC) - timedelta(seconds=time_window)
-        count = await self._login_repo.get_failures_by_user(user_id, hours=time_window // 60)
+        count = await self._login_repo.get_failures_by_user(uuid.UUID(user_id), hours=time_window // 60)
         return {"detected": count >= threshold, "count": count, "threshold": threshold, "user_id": user_id}
 
     async def check_multiple_account_creation(self, ip_address: str, time_window: int = 3600, threshold: int = 3) -> dict[str, Any]:
@@ -177,7 +175,7 @@ class SecurityEngine:
         api_key_id: str | None = None,
     ) -> dict[str, Any]:
         threat_types = []
-        analysis = {"ip_address": ip_address, "threats": [], "risk_score": 0}
+        analysis: dict[str, Any] = {"ip_address": ip_address, "threats": [], "risk_score": 0}
 
         if payload:
             result = await self.analyze_payload(payload)

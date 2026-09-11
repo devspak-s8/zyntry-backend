@@ -47,6 +47,52 @@ class AdminUserRead(BaseModel):
     created_at: str
 
 
+class ProviderFundingRead(BaseModel):
+    id: str
+    provider: str
+    account_label: str
+    currency: str
+    funding_mode: str
+    monitor_enabled: bool
+    auto_top_up_enabled: bool
+    current_balance: float | None = None
+    estimated_balance: float
+    minimum_balance: float
+    target_balance: float
+    max_top_up: float
+    daily_top_up_limit: float
+    daily_top_up_total: float
+    payment_method_configured: bool
+    external_account_ref: str | None = None
+    status: str
+    last_checked_at: str | None = None
+    last_top_up_at: str | None = None
+    last_error: str | None = None
+
+
+class ProviderFundingUpdate(BaseModel):
+    account_label: str | None = None
+    currency: str = "usd"
+    funding_mode: str = "manual"
+    monitor_enabled: bool = True
+    auto_top_up_enabled: bool = False
+    current_balance: Decimal | None = Field(default=None, ge=0)
+    estimated_balance: Decimal = Field(default=Decimal("0"), ge=0)
+    minimum_balance: Decimal = Field(default=Decimal("0"), ge=0)
+    target_balance: Decimal = Field(default=Decimal("0"), ge=0)
+    max_top_up: Decimal = Field(default=Decimal("0"), ge=0)
+    daily_top_up_limit: Decimal = Field(default=Decimal("0"), ge=0)
+    payment_method_ref: str | None = None
+    external_account_ref: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProviderFundingReconcile(BaseModel):
+    balance: Decimal = Field(ge=0)
+    external_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class AdminUserCreate(BaseModel):
     user_id: str
     role: str = "viewer"

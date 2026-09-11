@@ -3,18 +3,16 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Body, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
 from app.api.v1.dependencies_tenant import require_project_membership
 from app.core.database import get_session
-from app.models.users import User
 from app.models.billing import TransactionType
-from app.repositories import UnitOfWork
+from app.models.users import User
 from app.services.billing import BillingService
-from app.services.rag import RAGPipeline
 
 router = APIRouter(prefix="/embeddings", tags=["embeddings"])
 

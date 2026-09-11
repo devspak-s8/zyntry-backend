@@ -3,8 +3,8 @@ from __future__ import annotations
 import uuid
 from decimal import Decimal
 
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.models.billing import (
     BillingLedger,
@@ -101,7 +101,7 @@ class BillingService:
         return await MeteredBillingService(self.session).reconcile_wallet(user_id)
 
     async def get_wallet(self, user_id: uuid.UUID) -> Wallet:
-        wallet = await self.uow.wallets.get_by_user(user_id)
+        wallet: Wallet | None = await self.uow.wallets.get_by_user(user_id)
         if wallet is None:
             try:
                 wallet = await self.uow.wallets.create(
@@ -116,10 +116,12 @@ class BillingService:
                 wallet = await self.uow.wallets.get_by_user(user_id)
                 if wallet is None:
                     raise
+        if wallet is None:
+            raise RuntimeError("Wallet could not be loaded")
         return wallet
 
     async def create_wallet(self, user_id: uuid.UUID, currency: str = "usd") -> Wallet:
-        existing = await self.uow.wallets.get_by_user(user_id)
+        existing: Wallet | None = await self.uow.wallets.get_by_user(user_id)
         if existing:
             return existing
         try:
@@ -131,9 +133,12 @@ class BillingService:
             )
             await self.uow.commit()
             return wallet
-        except IntegrityError:
+        except IntegrityError as exc:
             await self.uow.rollback()
-            return await self.uow.wallets.get_by_user(user_id)
+            conflicted_wallet = await self.uow.wallets.get_by_user(user_id)
+            if conflicted_wallet is None:
+                raise RuntimeError("Wallet creation conflicted but no wallet was found") from exc
+            return conflicted_wallet
 
     async def add_credit(self, user_id: uuid.UUID, amount: Decimal, reason: str, reference_id: str | None = None, metadata: dict | None = None) -> WalletTransaction:
         if amount <= Decimal("0"):
@@ -406,6 +411,23 @@ class BillingService:
                 },
             )
         await self.uow.commit()
+        if provider_cost > Decimal("0"):
+            # Provider funding is an internal liability tracker. It must never
+            # make a customer request fail if monitoring is unavailable.
+            try:
+                from app.services.provider_funding import ProviderFundingService
+
+                await ProviderFundingService(self.session).record_provider_cost(
+                    provider,
+                    provider_cost,
+                    request_id=request_id,
+                    model=model,
+                    metadata={"operation": operation},
+                )
+            except Exception:
+                # The usage ledger remains authoritative even when the
+                # optional provider-funding monitor is unavailable.
+                await self.session.rollback()
         if analytics_event is not None:
             from app.core.runtime_events import publish_runtime_event
 
@@ -472,7 +494,7 @@ class BillingService:
             await self._send_budget_notification(user_id, "warning_80", budget.monthly_limit)
 
     async def _send_budget_notification(self, user_id: uuid.UUID, event_type: str, limit: Decimal) -> None:
-        from app.services.notifications import NotificationService
+        from app.services.webhooks import NotificationService
         from app.tasks.billing import send_budget_notification_task
 
         service = NotificationService(self.session)

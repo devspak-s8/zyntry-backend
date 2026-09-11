@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from app.services.actions.providers.storage import BoxActionProvider, OneDriveActionProvider
+from typing import cast
+
+from app.services.actions.base import BaseActionProvider
 from app.services.actions.providers.confluence import ConfluenceActionProvider
 from app.services.actions.providers.github import GitHubActionProvider
 from app.services.actions.providers.gitlab import GitLabActionProvider
@@ -23,6 +25,7 @@ from app.services.actions.providers.google_services import (
 from app.services.actions.providers.jira import JiraActionProvider
 from app.services.actions.providers.notion import NotionActionProvider
 from app.services.actions.providers.slack import SlackActionProvider
+from app.services.actions.providers.storage import BoxActionProvider, OneDriveActionProvider
 from app.services.actions.registry import ActionRegistry
 
 providers = [
@@ -51,4 +54,4 @@ providers = [
 ]
 
 for provider_cls in providers:
-    ActionRegistry.register(provider_cls)
+    ActionRegistry.register(cast(type[BaseActionProvider], provider_cls))

@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.constants import Permission
 from app.admin.dependencies import AdminContext, require_permission
+from app.admin.models import AdminEvent
 from app.admin.schemas import (
     NotificationConfigCreate,
     NotificationConfigRead,
@@ -13,7 +14,6 @@ from app.admin.schemas import (
 )
 from app.admin.services.notifications import AdminNotificationService
 from app.core.database import get_session
-from app.admin.models import AdminEvent
 
 router = APIRouter(prefix="/admin", tags=["admin-notifications"])
 
@@ -31,7 +31,7 @@ async def admin_list_notification_configs(
     configs = await service.list_configs(event_type=event_type, is_enabled=is_enabled, limit=limit, offset=offset)
     return [
         NotificationConfigRead(
-            id=str(c.id) if c.id else None,
+            id=str(c.id),
             event_type=c.event_type,
             provider_type=c.provider_type,
             name=c.name,
@@ -58,7 +58,7 @@ async def admin_create_notification_config(
     )
     await db.commit()
     return NotificationConfigRead(
-        id=str(config.id) if config.id else None,
+        id=str(config.id),
         event_type=config.event_type,
         provider_type=config.provider_type,
         name=config.name,
@@ -79,7 +79,7 @@ async def admin_enable_notification_config(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Notification config not found")
     await db.commit()
     return NotificationConfigRead(
-        id=str(config.id) if config.id else None,
+        id=str(config.id),
         event_type=config.event_type,
         provider_type=config.provider_type,
         name=config.name,
@@ -100,7 +100,7 @@ async def admin_disable_notification_config(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Notification config not found")
     await db.commit()
     return NotificationConfigRead(
-        id=str(config.id) if config.id else None,
+        id=str(config.id),
         event_type=config.event_type,
         provider_type=config.provider_type,
         name=config.name,

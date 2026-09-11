@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import UTC, datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal, cast
 from urllib.parse import urlencode, urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -14,8 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.dependencies import get_current_user
 from app.api.v1.dependencies_tenant import require_project_membership
 from app.api.v1.features.dependencies import require_feature
-from app.core.database import get_session
 from app.core.config import settings
+from app.core.database import get_session
 from app.core.ws_events import emit_integration_connection_updated
 from app.models.users import User
 from app.repositories import UnitOfWork
@@ -47,11 +47,17 @@ def _validate_frontend_redirect(redirect_uri: str | None) -> None:
         raise HTTPException(status_code=400, detail="Invalid OAuth redirect URI")
 
 
+def _oauth_purpose(value: str) -> Literal["source", "tool", "both"]:
+    if value not in {"source", "tool", "both"}:
+        raise ValueError("Invalid OAuth connection purpose")
+    return cast(Literal["source", "tool", "both"], value)
+
+
 async def _materialize_integration(
     uow: UnitOfWork,
     result: dict[str, Any],
     project_id: uuid.UUID,
-    purpose: str,
+    purpose: Literal["source", "tool", "both"],
     display_name: str | None = None,
     source_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -181,7 +187,7 @@ async def callback(
 
     project_id = state_obj.project_id
     if project_id is None and current_user.organization_id is not None:
-        project = await uow.projects.get_by_organization(current_user.organization_id)
+        project = await uow.projects.get_by_organization(str(current_user.organization_id))
         if project:
             project_id = project.id
     if project_id is None:
@@ -237,12 +243,17 @@ async def provider_callback(
             expected_user_id=user_id,
         )
         integration = await _materialize_integration(
-            uow, result, project_id, purpose, display_name, source_config,
+            uow, result, project_id, _oauth_purpose(purpose), display_name, source_config,
         )
         await _emit_integration_result(str(user_id), integration)
     except (OAuthError, ValueError) as exc:
         await db.rollback()
-        query = urlencode({"status": "error", "provider": provider.lower(), "error": str(exc)})
+        logger.warning("OAuth callback rejected for provider %s: %s", provider, type(exc).__name__)
+        query = urlencode({
+            "status": "error",
+            "provider": provider.lower(),
+            "error": "Unable to complete the connection. Please try again.",
+        })
         return RedirectResponse(f"{frontend_callback}?{query}", status_code=302)
     except Exception:
         await db.rollback()

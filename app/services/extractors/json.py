@@ -3,7 +3,14 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from app.extractors.base import BaseExtractor, ExtractedDocument, Heading, ListItem, Paragraph, Table
+from app.extractors.base import (
+    BaseExtractor,
+    ExtractedDocument,
+    Heading,
+    ListItem,
+    Paragraph,
+    Table,
+)
 
 
 class JsonExtractor(BaseExtractor):
@@ -34,7 +41,7 @@ class JsonExtractor(BaseExtractor):
             for text in flat_texts:
                 paragraphs.append(Paragraph(text=text))
 
-            for key, value in data.items():
+            for value in data.values():
                 if isinstance(value, list) and value and isinstance(value[0], dict):
                     table = self._list_of_dicts_to_table(value)
                     if table:

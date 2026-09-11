@@ -1,18 +1,14 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi.encoders import jsonable_encoder
 
 from app.repositories import UnitOfWork
 from app.services.runtime_assistant.redaction import redact_sensitive
-from app.schemas.runtime_assistant import (
-    AssistantMessage,
-    DiagnosticResult,
-    OptimizationResult,
-)
+from app.services.runtime_assistant.schemas import AssistantMessage
 
 
 class RuntimeAssistantMemory:
@@ -39,6 +35,8 @@ class RuntimeAssistantMemory:
         runtime = await self.uow.runtimes.get(uuid.UUID(self.runtime_id))
         if runtime is None:
             raise ValueError("Runtime not found")
+        if runtime.project_id is None:
+            raise ValueError("Runtime is not attached to a project")
         return runtime.project_id
 
     async def load(self) -> None:
@@ -78,7 +76,7 @@ class RuntimeAssistantMemory:
                     AssistantMessage(
                         role=record.key or "user",
                         content=record.content or "",
-                        timestamp=record.created_at or datetime.now(timezone.utc),
+                        timestamp=record.created_at or datetime.now(UTC),
                     )
                 )
             elif record.memory_type == "action":
@@ -120,7 +118,7 @@ class RuntimeAssistantMemory:
         action_record = {
             "action": action_name,
             "result": serialized_result,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
         self._previous_actions.append(action_record)
         if len(self._previous_actions) > 50:
@@ -152,7 +150,7 @@ class RuntimeAssistantMemory:
             "title": title,
             "description": description,
             "actions": actions,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "applied": False,
         }
         self._recommendations.append(recommendation)

@@ -134,6 +134,12 @@ class SyncJobRepository:
         )
         return list(result.scalars().all())
 
+    async def list(self, limit: int = 100, offset: int = 0) -> list[SyncJob]:
+        result = await self.session.execute(
+            select(SyncJob).order_by(SyncJob.created_at.desc()).limit(limit).offset(offset)
+        )
+        return list(result.scalars().all())
+
     async def get(self, id: UUID) -> SyncJob | None:
         return await self.session.get(SyncJob, id)
 

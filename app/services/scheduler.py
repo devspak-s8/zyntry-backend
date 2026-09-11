@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 from app.repositories import UnitOfWork
 from app.services.knowledge import KnowledgeService
@@ -13,9 +14,8 @@ class SchedulerService:
     async def schedule_sync(
         self, source_id: str, frequency: str, options: dict | None = None
     ) -> dict:
-        from app.models.knowledge import KnowledgeSource, SyncSchedule
 
-        source = await self.uow.knowledge_sources.get(source_id)
+        source = await self.uow.knowledge_sources.get(UUID(source_id))
         if not source:
             raise ValueError("Knowledge source not found")
 
@@ -23,7 +23,7 @@ class SchedulerService:
         if frequency not in valid_frequencies:
             raise ValueError(f"Invalid frequency: {frequency}. Must be one of {valid_frequencies}")
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         next_run_at = self._calculate_next_run(frequency, now)
 
         schedule = await self.uow.sync_schedules.create(
@@ -51,7 +51,7 @@ class SchedulerService:
         }
 
     async def run_pending(self) -> dict:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         schedules = await self.uow.sync_schedules.list()
         active_schedules = [s for s in schedules if s.status == "active"]
 
@@ -62,7 +62,7 @@ class SchedulerService:
             if schedule.next_run_at > now:
                 continue
 
-            source = await self.uow.knowledge_sources.get(str(schedule.source_id))
+            source = await self.uow.knowledge_sources.get(schedule.source_id)
             if not source or not source.is_active:
                 continue
 
@@ -90,9 +90,8 @@ class SchedulerService:
         executes read-only steps; mutating steps are reported as blocked until
         a human approves them.
         """
-        from app.models.workflows import Workflow
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         workflows = await self.uow.workflows.list_active()
         queued = []
         for workflow in workflows:
@@ -134,14 +133,13 @@ class SchedulerService:
         return now + timedelta(hours=1)
 
     async def retry_failed(self, max_retries: int = 3) -> dict:
-        from app.models.knowledge import SyncJob
 
         jobs = await self.uow.sync_jobs.list()
         failed_jobs = [j for j in jobs if j.status == "failed" and j.retry_count < max_retries]
 
-        retried = []
+        retried: list[dict[str, object]] = []
         for job in failed_jobs:
-            if job.retry_after is not None and job.retry_after > datetime.now(timezone.utc):
+            if job.retry_after is not None and job.retry_after > datetime.now(UTC):
                 retried.append({"job_id": str(job.id), "source_id": str(job.source_id), "status": "waiting_for_backoff"})
                 continue
 
@@ -149,7 +147,7 @@ class SchedulerService:
             job.retry_count += 1
             job.status = "queued"
             job.error_message = None
-            job.retry_after = datetime.now(timezone.utc) + timedelta(minutes=backoff_minutes)
+            job.retry_after = datetime.now(UTC) + timedelta(minutes=backoff_minutes)
             await self.uow.sync_jobs.update(
                 job,
                 status="queued",
@@ -163,9 +161,8 @@ class SchedulerService:
         return {"retried": retried, "total": len(retried), "max_retries": max_retries}
 
     async def retry_sync_job(self, job_id: str, max_retries: int = 3) -> dict:
-        from app.models.knowledge import SyncJob
 
-        job = await self.uow.sync_jobs.get(job_id)
+        job = await self.uow.sync_jobs.get(UUID(job_id))
         if not job:
             return {"job_id": job_id, "status": "not_found"}
         if job.status != "failed":
@@ -173,14 +170,14 @@ class SchedulerService:
         if job.retry_count >= max_retries:
             return {"job_id": job_id, "status": "max_retries_exceeded", "retry_count": job.retry_count}
 
-        if job.retry_after is not None and job.retry_after > datetime.now(timezone.utc):
+        if job.retry_after is not None and job.retry_after > datetime.now(UTC):
             return {"job_id": job_id, "status": "waiting_for_backoff", "retry_after": job.retry_after.isoformat()}
 
         backoff_minutes = self._backoff_delay(job.retry_count)
         job.retry_count += 1
         job.status = "queued"
         job.error_message = None
-        job.retry_after = datetime.now(timezone.utc) + timedelta(minutes=backoff_minutes)
+        job.retry_after = datetime.now(UTC) + timedelta(minutes=backoff_minutes)
         await self.uow.sync_jobs.update(
             job,
             status="queued",
@@ -192,7 +189,7 @@ class SchedulerService:
         return {"job_id": job_id, "status": "retried", "retry_count": job.retry_count, "retry_after": job.retry_after.isoformat()}
 
     async def get_schedule_status(self, source_id: str) -> dict | None:
-        schedules = await self.uow.sync_schedules.get_by_source(source_id)
+        schedules = await self.uow.sync_schedules.get_by_source(UUID(source_id))
         if not schedules:
             return None
 

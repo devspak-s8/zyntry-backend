@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-from typing import Any
-
 from app.repositories import UnitOfWork
 from app.services.billing import BillingService
 from app.services.health import HealthService
 from app.services.knowledge import KnowledgeService
-from app.services.runtimes import RuntimeService
 from app.services.runtime_assistant.optimizer import RuntimeOptimizer
 from app.services.runtime_assistant.schemas import OptimizationResult
+from app.services.runtimes import RuntimeService
 
 
 class RuntimeRecommendations:

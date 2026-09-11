@@ -10,7 +10,6 @@ from app.api.v1.dependencies import get_current_user
 from app.api.v1.dependencies_tenant import require_api_key_access, require_project_membership
 from app.core.database import get_session
 from app.events import NotificationEvent
-from app.models.apikeys import ApiKey
 from app.models.projects import Project
 from app.models.users import User
 from app.repositories import UnitOfWork
@@ -63,7 +62,7 @@ async def get_api_key(
     try:
         kid = uuid.UUID(key_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid api key id")
+        raise HTTPException(status_code=400, detail="Invalid api key id") from None
 
     key = await require_api_key_access(kid, current_user, db)
 
@@ -100,7 +99,7 @@ async def create_api_key(
         try:
             pid = uuid.UUID(str(proj_id))
         except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid project id")
+            raise HTTPException(status_code=400, detail="Invalid project id") from None
         proj = await db.get(Project, pid)
         if proj is None:
             raise HTTPException(status_code=404, detail="Project not found")
@@ -137,7 +136,7 @@ async def create_api_key(
             organization_id=org_id,
         )
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to create API key: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to create API key: {exc}") from exc
 
     try:
         event = NotificationEvent(
@@ -170,7 +169,7 @@ async def rotate_api_key(
         await require_api_key_access(key_id, current_user, db)
         result = await service.rotate_key(key_id)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
         event = NotificationEvent(
@@ -203,7 +202,7 @@ async def expire_api_key(
     try:
         kid = uuid.UUID(key_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid api key id")
+        raise HTTPException(status_code=400, detail="Invalid api key id") from None
 
     key = await require_api_key_access(kid, current_user, db)
 
@@ -213,7 +212,7 @@ async def expire_api_key(
         await uow.commit()
     except Exception as exc:
         await uow.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to expire API key: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to expire API key: {exc}") from exc
 
     return ApiKeyRead(
         id=key.id,
@@ -243,7 +242,7 @@ async def revoke_api_key(
         await require_api_key_access(key_id, current_user, db)
         key = await service.revoke_key(key_id)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
         event = NotificationEvent(
@@ -270,7 +269,7 @@ async def delete_api_key(
     try:
         kid = uuid.UUID(key_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid api key id")
+        raise HTTPException(status_code=400, detail="Invalid api key id") from None
 
     key = await require_api_key_access(kid, current_user, db)
 
@@ -280,7 +279,7 @@ async def delete_api_key(
         await uow.commit()
     except Exception as exc:
         await uow.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to delete API key: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete API key: {exc}") from exc
 
 
 @router.get("/{key_id}/usage", response_model=ApiKeyUsageResponse)
@@ -294,7 +293,7 @@ async def get_api_key_usage(
         await require_api_key_access(key_id, current_user, db)
         result = await service.get_usage(key_id)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     return ApiKeyUsageResponse(**result)
 
@@ -311,6 +310,6 @@ async def update_api_key_scopes(
         await require_api_key_access(key_id, current_user, db)
         result = await service.update_scopes(key_id, body.scopes)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return ApiKeyRead(**result)

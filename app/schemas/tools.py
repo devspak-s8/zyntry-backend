@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 class ToolCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     description: str | None = None
-    schema: dict[str, Any] = Field(default_factory=dict)
+    schema: dict[str, Any] = Field(default_factory=dict)  # type: ignore[assignment]
     implementation: str | None = None
     project_id: str | None = None
     kind: Literal["http", "openapi", "database", "connector"] = "http"
@@ -22,7 +22,7 @@ class ToolRead(BaseModel):
     id: str
     name: str
     description: str | None
-    schema: dict[str, Any]
+    schema: dict[str, Any]  # type: ignore[assignment]
     implementation: str | None
     project_id: str | None
     created_at: datetime
@@ -32,7 +32,7 @@ class ToolRead(BaseModel):
 class ToolUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
-    schema: dict[str, Any] | None = None
+    schema: dict[str, Any] | None = None  # type: ignore[assignment]
     implementation: str | None = None
     is_active: bool | None = None
 
@@ -68,7 +68,7 @@ class DatabaseToolCreate(BaseModel):
     description: str | None = None
     project_id: str
     database_type: str = Field(min_length=1, max_length=64)
-    schema: dict[str, Any] = Field(default_factory=dict)
+    schema: dict[str, Any] = Field(default_factory=dict)  # type: ignore[assignment]
     read_only: bool = True
 
 

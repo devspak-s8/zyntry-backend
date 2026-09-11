@@ -11,9 +11,9 @@ from app.api.v1.dependencies import get_current_user
 from app.core.database import get_session
 from app.core.redis import redis_client
 from app.models.organizations import Organization
+from app.models.users import User
 from app.repositories import UnitOfWork
 from app.schemas.organizations import OrganizationCreate, OrganizationRead
-from app.models.users import User
 
 router = APIRouter(prefix="/organizations", tags=["organizations"])
 
@@ -65,10 +65,10 @@ async def create_organization(
             await redis_client.delete(f"session:{session_token}")
     except IntegrityError:
         await uow.rollback()
-        raise HTTPException(status_code=409, detail="Organization with this slug already exists")
+        raise HTTPException(status_code=409, detail="Organization with this slug already exists") from None
     except Exception as exc:
         await uow.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to create organization: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to create organization: {exc}") from exc
 
     return OrganizationRead(
         id=org.id,
@@ -89,7 +89,7 @@ async def get_organization(
     try:
         oid = uuid.UUID(org_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid organization id")
+        raise HTTPException(status_code=400, detail="Invalid organization id") from None
 
     org = await db.get(Organization, oid)
     if org is None or org.id != current_user.organization_id:
@@ -115,7 +115,7 @@ async def update_organization(
     try:
         oid = uuid.UUID(org_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid organization id")
+        raise HTTPException(status_code=400, detail="Invalid organization id") from None
 
     org = await db.get(Organization, oid)
     if org is None or org.id != current_user.organization_id:
@@ -127,10 +127,10 @@ async def update_organization(
         await uow.commit()
     except IntegrityError:
         await uow.rollback()
-        raise HTTPException(status_code=409, detail="Organization with this slug already exists")
+        raise HTTPException(status_code=409, detail="Organization with this slug already exists") from None
     except Exception as exc:
         await uow.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to update organization: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to update organization: {exc}") from exc
 
     return OrganizationRead(
         id=org.id,
@@ -151,7 +151,7 @@ async def delete_organization(
     try:
         oid = uuid.UUID(org_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid organization id")
+        raise HTTPException(status_code=400, detail="Invalid organization id") from None
 
     org = await db.get(Organization, oid)
     if org is None or org.id != current_user.organization_id:
@@ -163,4 +163,4 @@ async def delete_organization(
         await uow.commit()
     except Exception as exc:
         await uow.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to delete organization: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete organization: {exc}") from exc

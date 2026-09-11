@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import uuid
 from unittest.mock import AsyncMock
+
 import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,7 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.admin.services.feature_flags import FeatureFlagService
 from app.api.v1.dependencies import get_current_user
 from app.main import app as fastapi_app
-from app.models.users import User
 from app.repositories import UnitOfWork
 
 

@@ -52,7 +52,7 @@ def _to_read_dto(conn: Any) -> IntegrationConnectionRead:
 async def authorize_connection(
     integration_slug: str,
     body: ConnectionAuthorizeRequest,
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> ConnectionAuthorizeResponse:
     if body.runtime_id:
@@ -74,7 +74,7 @@ async def connection_callback(
     integration_slug: str,
     code: Annotated[str, Query()] = "",
     state: Annotated[str, Query()] = "",
-    current_user: Annotated[User, Depends(get_current_user)] = None,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> IntegrationConnectionRead:
     if not code or not state:
@@ -89,13 +89,17 @@ async def connection_callback(
             state=state,
             expected_user_id=current_user.id if current_user else None,
         )
-        if current_user:
+        runtime = await uow.runtimes.get(conn.runtime_id) if conn.runtime_id else None
+        if current_user and runtime and runtime.project_id:
             try:
                 await emit_integration_connection_updated(
                     str(current_user.id),
-                    connection_id=str(conn.id),
+                    project_id=str(runtime.project_id),
                     provider=conn.integration_slug,
-                    status=conn.status,
+                    purpose="source",
+                    oauth_connection_id=str(conn.id),
+                    tool_id=None,
+                    source_id=None,
                 )
             except Exception:
                 pass
@@ -107,7 +111,7 @@ async def connection_callback(
 @router.post("", response_model=IntegrationConnectionRead, status_code=status.HTTP_201_CREATED)
 async def create_direct_connection(
     body: ConnectionDirectCreate,
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> IntegrationConnectionRead:
     if body.runtime_id:
@@ -127,7 +131,7 @@ async def create_direct_connection(
 
 @router.get("", response_model=list[IntegrationConnectionRead])
 async def list_connections(
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: User = Depends(get_current_user),
     runtime_id: Annotated[str | None, Query()] = None,
     end_user_id: Annotated[str | None, Query()] = None,
     integration_slug: Annotated[str | None, Query()] = None,
@@ -151,7 +155,7 @@ async def list_connections(
 @router.get("/{connection_id}", response_model=IntegrationConnectionRead)
 async def get_connection(
     connection_id: str,
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> IntegrationConnectionRead:
     try:
@@ -175,7 +179,7 @@ async def get_connection(
 @router.delete("/{connection_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_connection(
     connection_id: str,
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> None:
     try:

@@ -15,9 +15,9 @@ from app.repositories import UnitOfWork
 from app.schemas.capabilities import (
     CrossSourceJoinRequest,
     CrossSourceJoinResponse,
+    EvaluationCase,
     EvaluationRunRequest,
     EvaluationRunResponse,
-    EvaluationCase,
     EvaluationSuiteRead,
     EvaluationSuiteUpdate,
     RuntimeAccessPolicy,
@@ -26,6 +26,7 @@ from app.schemas.capabilities import (
     RuntimeBudgetPolicyUpdate,
     RuntimeCapabilitiesRead,
 )
+from app.services.ocr import ocr_available
 from app.services.runtime_capabilities import (
     authorize_runtime_request,
     evaluate_case,
@@ -34,7 +35,6 @@ from app.services.runtime_capabilities import (
     normalize_budget_policy,
     resolve_role,
 )
-from app.services.ocr import ocr_available
 from app.services.runtime_security import normalize_runtime_security_policy, redact_pii
 
 router = APIRouter(prefix="/runtimes", tags=["runtime capabilities"])
@@ -50,6 +50,28 @@ async def _load(runtime_id: str, user: User, db: AsyncSession):
 
 def _config(runtime) -> dict:
     return dict(runtime.config or {}) if isinstance(runtime.config, dict) else {}
+
+
+def _evaluation_suite_read(runtime_id: uuid.UUID, raw_suite: object) -> EvaluationSuiteRead:
+    suite = raw_suite if isinstance(raw_suite, dict) else {}
+    raw_cases = suite.get("cases", [])
+    cases: list[EvaluationCase] = []
+    if isinstance(raw_cases, list):
+        for raw_case in raw_cases:
+            if isinstance(raw_case, EvaluationCase):
+                cases.append(raw_case)
+            elif isinstance(raw_case, dict):
+                try:
+                    cases.append(EvaluationCase.model_validate(raw_case))
+                except (TypeError, ValueError):
+                    continue
+    updated_at = suite.get("updated_at")
+    return EvaluationSuiteRead(
+        runtime_id=runtime_id,
+        version=int(suite.get("version") or 1),
+        cases=cases,
+        updated_at=str(updated_at) if updated_at is not None else None,
+    )
 
 
 @router.get("/{runtime_id}/capabilities", response_model=RuntimeCapabilitiesRead)
@@ -160,13 +182,8 @@ async def get_evaluation_suite(
     db: AsyncSession = Depends(get_session),
 ) -> EvaluationSuiteRead:
     runtime = await _load(runtime_id, current_user, db)
-    suite = _config(runtime).get("evaluation_suite") or {}
-    return EvaluationSuiteRead(
-        runtime_id=runtime.id,
-        version=int(suite.get("version") or 1),
-        cases=suite.get("cases") or [],
-        updated_at=suite.get("updated_at"),
-    )
+    suite = _config(runtime).get("evaluation_suite")
+    return _evaluation_suite_read(runtime.id, suite)
 
 
 @router.put("/{runtime_id}/evaluations", response_model=EvaluationSuiteRead)
@@ -194,7 +211,7 @@ async def update_evaluation_suite(
     config["evaluation_suite"] = suite
     await UnitOfWork(db).runtimes.update(runtime, config=config)
     await db.commit()
-    return EvaluationSuiteRead(runtime_id=runtime.id, **suite)
+    return _evaluation_suite_read(runtime.id, suite)
 
 
 @router.post("/{runtime_id}/evaluations/run", response_model=EvaluationRunResponse)

@@ -4,9 +4,8 @@ import io
 import os
 from typing import Any
 
-from pypdf import PdfReader
 from docx import Document as DocxDocument
-
+from pypdf import PdfReader
 
 SUPPORTED_EXTENSIONS = {
     ".pdf": "application/pdf",

@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import uuid
 
-from typing import Any
-
 from app.repositories import UnitOfWork
-from app.schemas.analytics import UsageEventCreate, UsageSummary
+from app.schemas.analytics import UsageEventCreate
 
 
 class AnalyticsService:
@@ -13,7 +11,9 @@ class AnalyticsService:
         self.uow = uow
 
     async def list_events(self, project_id: str, limit: int = 100, offset: int = 0) -> list[dict]:
-        events = await self.uow.analytics.get_by_project(project_id, limit=limit, offset=offset)
+        events = await self.uow.analytics.get_by_project(
+            uuid.UUID(project_id), limit=limit, offset=offset
+        )
         return [
             {
                 "id": str(e.id),
@@ -34,7 +34,7 @@ class AnalyticsService:
             quantity=data.quantity,
             model=data.model,
             provider=data.provider,
-            project_id=data.project_id,
+            project_id=uuid.UUID(data.project_id) if data.project_id else None,
             metadata=data.metadata,
         )
         await self.uow.commit()
@@ -54,7 +54,7 @@ class AnalyticsService:
         return result
 
     async def get_summary(self, project_id: str) -> dict:
-        return await self.uow.analytics.get_summary(project_id)
+        return await self.uow.analytics.get_summary(uuid.UUID(project_id))
 
     async def get_token_activity(self, project_id: str, days: int = 30) -> dict:
         result = await self.uow.analytics.get_token_activity(uuid.UUID(project_id), days=days)

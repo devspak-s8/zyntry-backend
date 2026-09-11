@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 async def seed_system_feature_flags(db: AsyncSession) -> list[str]:
     """Create missing system flags without modifying any existing flag."""
-    values = [
+    values: list[dict[str, Any]] = [
         {
             "key": feature.key,
             "name": feature.name,

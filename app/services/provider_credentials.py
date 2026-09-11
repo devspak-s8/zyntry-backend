@@ -17,7 +17,6 @@ from app.repositories import UnitOfWork
 from app.services.model_providers import PROVIDER_REGISTRY
 from app.services.security.secrets import default_secret_manager
 
-
 PROVIDER_ENV_KEYS: dict[str, str] = {
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",

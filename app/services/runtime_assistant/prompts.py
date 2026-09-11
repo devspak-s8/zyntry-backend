@@ -2,11 +2,7 @@ from __future__ import annotations
 
 from app.services.runtime_assistant.schemas import (
     ActionType,
-    DiagnosticResult,
-    OptimizationResult,
     RuntimeContext,
-    RuntimeSummary,
-    ToolCall,
     ToolDefinition,
     UserRole,
 )

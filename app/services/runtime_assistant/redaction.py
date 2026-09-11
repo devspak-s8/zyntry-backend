@@ -7,7 +7,6 @@ from decimal import Decimal
 from enum import Enum
 from typing import Any
 
-
 _SECRET_KEY_PARTS = (
     "access_token",
     "refresh_token",

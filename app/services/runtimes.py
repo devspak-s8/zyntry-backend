@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from app.repositories import UnitOfWork
 from app.schemas.runtimes import RuntimeCreate, RuntimeUpdate
 from app.services.model_compatibility import infer_provider_for_model, provider_model_mismatch
 from app.services.runtime_security import normalize_runtime_security_policy
-
 
 RUNTIME_STATUSES = {
     "preconfigured",
@@ -203,6 +202,7 @@ class RuntimeService:
         self, user_id: uuid.UUID, limit: int = 50, offset: int = 0
     ) -> list[dict[str, Any]]:
         from sqlalchemy import select
+
         from app.models.runtimes import Runtime
 
         stmt = (
@@ -337,7 +337,7 @@ class RuntimeService:
                     "trigger": trigger,
                 }
 
-        started_at = datetime.now(timezone.utc)
+        started_at = datetime.now(UTC)
         await self.uow.runtimes.update(
             runtime,
             status="building",
@@ -360,6 +360,19 @@ class RuntimeService:
             await self.uow.commit()
             raise RuntimeError("Unable to queue runtime build") from exc
         return {"runtime_id": str(runtime.id), "status": "building", "trigger": trigger}
+
+    async def detect_changes(self, runtime_id: str) -> dict[str, int]:
+        """Return the persisted build footprint used by incremental propagation."""
+        runtime_uuid = uuid.UUID(runtime_id)
+        runtime = await self.uow.runtimes.get(runtime_uuid)
+        if runtime is None:
+            raise ValueError("Runtime not found")
+        chunks = await self.uow.runtime_build_chunks.get_by_runtime(runtime_uuid)
+        return {
+            "existing_chunks": len(chunks),
+            "expected_chunks": int(runtime.chunks or 0),
+            "changed_chunks": max(0, int(runtime.chunks or 0) - len(chunks)),
+        }
 
     async def _provider_requirements(self, runtime: Any) -> list[dict[str, str]]:
         """Return missing model/embedding credentials for a project runtime.

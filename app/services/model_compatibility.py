@@ -8,7 +8,6 @@ models continue to work.
 
 from __future__ import annotations
 
-
 _MODEL_PREFIXES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("google", ("gemini", "gemma")),
     ("openai", ("gpt-", "o1", "o3", "o4", "chatgpt")),

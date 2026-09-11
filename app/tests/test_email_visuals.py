@@ -11,8 +11,8 @@ from app.emails import (
     build_password_reset,
     build_project_created,
 )
-from app.services.notifications import _EMAIL_TEMPLATE_MAP
 from app.events import EventType
+from app.services.notifications import _EMAIL_TEMPLATE_MAP
 
 
 @pytest.mark.parametrize(

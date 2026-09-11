@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import uuid
 
-from pydantic import BaseModel, ConfigDict
-
 from app.schemas.organizations import ORMModel
 
 

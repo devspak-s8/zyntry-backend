@@ -10,7 +10,6 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?$")
 
 
@@ -230,7 +229,7 @@ class InMemoryVectorStore(BaseVectorStore):
 
     async def search(self, query_vector: list[float], limit: int = 10, filters: dict | None = None, query_text: str | None = None) -> list[dict]:
         def cosine_similarity(a: list[float], b: list[float]) -> float:
-            dot = sum(x * y for x, y in zip(a, b))
+            dot = sum(x * y for x, y in zip(a, b, strict=False))
             mag_a = math.sqrt(sum(x * x for x in a))
             mag_b = math.sqrt(sum(x * x for x in b))
             if mag_a == 0 or mag_b == 0:

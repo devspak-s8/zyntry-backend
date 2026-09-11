@@ -26,19 +26,7 @@ async def list_memory_records(
     uow = UnitOfWork(db)
     service = MemoryService(uow)
     records = await service.list_records(project_id)
-    return [
-        MemoryRecordRead(
-            id=r["id"],
-            key=r["key"],
-            value=r.get("value", {}),
-            content=r.get("content"),
-            project_id=project_id,
-            user_id=current_user.id,
-            created_at=r.get("created_at", ""),
-            updated_at=r.get("created_at", ""),
-        )
-        for r in records
-    ]
+    return [MemoryRecordRead.model_validate(record) for record in records]
 
 
 @router.post("", response_model=MemoryRecordRead, status_code=status.HTTP_201_CREATED)
@@ -54,16 +42,7 @@ async def create_memory_record(
     uow = UnitOfWork(db)
     service = MemoryService(uow)
     record = await service.create_record(body)
-    return MemoryRecordRead(
-        id=record["id"],
-        key=record["key"],
-        value=record.get("value", {}),
-        content=record.get("content"),
-        project_id=body.project_id,
-        user_id=body.user_id or str(current_user.id),
-        created_at="",
-        updated_at="",
-    )
+    return MemoryRecordRead.model_validate(record)
 
 
 @router.post("/toggle")

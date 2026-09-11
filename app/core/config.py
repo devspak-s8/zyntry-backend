@@ -44,6 +44,9 @@ class AppSettings(BaseSettings):
     POSTGRES_DB: str = "zyntra"
     POSTGRES_HOST: str = "localhost"
     POSTGRES_PORT: int = 5432
+    # Alembic owns production schema changes. This is an opt-in convenience
+    # for local development when running the API without the entrypoint.
+    AUTO_CREATE_TABLES: bool = False
 
     # Redis
     REDIS_HOST: str = "localhost"
@@ -90,6 +93,10 @@ class AppSettings(BaseSettings):
     # OAuth
     GITHUB_CLIENT_ID: str = ""
     GITHUB_CLIENT_SECRET: str = ""
+    GITLAB_CLIENT_ID: str = ""
+    GITLAB_CLIENT_SECRET: str = ""
+    BITBUCKET_CLIENT_ID: str = ""
+    BITBUCKET_CLIENT_SECRET: str = ""
     NOTION_CLIENT_ID: str = ""
     NOTION_CLIENT_SECRET: str = ""
     SLACK_CLIENT_ID: str = ""
@@ -98,6 +105,15 @@ class AppSettings(BaseSettings):
     GOOGLE_CLIENT_SECRET: str = ""
     DISCORD_CLIENT_ID: str = ""
     DISCORD_CLIENT_SECRET: str = ""
+    MICROSOFT_CLIENT_ID: str = ""
+    MICROSOFT_CLIENT_SECRET: str = ""
+    MICROSOFT_TENANT_ID: str = "common"
+    JIRA_CLIENT_ID: str = ""
+    JIRA_CLIENT_SECRET: str = ""
+    CONFLUENCE_CLIENT_ID: str = ""
+    CONFLUENCE_CLIENT_SECRET: str = ""
+    ARCGIS_CLIENT_ID: str = ""
+    ARCGIS_CLIENT_SECRET: str = ""
 
     # Billing
     STRIPE_SECRET_KEY: str = ""
@@ -107,6 +123,9 @@ class AppSettings(BaseSettings):
     LEMON_SQUEEZY_API_KEY: str = ""
     BILLING_CURRENCY: str = "usd"
     BILLING_AUTO_TOP_UP_ENABLED: bool = True
+    # Provider monitoring is safe by default; provider-side auto-recharge
+    # remains an explicit per-account setting.
+    PROVIDER_FUNDING_MONITOR_ENABLED: bool = True
 
     BACHS_API_KEY: str = ""
     BACHS_WEBHOOK_SECRET: str = ""
@@ -125,6 +144,9 @@ class AppSettings(BaseSettings):
     RATE_LIMIT_LOGIN_PER_MINUTE: int = 5
     RATE_LIMIT_API_PER_MINUTE: int = 60
     RATE_LIMIT_LOGIN_MAX_ATTEMPTS: int = 5
+    # Security-sensitive defaults fail closed when the shared limiter is
+    # unavailable. Set true only for a deliberate availability trade-off.
+    RATE_LIMIT_FAIL_OPEN: bool = False
 
     # Upload safety limits (enforced before document parsing)
     MAX_UPLOAD_SIZE_BYTES: int = 10 * 1024 * 1024
@@ -147,8 +169,40 @@ class AppSettings(BaseSettings):
     def is_production(self) -> bool:
         return self.APP_ENV.lower() == "production"
 
+    @property
+    def cors_origins(self) -> list[str]:
+        """Return normalized browser origins from the single app config object."""
+        return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
+
+    def validate_startup(self) -> None:
+        """Validate settings that must be present before serving application traffic.
+
+        Keeping this policy beside the settings prevents the API lifespan,
+        workers, and deployment scripts from gradually developing different
+        production requirements.
+        """
+        if self.is_production and self.APP_DEBUG:
+            raise RuntimeError("APP_DEBUG must be false when APP_ENV=production")
+        if self.is_production or not self.APP_DEBUG:
+            required = {
+                "SECRET_KEY": self.SECRET_KEY,
+                "JWT_SECRET": self.JWT_SECRET,
+                "ENCRYPTION_KEY": self.ENCRYPTION_KEY,
+                "DATABASE_URL": self.DATABASE_URL,
+            }
+            missing = [name for name, value in required.items() if not value]
+            if self.DATABASE_URL == "postgresql+asyncpg://zyntra:zyntra@localhost:5432/zyntra":
+                missing.append("DATABASE_URL")
+            if missing:
+                # Preserve order while avoiding duplicate DATABASE_URL entries.
+                missing = list(dict.fromkeys(missing))
+                raise RuntimeError(
+                    "Missing required environment variables for production: "
+                    + ", ".join(missing)
+                )
+
     @model_validator(mode="after")
-    def validate_environment(self) -> "AppSettings":
+    def validate_environment(self) -> AppSettings:
         if self.is_production and self.APP_DEBUG:
             raise ValueError("APP_DEBUG must be false when APP_ENV=production")
         return self

@@ -17,8 +17,8 @@ def ocr_available() -> bool:
 def extract_image(file_bytes: bytes, filename: str, content_type: str) -> ExtractedDocument:
     """Extract text from an image when optional OCR dependencies are installed."""
     try:
-        from PIL import Image
         import pytesseract
+        from PIL import Image
     except ImportError as exc:
         raise ValueError("OCR is not installed. Add Pillow and pytesseract to enable image extraction.") from exc
     try:

@@ -2,19 +2,16 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import HTMLResponse
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
 from app.api.v1.dependencies_tenant import require_project_membership
 from app.core.database import get_session
-from app.models.users import User
 from app.models.events import Event
-from app.models.request_logs import RequestLog
-from app.repositories import UnitOfWork
-from app.schemas.events import EventRead, RequestLogRead
+from app.models.users import User
+from app.schemas.events import EventRead
 
 router = APIRouter(prefix="/events", tags=["events"])
 
@@ -32,7 +29,7 @@ async def list_events(
         try:
             pid = uuid.UUID(project_id)
         except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid project id")
+            raise HTTPException(status_code=400, detail="Invalid project id") from None
         await require_project_membership(project_id, current_user, db)
         stmt = stmt.where(Event.project_id == pid)
     elif current_user.organization_id is not None:

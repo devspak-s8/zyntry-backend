@@ -9,8 +9,8 @@ from pathlib import PurePath
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
-from app.repositories import UnitOfWork
 from app.core.config import settings
+from app.repositories import UnitOfWork
 from app.schemas.knowledge import (
     DocumentCreate,
     KnowledgeBaseCreate,
@@ -29,7 +29,7 @@ class KnowledgeService:
         self.uow = uow
 
     async def list_knowledge_bases(self, project_id: str) -> list[dict]:
-        kbs = await self.uow.knowledge_bases.get_by_project(project_id)
+        kbs = await self.uow.knowledge_bases.get_by_project(uuid.UUID(project_id))
         return [
             {
                 "id": str(kb.id),
@@ -47,7 +47,7 @@ class KnowledgeService:
         kb = await self.uow.knowledge_bases.create(
             name=data.name,
             description=data.description,
-            project_id=data.project_id,
+            project_id=uuid.UUID(data.project_id),
             config=data.config,
         )
         await self.uow.commit()
@@ -67,7 +67,7 @@ class KnowledgeService:
             title=data.title,
             content=content,
             source=data.source,
-            knowledge_base_id=data.knowledge_base_id,
+            knowledge_base_id=uuid.UUID(data.knowledge_base_id),
         )
         await self.uow.commit()
         kb = await self.uow.knowledge_bases.get(uuid.UUID(data.knowledge_base_id))
@@ -115,7 +115,7 @@ class KnowledgeService:
             title=title,
             content=text,
             source=source or filename,
-            knowledge_base_id=knowledge_base_id,
+            knowledge_base_id=uuid.UUID(knowledge_base_id),
             doc_metadata=metadata,
         )
         await self.uow.commit()
@@ -135,7 +135,7 @@ class KnowledgeService:
         }
 
     async def list_documents(self, knowledge_base_id: str) -> list[dict]:
-        docs = await self.uow.documents.get_by_kb(knowledge_base_id)
+        docs = await self.uow.documents.get_by_kb(uuid.UUID(knowledge_base_id))
         return [
             {
                 "id": str(d.id),
@@ -163,7 +163,7 @@ class KnowledgeService:
         ]
 
     async def list_sources(self, project_id: str) -> list[dict]:
-        sources = await self.uow.knowledge_sources.get_by_project(project_id)
+        sources = await self.uow.knowledge_sources.get_by_project(uuid.UUID(project_id))
         return [
             {
                 "id": str(s.id),
@@ -200,7 +200,9 @@ class KnowledgeService:
             # Check project-local duplicates before outbound DNS validation.
             # A duplicate should return the deterministic conflict even when
             # the host is temporarily unavailable in the current environment.
-            existing_sources = await self.uow.knowledge_sources.get_by_project(data.project_id)
+            existing_sources = await self.uow.knowledge_sources.get_by_project(
+                uuid.UUID(data.project_id)
+            )
             for existing in existing_sources:
                 if existing.source_type not in {"website", "crawler"}:
                     continue
@@ -216,7 +218,7 @@ class KnowledgeService:
         if data.credentials is not None:
             credentials_encrypted = encrypt_value(json.dumps(data.credentials))
         source = await self.uow.knowledge_sources.create(
-            project_id=data.project_id,
+            project_id=uuid.UUID(data.project_id),
             source_type=source_type,
             display_name=data.display_name,
             config=config,
@@ -263,7 +265,7 @@ class KnowledgeService:
         return urlunsplit((scheme, netloc, path, parsed.query, ""))
 
     async def update_source(self, source_id: str, data: KnowledgeSourceUpdate) -> dict:
-        source = await self.uow.knowledge_sources.get(source_id)
+        source = await self.uow.knowledge_sources.get(uuid.UUID(source_id))
         if not source:
             raise ValueError("Knowledge source not found")
         update_data = data.model_dump(exclude_unset=True)
@@ -315,7 +317,7 @@ class KnowledgeService:
         return result
 
     async def delete_source(self, source_id: str) -> None:
-        source = await self.uow.knowledge_sources.get(source_id)
+        source = await self.uow.knowledge_sources.get(uuid.UUID(source_id))
         if not source:
             raise ValueError("Knowledge source not found")
         project_id = str(source.project_id)
@@ -376,7 +378,7 @@ class KnowledgeService:
             return None
 
     async def test_source(self, source_id: str) -> dict:
-        source = await self.uow.knowledge_sources.get(source_id)
+        source = await self.uow.knowledge_sources.get(uuid.UUID(source_id))
         if not source:
             raise ValueError("Knowledge source not found")
         connector = self.get_connector(
@@ -396,7 +398,7 @@ class KnowledgeService:
         return result
 
     async def discover_source(self, source_id: str) -> dict:
-        source = await self.uow.knowledge_sources.get(source_id)
+        source = await self.uow.knowledge_sources.get(uuid.UUID(source_id))
         if not source:
             raise ValueError("Knowledge source not found")
         connector = self.get_connector(
@@ -421,7 +423,7 @@ class KnowledgeService:
         progress_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
         log_callback: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> dict:
-        source = await self.uow.knowledge_sources.get(source_id)
+        source = await self.uow.knowledge_sources.get(uuid.UUID(source_id))
         if not source:
             raise ValueError("Knowledge source not found")
         connector = self.get_connector(
@@ -590,7 +592,9 @@ class KnowledgeService:
             if knowledge_base is None or knowledge_base.project_id != source.project_id:
                 raise ValueError("Website source knowledge_base_id is invalid")
         else:
-            knowledge_bases = await self.uow.knowledge_bases.get_by_project(source.project_id)
+            knowledge_bases = await self.uow.knowledge_bases.get_by_project(
+                uuid.UUID(str(source.project_id))
+            )
             knowledge_base = knowledge_bases[0] if knowledge_bases else None
             if knowledge_base is None:
                 knowledge_base = await self.uow.knowledge_bases.create(
@@ -640,7 +644,7 @@ class KnowledgeService:
         return synced
 
     async def cancel_sync(self, job_id: str) -> dict:
-        job = await self.uow.sync_jobs.get(job_id)
+        job = await self.uow.sync_jobs.get(uuid.UUID(job_id))
         if not job:
             raise ValueError("Sync job not found")
         updated = await self.uow.sync_jobs.update(
@@ -655,7 +659,7 @@ class KnowledgeService:
         }
 
     async def get_sync_job(self, job_id: str) -> dict | None:
-        job = await self.uow.sync_jobs.get(job_id)
+        job = await self.uow.sync_jobs.get(uuid.UUID(job_id))
         if not job:
             return None
         return {
@@ -674,7 +678,7 @@ class KnowledgeService:
         }
 
     async def list_sync_jobs(self, source_id: str) -> list[dict]:
-        jobs = await self.uow.sync_jobs.get_by_source(source_id)
+        jobs = await self.uow.sync_jobs.get_by_source(uuid.UUID(source_id))
         return [
             {
                 "id": str(j.id),

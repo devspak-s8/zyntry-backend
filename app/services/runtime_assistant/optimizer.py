@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any
 
 from app.repositories import UnitOfWork
 from app.services.billing import BillingService
 from app.services.health import HealthService
 from app.services.knowledge import KnowledgeService
-from app.services.runtimes import RuntimeService
 from app.services.runtime_assistant.schemas import OptimizationResult
+from app.services.runtimes import RuntimeService
 
 
 class RuntimeOptimizer:
@@ -23,9 +22,7 @@ class RuntimeOptimizer:
     async def optimize_cost(self) -> list[OptimizationResult]:
         results: list[OptimizationResult] = []
         billing_service = BillingService(self.uow.session)
-        summary = await billing_service.get_usage_summary(
-            uuid.UUID(self.user_id) if self.user_id else None
-        )
+        summary = await billing_service.get_usage_summary(uuid.UUID(self.user_id))
 
         total_cost = summary.get("total_cost", 0)
         if hasattr(total_cost, "__float__"):
@@ -123,9 +120,6 @@ class RuntimeOptimizer:
     async def optimize_security(self) -> list[OptimizationResult]:
         results: list[OptimizationResult] = []
         try:
-            from app.services.apikeys import ApiKeyService
-
-            api_key_service = ApiKeyService(self.uow)
             runtime = await self.runtime_service.get(self.runtime_id)
             if not runtime:
                 return results

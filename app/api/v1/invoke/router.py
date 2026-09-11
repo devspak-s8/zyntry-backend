@@ -1,47 +1,76 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import time
 import uuid
-import logging
-import json
-from datetime import datetime, timezone
+from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, AsyncGenerator
+from typing import Any
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.features.dependencies import require_api_key_feature
 from app.core.config import settings
 from app.core.database import get_session
-from app.models.users import User
 from app.models.apikeys import ApiKey
-from app.models.chat import Conversation, Message
 from app.models.events import Event
+from app.models.users import User
 from app.repositories import UnitOfWork
-from app.schemas.actions import ActionRequest, ActionResponse
-from app.schemas.billing import InsufficientCreditsError
+from app.schemas.actions import ActionResponse
+from app.schemas.capabilities import CrossSourceJoinRequest, SourceRecordSet
 from app.services.actions.confirmations import ConfirmationService
 from app.services.actions.executor import ActionExecutor
 from app.services.actions.guardrails import (
     GuardrailService as ActionGuardrailService,
+)
+from app.services.actions.guardrails import (
     requires_action_confirmation,
 )
 from app.services.billing import BillingService, InsufficientCredits
-from app.services.metered_billing import InsufficientBalanceError, MeteredBillingService
-from app.services.guardrails import GuardrailService
-from app.services.model_router import ModelRouter, RoutingGoal, RoutingPreference
 from app.services.context_manager import ContextManager
-from app.services.token_engine import CompletionUsage, TokenEngine
-from app.services.provider_credentials import resolve_provider_key
+from app.services.guardrails import GuardrailService
+from app.services.invoke_support import (
+    InvokeRequest,
+    InvokeResponse,
+)
+from app.services.invoke_support import (
+    catalog_token_cost as _catalog_token_cost,
+)
+from app.services.invoke_support import (
+    charge_invoke_if_billable as _charge_invoke_if_billable,  # noqa: F401 - public test compatibility
+)
+from app.services.invoke_support import (
+    execute_tool as _execute_tool,
+)
+from app.services.invoke_support import (
+    insufficient_credits_detail as _insufficient_credits_detail,
+)
+from app.services.invoke_support import (
+    is_runtime_ready as _is_runtime_ready,
+)
+from app.services.invoke_support import (
+    load_recent_conversation_messages as _load_recent_conversation_messages,
+)
+from app.services.invoke_support import (
+    normalize_runtime_status as _normalize_runtime_status,
+)
+from app.services.invoke_support import (
+    tool_is_read_only as _tool_is_read_only,
+)
+from app.services.metered_billing import InsufficientBalanceError, MeteredBillingService
+from app.services.model_router import ModelRouter, RoutingGoal, RoutingPreference
 from app.services.oauth.service import OAuthService
-from app.services.security.outbound import validate_outbound_url
-from app.services.security.secrets import default_secret_manager
+from app.services.provider_credentials import resolve_provider_key
+from app.services.runtime_capabilities import (
+    authorize_runtime_request,
+    check_runtime_budget,
+    join_source_records,
+)
 from app.services.runtime_security import (
     RuntimeSecurityService,
     RuntimeSecurityViolation,
@@ -49,204 +78,13 @@ from app.services.runtime_security import (
     persist_runtime_security_event,
     redact_pii,
 )
-from app.services.runtime_capabilities import (
-    authorize_runtime_request,
-    check_runtime_budget,
-    join_source_records,
-)
-from app.schemas.capabilities import CrossSourceJoinRequest, SourceRecordSet
+from app.services.security.secrets import default_secret_manager
+from app.services.token_engine import CompletionUsage, TokenEngine
 
 router = APIRouter()
 guardrail_service = GuardrailService()
 runtime_security_service = RuntimeSecurityService()
 logger = logging.getLogger(__name__)
-
-
-def _insufficient_credits_detail() -> dict[str, str]:
-    return {
-        "error": "Insufficient credits",
-        "message": "Add credits to continue.",
-    }
-
-
-def _normalize_runtime_status(status_val: Any) -> str | None:
-    if status_val is None:
-        return None
-    try:
-        return str(status_val).strip().lower()
-    except Exception:
-        return str(status_val)
-
-
-def _is_runtime_ready(status_val: Any) -> bool:
-    norm_status = _normalize_runtime_status(status_val)
-    if norm_status is None:
-        return True
-    return norm_status not in {"failed", "cancelled"}
-
-
-async def _charge_invoke_if_billable(
-    billing_service: BillingService,
-    *,
-    user_id: uuid.UUID,
-    amount: Decimal,
-    reason: str,
-    reference_id: str,
-    metadata: dict[str, Any],
-) -> None:
-    """Do not create an invalid zero-value debit when pricing is not configured."""
-    if amount <= Decimal("0"):
-        return
-    await billing_service.deduct_credit(
-        user_id=user_id,
-        amount=amount,
-        reason=reason,
-        reference_id=reference_id,
-        metadata=metadata,
-    )
-
-
-def _catalog_token_cost(
-    candidate: Any,
-    *,
-    input_tokens: int,
-    output_tokens: int,
-) -> Decimal:
-    if candidate is None:
-        return Decimal("0")
-    info = candidate.model_info
-    input_rate = Decimal(str(info.input_price_per_1k or 0))
-    output_rate = Decimal(str(info.output_price_per_1k or 0))
-    cost = (
-        input_rate * Decimal(input_tokens) / Decimal(1000)
-        + output_rate * Decimal(output_tokens) / Decimal(1000)
-    )
-    if cost > 0:
-        return max(cost, Decimal("0.0001"))
-    return Decimal("0")
-
-
-class InvokeRequest(BaseModel):
-    project: str
-    input: str
-    runtime_id: str | None = None
-    model: str | None = None
-    provider: str | None = None
-    max_tokens: int | None = Field(default=None, ge=1, le=131_072)
-    goal: str = "balanced"
-    stream: bool = False
-    top_k: int = 5
-    conversation_id: str | None = None
-    idempotency_key: str | None = None
-    json_schema: dict | None = None
-    actions: list[ActionRequest] = Field(default_factory=list)
-    # Optional explicit read context.  When supplied, only these connected
-    # tools are queried and their provenance is added to the model context.
-    # This enables safe cross-source answers without invoking every connector
-    # on every request.
-    context_sources: list[str] = Field(default_factory=list, max_length=20)
-    join_on: str | None = None
-
-
-class InvokeResponse(BaseModel):
-    request_id: str
-    response: str | None = None
-    model: str
-    provider: str
-    latency_ms: float
-    cost: float
-    warnings: list[dict] = Field(default_factory=list)
-    events: list[dict] = Field(default_factory=list)
-    tool_calls: list[dict] = Field(default_factory=list)
-    action_results: list[ActionResponse] = Field(default_factory=list)
-    source_context: dict[str, Any] | None = None
-    tokens_used: int = 0
-    guardrail_violations: list[str] = []
-    estimated_cost: float = 0.0
-    actual_cost: float = 0.0
-    remaining_balance: float | None = None
-    usage: dict[str, Any] = Field(default_factory=dict)
-    context: dict[str, Any] = Field(default_factory=dict)
-    execution: dict[str, Any] = Field(default_factory=dict)
-
-
-async def _load_recent_conversation_messages(
-    db: AsyncSession,
-    conversation_id: str | None,
-    *,
-    project_id: uuid.UUID,
-    user_id: uuid.UUID,
-    limit: int = 20,
-) -> list[dict[str, str]]:
-    """Load only conversation history owned by this project/user scope."""
-
-    if not conversation_id:
-        return []
-    try:
-        conversation_uuid = uuid.UUID(conversation_id)
-    except (TypeError, ValueError):
-        return []
-    conversation = await db.scalar(
-        select(Conversation).where(
-            Conversation.id == conversation_uuid,
-            Conversation.project_id == project_id,
-            (Conversation.user_id.is_(None) | (Conversation.user_id == user_id)),
-        )
-    )
-    if conversation is None:
-        return []
-    result = await db.execute(
-        select(Message)
-        .where(Message.conversation_id == conversation.id)
-        .order_by(Message.created_at.desc())
-        .limit(min(max(limit, 1), 50))
-    )
-    messages = list(reversed(result.scalars().all()))
-    return [
-        {"role": str(item.role), "content": str(item.content)}
-        for item in messages
-        if item.content
-    ]
-
-
-async def _execute_tool(tool: Any, arguments: dict) -> dict:
-    impl = (tool.implementation or "").strip()
-    if not impl:
-        return {"name": tool.name, "status": "skipped", "reason": "no_implementation"}
-    if impl.startswith("http://") or impl.startswith("https://"):
-        try:
-            url = validate_outbound_url(impl)
-            async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
-                resp = await client.post(url, json=arguments)
-                return {"name": tool.name, "status": "success", "result": resp.json() if resp.headers.get("content-type") == "application/json" else resp.text, "status_code": resp.status_code}
-        except Exception as exc:
-            return {"name": tool.name, "status": "error", "error": str(exc)}
-    if impl.startswith("webhook://"):
-        url = impl[len("webhook://"):]
-        try:
-            url = validate_outbound_url(url)
-            async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
-                resp = await client.post(url, json=arguments)
-                return {"name": tool.name, "status": "success", "result": resp.json() if resp.headers.get("content-type") == "application/json" else resp.text, "status_code": resp.status_code}
-        except Exception as exc:
-            return {"name": tool.name, "status": "error", "error": str(exc)}
-    return {"name": tool.name, "status": "skipped", "reason": "unsupported_implementation"}
-
-
-def _tool_is_read_only(tool: Any) -> bool:
-    """Return the persisted read-only flag for an automatic tool call.
-
-    Tools created through the catalog store this under ``_zyntry_custom``;
-    older tools may store it at the top level.  Unknown tools are treated as
-    read-only for compatibility, while an explicit ``false`` always blocks
-    autonomous execution.  Mutations still go through the explicit action
-    and confirmation path.
-    """
-
-    schema = tool.schema if isinstance(getattr(tool, "schema", None), dict) else {}
-    custom = schema.get("_zyntry_custom") if isinstance(schema.get("_zyntry_custom"), dict) else {}
-    value = custom.get("read_only", schema.get("read_only", True))
-    return value is not False
 
 
 @router.post("/invoke/stream", response_model=None)
@@ -279,11 +117,12 @@ async def invoke_stream(
                 db,
             )
         except Exception as exc:  # pragma: no cover - exercised by clients
+            logger.exception("Streaming runtime invocation failed")
             holder["error"] = exc
         finally:
             await queue.put(None)
 
-    async def event_stream() -> AsyncGenerator[str, None]:
+    async def event_stream() -> AsyncGenerator[str]:
         yield f"data: {json.dumps({'event': 'Request Received', 'status': 'started'})}\n\n"
         task = asyncio.create_task(run_invoke())
         try:
@@ -297,7 +136,7 @@ async def invoke_stream(
             if not task.done():
                 task.cancel()
         if holder["error"] is not None:
-            yield f"data: {json.dumps({'event': 'Failed', 'status': 'failed', 'message': str(holder['error'])})}\n\n"
+            yield f"data: {json.dumps({'event': 'Failed', 'status': 'failed', 'message': 'Runtime invocation failed. Check the execution log for details.'})}\n\n"
             return
         result = holder["result"]
         if result is None:
@@ -325,30 +164,61 @@ async def invoke(
     warnings: list[dict[str, Any]] = []
     tool_calls: list[dict[str, Any]] = []
 
-    events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Request Received", "request_id": request_id})
+    events.append({"timestamp": datetime.now(UTC).isoformat(), "event": "Request Received", "request_id": request_id})
 
     uow = UnitOfWork(db)
     billing_service = BillingService(db)
 
-    project = await uow.projects.get(uuid.UUID(body.project))
+    api_key_id = getattr(request.state, "api_key_id", None)
+    api_key = await db.get(ApiKey, api_key_id) if api_key_id else None
+    if api_key is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
+
+    project_uuid: uuid.UUID | None = None
+    if body.project:
+        try:
+            project_uuid = uuid.UUID(body.project)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid project ID") from exc
+    elif api_key.project_id:
+        project_uuid = api_key.project_id
+
+    runtime_uuid: uuid.UUID | None = None
+    if body.runtime_id:
+        try:
+            runtime_uuid = uuid.UUID(body.runtime_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid runtime ID") from exc
+    elif api_key.runtime_id:
+        runtime_uuid = api_key.runtime_id
+
+    # Runtime-scoped keys can infer their project when the runtime is already
+    # attached.  Unattached runtimes cannot be invoked until they are bound to
+    # a project, which is enforced by the same readiness checks below.
+    inferred_runtime = await uow.runtimes.get(runtime_uuid) if runtime_uuid else None
+    if project_uuid is None and inferred_runtime is not None:
+        project_uuid = inferred_runtime.project_id
+    if project_uuid is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="API key is not scoped to a project; provide project in the request",
+        )
+
+    project = await uow.projects.get(project_uuid)
     if project is None or project.organization_id != current_user.organization_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
 
-    events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Project Loaded", "project_id": str(project.id)})
+    events.append({"timestamp": datetime.now(UTC).isoformat(), "event": "Project Loaded", "project_id": str(project.id)})
 
-    runtime = None
-    if body.runtime_id:
-        runtime = await uow.runtimes.get(uuid.UUID(body.runtime_id))
+    runtime = inferred_runtime
+    if runtime is None and runtime_uuid:
+        runtime = await uow.runtimes.get(runtime_uuid)
     if not runtime:
         runtime = await uow.runtimes.get_by_project(project.id)
 
     if runtime and runtime.project_id != project.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Runtime not found for this project")
 
-    api_key_id = getattr(request.state, "api_key_id", None)
-    api_key = await db.get(ApiKey, api_key_id) if api_key_id else None
-    if api_key is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
     key_scopes = set(api_key.scopes or [])
     if "read" not in key_scopes and "*" not in key_scopes:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="API key lacks read scope")
@@ -406,11 +276,11 @@ async def invoke(
             "config": default_secret_manager.redact(runtime.config or {}),
             "status": runtime.status,
         }
-        events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Runtime Loaded", "runtime_id": str(runtime.id), "cached": False})
+        events.append({"timestamp": datetime.now(UTC).isoformat(), "event": "Runtime Loaded", "runtime_id": str(runtime.id), "cached": False})
         try:
             security_event = await runtime_security_service.enforce(runtime, request, body.input)
             events.append({
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "event": "Runtime Security Checked",
                 "enabled": security_event.get("enabled", False),
             })
@@ -428,7 +298,7 @@ async def invoke(
                 logger.exception("Unable to persist runtime security check event")
         except RuntimeSecurityViolation as exc:
             events.append({
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "event": "Runtime Security Blocked",
                 "code": exc.code,
             })
@@ -452,11 +322,11 @@ async def invoke(
             ) from exc
     else:
         runtime_data = {"provider": "openai", "model": "gpt-4o", "config": {}}
-        events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Runtime Loaded", "runtime_id": None, "cached": False})
+        events.append({"timestamp": datetime.now(UTC).isoformat(), "event": "Runtime Loaded", "runtime_id": None, "cached": False})
 
     status_val = runtime_data.get("status")
     events.append({
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "event": "Runtime Access Evaluated",
         "role": access_role,
         "policy_enabled": bool(runtime and isinstance(runtime.config, dict) and (runtime.config or {}).get("access_control")),
@@ -539,7 +409,7 @@ async def invoke(
             provider_keys[p_name] = key
 
     events.append({
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "event": "Routing Mode",
         "mode": "automatic" if automatic_routing else "configured",
         "configured_provider": provider_name,
@@ -563,7 +433,7 @@ async def invoke(
             db, runtime, estimated_cost=estimated_cost
         )
         events.append({
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "event": "Runtime Budget Checked",
             "enabled": bool(budget_policy.get("enabled")),
             "status": "allowed" if budget_ok else "blocked",
@@ -597,16 +467,16 @@ async def invoke(
                 resource_type="ai_inference",
                 metadata={"estimate": True, "model": model_name, "provider": provider_name},
             )
-        except (InsufficientBalanceError,):
+        except InsufficientBalanceError as exc:
             raise HTTPException(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
                 detail=_insufficient_credits_detail(),
-            )
+            ) from exc
 
     router_service = ModelRouter(uow)
     source_context: dict[str, Any] | None = None
     messages = base_messages
-    tools = await uow.tools.get_by_project(str(project.id))
+    tools = await uow.tools.get_by_project(project.id)
     if body.context_sources:
         requested_sources = {item.strip().lower() for item in body.context_sources if item.strip()}
         selected_tools = []
@@ -630,7 +500,7 @@ async def invoke(
             if not isinstance(records, list):
                 records = []
             source_sets.append(SourceRecordSet(source=source_name, records=[item for item in records if isinstance(item, dict)]))
-            events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Source Retrieved", "source": source_name, "status": result.get("status")})
+            events.append({"timestamp": datetime.now(UTC).isoformat(), "event": "Source Retrieved", "source": source_name, "status": result.get("status")})
         if body.join_on:
             source_context = join_source_records(CrossSourceJoinRequest(sources=source_sets, join_on=body.join_on))
         else:
@@ -644,7 +514,7 @@ async def invoke(
             "role": "system",
             "content": "Use the following connected internal source context first. Preserve source names and do not infer records that are not present.\n" + json.dumps(source_context, default=str),
         })
-        events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Cross-Source Context Assembled", "sources": source_context.get("sources", []), "matched_records": source_context.get("matched_records", 0)})
+        events.append({"timestamp": datetime.now(UTC).isoformat(), "event": "Cross-Source Context Assembled", "sources": source_context.get("sources", []), "matched_records": source_context.get("matched_records", 0)})
 
     # A preflight requirement lets automatic routing exclude models that cannot
     # hold this request plus a safe output reserve.  The final assembly then
@@ -660,7 +530,7 @@ async def invoke(
     )
     messages = assembly.messages
     events.append({
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "event": "Context Budgeted",
         **assembly.as_dict(),
     })
@@ -673,7 +543,7 @@ async def invoke(
     if runtime and normalize_runtime_security_policy(runtime.security_policies)["pii_redaction"]:
         if stream_callback is not None:
             events.append({
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "event": "Token Stream Buffered",
                 "reason": "pii_redaction",
             })
@@ -683,7 +553,8 @@ async def invoke(
     # its per-call attempt list before each invocation, so the invoke pipeline
     # owns the aggregate when a tool follow-up model call is performed.
     model_attempts: list[dict[str, Any]] = []
-    config = runtime_data.get("config") if isinstance(runtime_data.get("config"), dict) else {}
+    raw_config = runtime_data.get("config")
+    config: dict[str, Any] = dict(raw_config) if isinstance(raw_config, dict) else {}
     autonomous_tool_loop = bool(config.get("autonomous_tool_loop", True))
     try:
         max_tool_steps = min(3, max(0, int(config.get("max_tool_steps", 3))))
@@ -727,13 +598,20 @@ async def invoke(
     if not result_text:
         if pre_reservation is not None:
             await MeteredBillingService(db).release(pre_reservation.id, reason="provider_failed")
-        raise HTTPException(status_code=502, detail=f"All providers failed: {last_error}")
+        logger.warning(
+            "All configured providers failed",
+            extra={"request_id": request_id, "provider_error": last_error[:500]},
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="All configured providers failed. Check the execution log for details.",
+        )
     provider_name = invoked_provider or provider_name
     model_name = invoked_model or model_name
-    events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Model Selected", "model": model_name, "provider": provider_name})
+    events.append({"timestamp": datetime.now(UTC).isoformat(), "event": "Model Selected", "model": model_name, "provider": provider_name})
     if router_service.last_routing_reason:
         events.append({
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "event": "Routing Decision",
             "reason": router_service.last_routing_reason,
         })
@@ -758,7 +636,7 @@ async def invoke(
             }
             tool_calls.append(result)
             events.append({
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "event": "Tool Skipped",
                 "tool": tool.name,
                 "reason": result["reason"],
@@ -771,7 +649,7 @@ async def invoke(
             automatic_tool_results.append(result)
             completed_tool_steps = step
             events.append({
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "event": "Tool Executed",
                 "tool": tool.name,
                 "status": result.get("status"),
@@ -824,7 +702,7 @@ async def invoke(
                 })
                 break
             events.append({
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "event": "Tool Loop Synthesis",
                 "step": step,
                 "tool": tool.name,
@@ -860,7 +738,13 @@ async def invoke(
         try:
             await OAuthService(uow).pre_resolve_project_tokens(project.id)
         except Exception:
-            pass
+            # Token pre-resolution is an optimization; action execution still
+            # performs its own authorization. Keep failures observable without
+            # exposing connector details to the caller.
+            logger.exception(
+                "Unable to pre-resolve project OAuth tokens",
+                extra={"request_id": request_id, "project_id": str(project.id)},
+            )
 
         for action_req in body.actions:
             action_req.project_id = str(project.id)
@@ -907,9 +791,11 @@ async def invoke(
                 ))
                 continue
 
-            result = await action_executor.execute(action_req, current_user.id, project.id)
-            action_results.append(result)
-            events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Action Executed", "provider": action_req.provider, "action": action_req.action, "success": result.success})
+            action_result = await action_executor.execute(
+                action_req, current_user.id, project.id
+            )
+            action_results.append(action_result)
+            events.append({"timestamp": datetime.now(UTC).isoformat(), "event": "Action Executed", "provider": action_req.provider, "action": action_req.action, "success": action_result.success})
 
     response_text, output_violations = guardrail_service.enforce(result_text, body.json_schema)
     if runtime:
@@ -919,7 +805,7 @@ async def invoke(
             if redacted_response != response_text:
                 response_text = redacted_response
                 events.append({
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "timestamp": datetime.now(UTC).isoformat(),
                     "event": "Runtime PII Redacted",
                 })
                 try:
@@ -1060,12 +946,10 @@ async def invoke(
     except (InsufficientCredits, InsufficientBalanceError) as exc:
         if reservation is not None:
             await metered.release(reservation.id, reason="settlement_failed")
-        required = getattr(exc, "required", actual_cost)
-        available = getattr(exc, "available", wallet.balance)
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail=_insufficient_credits_detail(),
-        )
+        ) from exc
     except Exception:
         if reservation is not None:
             await metered.release(reservation.id, reason="billing_failed")
@@ -1110,18 +994,20 @@ async def invoke(
             provider=provider_name,
             model=model_name,
             cost=int(actual_cost),
-            started_at=datetime.fromtimestamp(start_time, tz=timezone.utc).isoformat(),
-            completed_at=datetime.now(timezone.utc).isoformat(),
+            started_at=datetime.fromtimestamp(start_time, tz=UTC).isoformat(),
+            completed_at=datetime.now(UTC).isoformat(),
             user_id=current_user.id,
             ip="",
         )
         await uow.commit()
     except Exception:
-        pass
+        # Telemetry persistence must not turn a completed invocation into a
+        # client-visible failure, but it must remain visible to operators.
+        logger.exception("Unable to persist invocation event", extra={"request_id": request_id})
 
-    events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Response Generated", "model": model_name})
-    events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Wallet Deducted", "amount": float(actual_cost)})
-    events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "event": "Completed", "request_id": request_id})
+    events.append({"timestamp": datetime.now(UTC).isoformat(), "event": "Response Generated", "model": model_name})
+    events.append({"timestamp": datetime.now(UTC).isoformat(), "event": "Wallet Deducted", "amount": float(actual_cost)})
+    events.append({"timestamp": datetime.now(UTC).isoformat(), "event": "Completed", "request_id": request_id})
 
     wallet = await billing_service.get_wallet(current_user.id)
     return InvokeResponse(

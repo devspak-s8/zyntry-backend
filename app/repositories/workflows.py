@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import builtins
 import uuid
-from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select, func
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.workflows import Workflow, WorkflowExecution
@@ -14,19 +14,19 @@ class WorkflowRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def list(self, limit: int = 50, offset: int = 0) -> list[Workflow]:
+    async def list(self, limit: int = 50, offset: int = 0) -> builtins.list[Workflow]:
         result = await self.session.execute(
             select(Workflow).limit(limit).offset(offset)
         )
         return list(result.scalars().all())
 
-    async def list_active(self) -> list[Workflow]:
+    async def list_active(self) -> builtins.list[Workflow]:
         result = await self.session.execute(
             select(Workflow).where(Workflow.status != "archived")
         )
         return list(result.scalars().all())
 
-    async def get_by_project(self, project_id: uuid.UUID) -> list[Workflow]:
+    async def get_by_project(self, project_id: uuid.UUID) -> builtins.list[Workflow]:
         result = await self.session.execute(
             select(Workflow).where(Workflow.project_id == project_id)
         )

@@ -15,11 +15,10 @@ import pytest
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.models.billing import BillingLedger, Wallet
+from app.models.billing import BillingLedger
 from app.models.users import User
 from app.services.billing import BillingService
 from app.services.metered_billing import InsufficientBalanceError, MeteredBillingService
-
 
 pytestmark = pytest.mark.asyncio
 

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import secrets
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from uuid import UUID
 
 from app.workers.celery_app import celery_app
 from app.workers.runtime_worker import RuntimeWorker
@@ -66,7 +67,7 @@ def propagate_runtime_task(runtime_id: str) -> dict:
         async for session in get_session():
             uow = UnitOfWork(session)
             service = RuntimeService(uow)
-            runtime = await uow.runtimes.get(runtime_id)
+            runtime = await uow.runtimes.get(UUID(runtime_id))
             if not runtime:
                 return {"runtime_id": runtime_id, "status": "not_found"}
             from app.main import manager
@@ -79,8 +80,8 @@ def propagate_runtime_task(runtime_id: str) -> dict:
             if changes.get("existing_chunks", 0) == 0:
                 await service.enqueue_build(runtime_id, trigger="propagation")
                 return {"runtime_id": runtime_id, "status": "full_rebuild_queued"}
-            runtime.last_propagated = datetime.now(timezone.utc)
-            await uow.runtimes.update(runtime, last_propagated=datetime.now(timezone.utc))
+            runtime.last_propagated = datetime.now(UTC)
+            await uow.runtimes.update(runtime, last_propagated=datetime.now(UTC))
             await uow.session.commit()
             from app.main import manager
 
@@ -89,6 +90,8 @@ def propagate_runtime_task(runtime_id: str) -> dict:
                 str(runtime.user_id),
             )
             return {"runtime_id": runtime_id, "status": "completed"}
+
+        return {"runtime_id": runtime_id, "status": "not_executed"}
 
     from app.core.database import run_async
 

@@ -41,13 +41,15 @@ class MemoryService:
         project = await self.uow.projects.get(data.project_id)
         if not project:
             raise ValueError("Project not found")
+        settings = dict(project.settings or {})
+        settings["memory_enabled"] = data.enabled
         updated = await self.uow.projects.update(
-            project, memory_enabled=data.enabled
+            project, settings=settings
         )
         await self.uow.commit()
         return {
             "project_id": str(updated.id),
-            "memory_enabled": updated.memory_enabled,
+            "memory_enabled": bool((updated.settings or {}).get("memory_enabled", False)),
         }
 
     async def add_memory(
@@ -197,7 +199,7 @@ class MemoryService:
         session_id = messages[0].session_id
 
         pid = uuid.UUID(project_id) if isinstance(project_id, str) else project_id
-        uid = uuid.UUID(user_id) if user_id else None
+        uid = user_id
 
         if existing:
             record = await self.uow.memory_records.update(

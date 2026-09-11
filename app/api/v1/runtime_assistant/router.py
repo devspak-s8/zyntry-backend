@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import uuid
 import json
 import logging
+import uuid
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -14,15 +14,16 @@ from app.api.v1.dependencies_tenant import require_project_membership
 from app.core.database import get_session
 from app.models.runtimes import Runtime
 from app.models.users import User
+from app.repositories import UnitOfWork
 from app.schemas.runtime_assistant import (
     AssistantActionConfirmationRequest,
     AssistantActionProposalRequest,
     AssistantChatRequest,
     AssistantChatResponse,
 )
-from app.repositories import UnitOfWork
 from app.services.runtime_assistant.commands import RuntimeAssistantCommandService
 from app.services.runtime_assistant.records import RuntimeAssistantRecords
+from app.services.runtime_assistant.schemas import AssistantResponse as ServiceAssistantResponse
 from app.services.runtime_assistant.schemas import UserRole
 from app.services.runtime_assistant.service import RuntimeAssistantService
 
@@ -66,16 +67,14 @@ async def chat_with_assistant(
         stream=False,
         conversation_id=body.conversation_id,
     )
-    if isinstance(response, dict):
-        return AssistantChatResponse(**response)
-    return AssistantChatResponse(
-        message=response.message,
-        tool_calls=response.tool_calls,
-        diagnostics=response.diagnostics,
-        optimizations=response.optimizations,
-        summary=response.summary,
-        metadata=response.metadata,
-        conversation_id=response.metadata.get("conversation_id"),
+    if not isinstance(response, ServiceAssistantResponse):
+        raise HTTPException(status_code=500, detail="Assistant returned an invalid response")
+    # The service owns its internal response models; validate a serialized
+    # projection at the API boundary so public schemas cannot drift silently.
+    payload = response.model_dump()
+    metadata = payload.get("metadata") or {}
+    return AssistantChatResponse.model_validate(
+        {**payload, "conversation_id": metadata.get("conversation_id")}
     )
 
 
@@ -147,14 +146,15 @@ async def stream_assistant_chat(
                 stream=False,
                 conversation_id=body.conversation_id,
             )
-            payload = AssistantChatResponse(
-                message=response.message,
-                tool_calls=response.tool_calls,
-                diagnostics=response.diagnostics,
-                optimizations=response.optimizations,
-                summary=response.summary,
-                metadata=response.metadata,
-                conversation_id=response.metadata.get("conversation_id"),
+            if not isinstance(response, ServiceAssistantResponse):
+                raise RuntimeError("Assistant returned an invalid response")
+            response_payload = response.model_dump()
+            response_metadata = response_payload.get("metadata") or {}
+            payload = AssistantChatResponse.model_validate(
+                {
+                    **response_payload,
+                    "conversation_id": response_metadata.get("conversation_id"),
+                }
             ).model_dump(mode="json")
             yield encode("result", payload)
             yield encode("done", {"conversation_id": payload.get("conversation_id")})
@@ -230,6 +230,8 @@ async def propose_action(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     runtime = await _authorize_runtime(body.runtime_id, current_user, session)
+    if runtime.project_id is None:
+        raise HTTPException(status_code=409, detail="Runtime is not attached to a project")
     service = RuntimeAssistantCommandService(UnitOfWork(session))
     try:
         proposal = await service.propose(
@@ -264,6 +266,8 @@ async def confirm_action(
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     runtime = await _authorize_runtime(body.runtime_id, current_user, session)
+    if runtime.project_id is None:
+        raise HTTPException(status_code=409, detail="Runtime is not attached to a project")
     try:
         parsed_proposal = uuid.UUID(proposal_id)
     except ValueError:

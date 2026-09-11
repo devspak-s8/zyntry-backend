@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from app.core.database import run_async
@@ -11,6 +11,24 @@ from app.services.billing import BillingService
 from app.workers.celery_app import celery_app
 
 logger = get_logger("app.tasks.billing")
+
+
+@celery_app.task(name="app.tasks.billing.monitor_provider_funding")
+def monitor_provider_funding() -> dict:
+    """Check configured provider thresholds without touching customer wallets."""
+    async def _run() -> dict:
+        from app.core.config import settings
+        from app.core.database import get_session
+        from app.services.provider_funding import ProviderFundingService
+
+        if not settings.PROVIDER_FUNDING_MONITOR_ENABLED:
+            return {"status": "disabled", "providers": []}
+        async for session in get_session():
+            results = await ProviderFundingService(session).check_all()
+            return {"status": "completed", "providers": results}
+        return {"status": "completed", "providers": []}
+
+    return run_async(_run())
 
 
 @celery_app.task(name="app.tasks.billing.expire_billing_reservations")
@@ -35,13 +53,15 @@ def send_budget_notification_task(user_id: str, event_type: str, limit: str) -> 
 @celery_app.task(name="app.tasks.billing.retry_failed_webhooks")
 def retry_failed_webhooks() -> dict:
     async def _run() -> dict:
+        from datetime import datetime, timedelta
+
+        from sqlalchemy import select
+
         from app.core.database import get_session
         from app.models.processed_webhook_events import ProcessedWebhookEvent
-        from sqlalchemy import select
-        from datetime import datetime, timedelta, timezone
 
         async for session in get_session():
-            cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+            cutoff = datetime.now(UTC) - timedelta(hours=24)
             result = await session.execute(
                 select(ProcessedWebhookEvent)
                 .where(
@@ -65,6 +85,8 @@ def retry_failed_webhooks() -> dict:
                     )
                     retried += 1
             return {"status": "retried", "count": retried}
+        return {"status": "no_database_session", "count": 0}
+        return {"status": "no_database_session", "count": 0}
 
     return run_async(_run())
 
@@ -72,11 +94,12 @@ def retry_failed_webhooks() -> dict:
 @celery_app.task(name="app.tasks.billing.generate_billing_summary")
 def generate_billing_summary() -> dict:
     async def _run() -> dict:
+        from sqlalchemy import func, select
+
         from app.core.database import get_session
-        from sqlalchemy import select, func
 
         async for session in get_session():
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
             result = await session.execute(
@@ -111,6 +134,7 @@ def generate_billing_summary() -> dict:
             }
             logger.info("Billing summary generated", extra=summary)
             return summary
+        return {"status": "no_database_session"}
 
     return run_async(_run())
 
@@ -118,21 +142,24 @@ def generate_billing_summary() -> dict:
 @celery_app.task(name="app.tasks.billing.clean_expired_sessions")
 def clean_expired_sessions() -> dict:
     async def _run() -> dict:
-        from app.core.database import get_session
-        from app.models.users import RefreshToken, Session
         from sqlalchemy import delete
 
+        from app.core.database import get_session
+        from app.models.refresh_tokens import RefreshToken
+        from app.models.sessions import Session
+
         async for session in get_session():
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
 
             await session.execute(
-                delete(Session).where(Session.expires_at < now, Session.revoked == False)
+                delete(Session).where(Session.expires_at < now, Session.revoked.is_(False))
             )
             await session.execute(
-                delete(RefreshToken).where(RefreshToken.expires_at < now, RefreshToken.revoked == False)
+                delete(RefreshToken).where(RefreshToken.expires_at < now, RefreshToken.revoked.is_(False))
             )
             await session.commit()
             return {"status": "cleaned"}
+        return {"status": "no_database_session"}
 
     return run_async(_run())
 
@@ -141,6 +168,7 @@ def clean_expired_sessions() -> dict:
 def process_auto_top_up(user_id: str) -> dict:
     async def _run() -> dict:
         uid = uuid.UUID(user_id)
+        from app.core.database import get_session
         async for session in get_session():
             billing = BillingService(session)
             from app.repositories import UnitOfWork
@@ -159,12 +187,13 @@ def process_auto_top_up(user_id: str) -> dict:
                     user_id=uid,
                     amount=budget.auto_top_up_amount,
                     reason="Auto top-up",
-                    reference_id=f"auto_topup_{user_id}_{datetime.now(timezone.utc).isoformat()}",
+                    reference_id=f"auto_topup_{user_id}_{datetime.now(UTC).isoformat()}",
                 )
                 return {"status": "credited", "amount": float(budget.auto_top_up_amount)}
             except Exception as exc:
                 logger.error("Auto top-up failed", extra={"user_id": user_id, "error": str(exc)})
                 return {"status": "error", "error": str(exc)}
+        return {"status": "no_database_session"}
 
     return run_async(_run())
 
@@ -172,8 +201,9 @@ def process_auto_top_up(user_id: str) -> dict:
 @celery_app.task(name="app.tasks.billing.reset_monthly_budgets")
 def reset_monthly_budgets() -> dict:
     async def _run() -> dict:
-        from app.core.database import get_session
         from sqlalchemy import update
+
+        from app.core.database import get_session
 
         async for session in get_session():
             await session.execute(
@@ -188,5 +218,6 @@ def reset_monthly_budgets() -> dict:
             )
             await session.commit()
             return {"status": "reset"}
+        return {"status": "no_database_session"}
 
     return run_async(_run())

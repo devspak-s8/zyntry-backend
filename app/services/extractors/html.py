@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from typing import Any
 
 bs4_spec = None
@@ -11,7 +10,16 @@ try:
 except Exception:
     pass
 
-from app.extractors.base import BaseExtractor, CodeBlock, ExtractedDocument, Heading, Link, ListItem, Paragraph, Table
+from app.extractors.base import (  # noqa: E402
+    BaseExtractor,
+    CodeBlock,
+    ExtractedDocument,
+    Heading,
+    Link,
+    ListItem,
+    Paragraph,
+    Table,
+)
 
 
 class HtmlExtractor(BaseExtractor):
@@ -69,7 +77,9 @@ class HtmlExtractor(BaseExtractor):
             code_tag = pre.find("code")
             if code_tag:
                 language = None
-                for cls in code_tag.get("class", []):
+                raw_classes: Any = code_tag.get("class") or []
+                classes = [raw_classes] if isinstance(raw_classes, str) else raw_classes
+                for cls in classes:
                     if cls.startswith("language-"):
                         language = cls[len("language-"):]
                         break
@@ -82,7 +92,8 @@ class HtmlExtractor(BaseExtractor):
         seen_links = set()
         for a in soup.find_all("a", href=True):
             text = a.get_text(strip=True)
-            url = a["href"].strip()
+            raw_url = a.get("href")
+            url = str(raw_url).strip() if raw_url is not None else ""
             key = (text, url)
             if key not in seen_links:
                 seen_links.add(key)
@@ -90,7 +101,7 @@ class HtmlExtractor(BaseExtractor):
 
         lists: list[ListItem] = []
         for ol in soup.find_all(["ol"]):
-            for idx, li in enumerate(ol.find_all("li"), start=1):
+            for li in ol.find_all("li"):
                 text = li.get_text(" ", strip=True)
                 if text:
                     lists.append(ListItem(text=text, ordered=True))

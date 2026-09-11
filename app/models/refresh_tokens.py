@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.config import settings
 from app.core.database import Base
 from app.models.organizations import TimestampMixin, UUIDMixin
 

@@ -1,84 +1,50 @@
 from __future__ import annotations
 
-import json
 import asyncio
+import json
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 
 from app.admin.auth import decode_token as decode_admin_token
 from app.admin.middleware import AdminSecurityMiddleware
 from app.admin.models import AdminSession, AdminUser
-from app.admin.services.feature_seeding import seed_system_feature_flags
 from app.admin.websocket_manager import admin_ws_manager
 from app.api import router as api_router
 from app.api.v1.logs.router import router as logs_router
 from app.core.config import settings
-from app.core.database import async_session_factory, init_models
-from app.core.logging import configure_logging
+from app.core.database import async_session_factory
+from app.core.errors import DomainError
+from app.core.lifecycle import start_application, stop_application
+from app.core.logging import get_logger
 from app.core.security import hash_token, now
 from app.middleware import RateLimitMiddleware, RequestContextMiddleware, SecurityHeadersMiddleware
 from app.middleware.csrf import CSRFMiddleware
-from app.models.actions import ActionAuditLog, ActionConfirmation, ActionExecution
-from app.models.oauth import OAuthConnection, OAuthProvider, OAuthState
 from app.models.sessions import Session
 from app.models.users import User
-from app.services.oauth.seeding import seed_oauth_tool_providers
-from app.services.pricing_catalog import seed_pricing_catalog
+
+logger = get_logger("app.main")
 
 
 def _parse_cors_origins(value: str) -> list[str]:
+    # Compatibility helper for callers that import this function directly;
+    # application code uses the normalized settings property below.
     return [origin.strip() for origin in value.split(",") if origin.strip()]
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Never allow a production process to start with development behaviour.
-    # APP_DEBUG bypassed the secret/database checks below in the past, which
-    # made a mistyped APP_ENV silently expose a development configuration.
-    if settings.is_production and settings.APP_DEBUG:
-        raise RuntimeError("APP_DEBUG must be false when APP_ENV=production")
-    if settings.is_production or not settings.APP_DEBUG:
-        missing = []
-        if not settings.SECRET_KEY:
-            missing.append("SECRET_KEY")
-        if not settings.JWT_SECRET:
-            missing.append("JWT_SECRET")
-        if not settings.ENCRYPTION_KEY:
-            missing.append("ENCRYPTION_KEY")
-        if not settings.DATABASE_URL or settings.DATABASE_URL in (
-            "postgresql+asyncpg://zyntra:zyntra@localhost:5432/zyntra",
-        ):
-            missing.append("DATABASE_URL")
-        if missing:
-            msg = (
-                "Missing required environment variables "
-                f"for production: {', '.join(missing)}"
-            )
-            raise RuntimeError(msg)
-
-    configure_logging()
-    await init_models()
-    async with async_session_factory() as db:
-        await seed_system_feature_flags(db)
-        await seed_oauth_tool_providers(db)
-        await seed_pricing_catalog(db)
-    from app.core.runtime_events import consume_runtime_events
-
-    runtime_event_task = asyncio.create_task(consume_runtime_events(manager.broadcast))
+    runtime_event_task = await start_application(settings, manager.broadcast)
     try:
         yield
     finally:
-        runtime_event_task.cancel()
-        try:
-            await runtime_event_task
-        except asyncio.CancelledError:
-            pass
+        await stop_application(runtime_event_task)
 
 
 class ConnectionManager:
@@ -104,6 +70,7 @@ class ConnectionManager:
             try:
                 await connection.send_json(message)
             except Exception:
+                logger.debug("Removing disconnected user websocket", exc_info=True)
                 self.disconnect(connection)
 
     async def broadcast(self, message: dict) -> None:
@@ -119,6 +86,7 @@ class ConnectionManager:
                 try:
                     await connection.send_json(message)
                 except Exception:
+                    logger.debug("Removing disconnected broadcast websocket", exc_info=True)
                     self.disconnect(connection)
 
 
@@ -133,6 +101,25 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    @app.exception_handler(Exception)
+    async def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
+        """Keep tracebacks and provider/database details out of API responses."""
+        logger.exception(
+            "Unhandled application error",
+            extra={"path": request.url.path, "method": request.method},
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "code": "internal_error",
+                "message": "An internal error occurred. Please try again.",
+            },
+        )
+
+    @app.exception_handler(DomainError)
+    async def handle_domain_error(request: Request, exc: DomainError) -> JSONResponse:
+        return JSONResponse(status_code=exc.status_code, content=exc.as_detail())
+
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(CSRFMiddleware)
     app.add_middleware(RequestContextMiddleware)
@@ -143,19 +130,11 @@ def create_app() -> FastAPI:
     # well as successful API responses.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=_parse_cors_origins(settings.CORS_ORIGINS),
+        allow_origins=settings.cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
-
-    from app.core.redis import redis_client
-
-    @app.on_event("startup")
-    async def startup():
-        from fastapi_cache import FastAPICache
-        from fastapi_cache.backends.redis import RedisBackend
-        FastAPICache.init(RedisBackend(redis_client), prefix="cache")
 
     app.include_router(api_router, prefix=f"{settings.API_PREFIX}/{settings.API_VERSION}")
     app.include_router(logs_router)
@@ -184,7 +163,7 @@ def create_app() -> FastAPI:
     @app.websocket("/ws/admin")
     async def websocket_admin(websocket: WebSocket):
         origin = websocket.headers.get("origin", "")
-        allowed_origins = set(_parse_cors_origins(settings.CORS_ORIGINS))
+        allowed_origins = set(settings.cors_origins)
         if origin and origin not in allowed_origins:
             await websocket.close(code=4003, reason="Origin not allowed")
             return
@@ -205,7 +184,7 @@ def create_app() -> FastAPI:
                 token = str(auth_message.get("token") or "")
                 if not token:
                     raise ValueError("token required")
-            except (asyncio.TimeoutError, ValueError, TypeError, WebSocketDisconnect):
+            except (TimeoutError, ValueError, TypeError, WebSocketDisconnect):
                 await websocket.close(code=4001, reason="Not authenticated")
                 return
         try:
@@ -219,12 +198,12 @@ def create_app() -> FastAPI:
             return
 
         async with async_session_factory() as db:
-            result = await db.execute(
+            session_result = await db.execute(
                 select(AdminSession).where(AdminSession.token_hash == hash_token(token))
             )
-            admin_session = result.scalar_one_or_none()
-            result = await db.execute(select(AdminUser).where(AdminUser.id == admin_id))
-            admin_user = result.scalar_one_or_none()
+            admin_session = session_result.scalar_one_or_none()
+            admin_result = await db.execute(select(AdminUser).where(AdminUser.id == admin_id))
+            admin_user = admin_result.scalar_one_or_none()
             admin_expires_at = getattr(admin_session, "expires_at", None)
             if admin_expires_at is not None and admin_expires_at.tzinfo is None:
                 from datetime import UTC
@@ -255,14 +234,14 @@ def create_app() -> FastAPI:
                     msg = json.loads(data)
                     if msg.get("type") == "ping":
                         await admin_ws_manager.send_pong(websocket)
-                except (json.JSONDecodeError, Exception):
-                    pass
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    logger.debug("Ignoring malformed admin websocket message")
         except WebSocketDisconnect:
             await admin_ws_manager.disconnect(websocket)
 
     async def _handle_client_websocket(websocket: WebSocket):
         origin = websocket.headers.get("origin", "")
-        allowed_origins = set(_parse_cors_origins(settings.CORS_ORIGINS))
+        allowed_origins = set(settings.cors_origins)
         if origin and origin not in allowed_origins:
             await websocket.close(code=4003, reason="Origin not allowed")
             return
@@ -307,8 +286,8 @@ def create_app() -> FastAPI:
                     msg = json.loads(data)
                     if msg.get("type") == "ping":
                         await websocket.send_json({"type": "pong"})
-                except (json.JSONDecodeError, Exception):
-                    pass
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    logger.debug("Ignoring malformed realtime websocket message")
         except WebSocketDisconnect:
             manager.disconnect(websocket)
 

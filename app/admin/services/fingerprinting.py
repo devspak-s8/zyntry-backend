@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.admin.models import UserFingerprint
+from app.admin.models import LoginEvent, UserFingerprint
 from app.admin.repositories import LoginEventRepository, UserFingerprintRepository
 
 
@@ -78,7 +78,7 @@ class FingerprintingService:
         return record
 
     async def get_user_fingerprints(self, user_id: str, limit: int = 50, offset: int = 0) -> list[UserFingerprint]:
-        return await self._repo.list_by_user(user_id, limit=limit, offset=offset)
+        return await self._repo.list_by_user(uuid.UUID(user_id), limit=limit, offset=offset)
 
     async def get_fingerprint_history(self, fingerprint_hash: str, limit: int = 50) -> list[UserFingerprint]:
         result = await self.db.execute(
@@ -144,7 +144,7 @@ class FingerprintingService:
         return {"detected": False, "user_id": user_id, "new_ip_country": new_ip_country}
 
     async def get_known_devices(self, user_id: str, limit: int = 50, offset: int = 0) -> list[UserFingerprint]:
-        return await self._repo.list_by_user(user_id, limit=limit, offset=offset)
+        return await self._repo.list_by_user(uuid.UUID(user_id), limit=limit, offset=offset)
 
     async def flag_fingerprint(self, fingerprint_hash: str, risk_score: int) -> UserFingerprint | None:
         result = await self.db.execute(select(UserFingerprint).where(UserFingerprint.fingerprint_hash == fingerprint_hash))

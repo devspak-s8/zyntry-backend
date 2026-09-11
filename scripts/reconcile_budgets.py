@@ -3,8 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
-from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -62,7 +61,7 @@ async def get_budgets(session: AsyncSession) -> dict[str, tuple[Decimal, str]]:
 
 
 async def create_snapshot(session: AsyncSession, dry_run: bool) -> str:
-    table_name = f"budgets_backup_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+    table_name = f"budgets_backup_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}"
     sql = f"CREATE TABLE {table_name} AS SELECT * FROM budgets"
     if dry_run:
         print(f"[dry-run] Would create snapshot table: {table_name}")

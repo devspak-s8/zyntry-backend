@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,19 +10,17 @@ from app.core.config import settings
 from app.core.database import get_session
 from app.models.users import User
 from app.repositories import UnitOfWork
-from app.services.model_router import ModelRouter, RoutingGoal, RoutingPreference
 from app.services.model_providers import PROVIDER_REGISTRY
-from app.services.model_providers.base import BaseModelProvider
+from app.services.model_router import ModelRouter, RoutingGoal, RoutingPreference
 
 router = APIRouter(prefix="/router", tags=["router"])
 
 
 @router.get("/models")
 async def list_available_models(
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    uow = UnitOfWork(db)
     provider_keys: dict[str, str] = {}
     for p_name, setting_name in [
         ("openai", "OPENAI_API_KEY"),
@@ -74,7 +72,7 @@ async def recommend_model(
     min_context: int | None = Query(default=None),
     requires_vision: bool = Query(default=False),
     requires_tools: bool = Query(default=False),
-    current_user: Annotated[User, Depends(get_current_user)] = None,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     try:

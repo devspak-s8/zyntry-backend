@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import uuid
-from collections import Counter
-from datetime import datetime, timedelta, timezone
-from typing import Annotated
+from datetime import UTC, datetime, timedelta
+from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
@@ -18,11 +17,9 @@ from app.api.v1.dependencies_tenant import (
 from app.api.v1.features.dependencies import require_feature
 from app.api.v1.invoke.router import InvokeRequest, InvokeResponse, invoke
 from app.core.database import get_session
-from app.models.billing import UsageLog
 from app.models.events import Event
-from app.models.request_logs import RequestLog
-from app.models.runtimes import Runtime, RuntimeBuildLog
 from app.models.integrations import RuntimeIntegration
+from app.models.runtimes import Runtime, RuntimeBuildLog
 from app.models.users import User
 from app.repositories import UnitOfWork
 from app.schemas.apikeys import ApiKeyCreate, ApiKeyCreateResponse
@@ -36,34 +33,40 @@ from app.schemas.runtimes import (
     RuntimeBuildChunkRead,
     RuntimeBuildLogRead,
     RuntimeCreate,
+    RuntimeHealthResponse,
     RuntimeNameCheckRequest,
     RuntimeNameCheckResponse,
-    RuntimeHealthResponse,
     RuntimeRead,
-    RuntimeTopologyEdge,
-    RuntimeTopologyNode,
+    RuntimeSecurityIpRule,
+    RuntimeSecurityPolicy,
     RuntimeTopologyResponse,
     RuntimeTopologySimulationRequest,
     RuntimeTopologySimulationResponse,
     RuntimeUpdate,
-    RuntimeSecurityPolicy,
-    RuntimeSecurityIpRule,
 )
 from app.services.apikeys import ApiKeyService
 from app.services.health import HealthService
-from app.services.integrations.service import IntegrationService
 from app.services.integrations.definitions import integration_registry
-from app.services.runtimes import RuntimeCreationConflict, RuntimeService
-from app.services.security.secrets import default_secret_manager
+from app.services.integrations.service import IntegrationService
 from app.services.runtime_security import (
     RuntimeSecurityService,
     normalize_runtime_security_policy,
     persist_runtime_security_event,
 )
+from app.services.runtime_topology import build_runtime_topology
+from app.services.runtimes import RuntimeCreationConflict, RuntimeService
+from app.services.security.secrets import default_secret_manager
 
 router = APIRouter(prefix="/runtimes", tags=["runtimes"])
 OBSERVABILITY_GUARD = [Depends(require_feature("observability"))]
 runtime_security_service = RuntimeSecurityService()
+
+
+def _runtime_read(value: RuntimeRead | dict[str, Any]) -> RuntimeRead:
+    """Convert a service projection into the typed HTTP response model."""
+    if isinstance(value, RuntimeRead):
+        return value
+    return RuntimeRead.model_validate(value)
 
 
 def _safe_integration_config(value: dict | None) -> dict:
@@ -128,10 +131,10 @@ async def list_runtimes(
     if project_id:
         await require_project_membership(project_id, current_user, db)
         runtime = await service.get_by_project(project_id)
-        return [runtime] if runtime else []
+        return [_runtime_read(runtime)] if runtime else []
     if organization_id:
         await require_organization_membership(organization_id, current_user, db)
-        return await service.list_by_organization(organization_id)
+        return [_runtime_read(item) for item in await service.list_by_organization(organization_id)]
 
     # Include both directly owned runtimes and runtimes owned by the user's
     # organization. Project-created runtimes are organization-scoped as well,
@@ -142,8 +145,8 @@ async def list_runtimes(
         runtimes.extend(
             await service.list_by_organization(str(current_user.organization_id))
         )
-    unique: dict[str, dict] = {str(runtime["id"]): runtime for runtime in runtimes}
-    return [RuntimeRead(**runtime) for runtime in unique.values()]
+    unique: dict[str, dict[str, Any]] = {str(runtime["id"]): runtime for runtime in runtimes}
+    return [_runtime_read(runtime) for runtime in unique.values()]
 
 
 @router.post("/name-check", response_model=RuntimeNameCheckResponse)
@@ -182,7 +185,7 @@ async def create_runtime(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.as_detail()) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return RuntimeRead(**runtime)
+    return _runtime_read(runtime)
 
 
 @router.get("/{runtime_id:uuid}", response_model=RuntimeRead)
@@ -194,7 +197,7 @@ async def get_runtime(
     uow = UnitOfWork(db)
     service = RuntimeService(uow)
     runtime_obj = await require_runtime_access(runtime_id, current_user, db)
-    return RuntimeRead(**service._to_read(runtime_obj))
+    return _runtime_read(service._to_read(runtime_obj))
 
 
 @router.get("/project/{project_id}", response_model=RuntimeRead)
@@ -206,14 +209,14 @@ async def get_runtime_by_project(
     try:
         uuid.UUID(project_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid project_id format")
+        raise HTTPException(status_code=400, detail="Invalid project_id format") from None
     uow = UnitOfWork(db)
     service = RuntimeService(uow)
     await require_project_membership(project_id, current_user, db)
     runtime = await service.get_by_project(project_id)
     if not runtime:
         raise HTTPException(status_code=404, detail="Runtime not found")
-    return RuntimeRead(**runtime)
+    return _runtime_read(runtime)
 
 
 @router.patch("/{runtime_id}", response_model=RuntimeRead)
@@ -255,7 +258,7 @@ async def update_runtime(
                 await db.commit()
         except Exception:
             pass
-    return RuntimeRead(**runtime)
+    return _runtime_read(runtime)
 
 
 @router.put("/{runtime_id}/external-sources", response_model=ExternalSourcePolicy)
@@ -271,11 +274,11 @@ async def configure_external_sources(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid runtime_id format") from None
 
-    uow = UnitOfWork(db)
     runtime = await require_runtime_access(rid, current_user, db)
 
     config = dict(runtime.config or {})
     config["external_sources"] = body.model_dump()
+    uow = UnitOfWork(db)
     await uow.runtimes.update(runtime, config=config)
     await uow.commit()
     return body
@@ -293,7 +296,6 @@ async def create_runtime_api_key(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid runtime_id format") from None
 
-    uow = UnitOfWork(db)
     runtime = await require_runtime_access(rid, current_user, db)
 
     service = ApiKeyService(db)
@@ -364,10 +366,9 @@ async def enable_runtime_integration(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid runtime_id format") from None
 
-    uow = UnitOfWork(db)
-    runtime = await require_runtime_access(rid, current_user, db)
+    await require_runtime_access(rid, current_user, db)
 
-    service = IntegrationService(uow)
+    service = IntegrationService(UnitOfWork(db))
     try:
         item = await service.enable_runtime_integration(rid, body)
         return RuntimeIntegrationRead(
@@ -637,7 +638,6 @@ async def invoke_runtime_console(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid runtime_id format") from None
 
-    uow = UnitOfWork(db)
     runtime = await require_runtime_access(runtime_uuid, current_user, db)
     if runtime.project_id is None:
         raise HTTPException(
@@ -649,9 +649,10 @@ async def invoke_runtime_console(
         update={
             "project": str(runtime.project_id) if runtime.project_id else None,
             "runtime_id": str(runtime.id),
+            "stream": False,
         }
     )
-    return await invoke(safe_body, request, current_user, db)
+    return cast(InvokeResponse, await invoke(safe_body, request, current_user, db))
 
 
 @router.post("/{runtime_id}/propagate", response_model=dict)
@@ -689,107 +690,8 @@ async def _runtime_for_topology(runtime_id: str, current_user: User, db: AsyncSe
 
 
 async def _build_topology(runtime: Runtime, db: AsyncSession, *, simulation: str | None = None) -> dict:
-    now = datetime.now(timezone.utc)
-    since = now - timedelta(hours=24)
-    usage_rows = list((await db.execute(
-        select(UsageLog).where(UsageLog.runtime_id == runtime.id, UsageLog.created_at >= since)
-    )).scalars().all())
-    request_rows = []
-    if runtime.project_id:
-        request_rows = list((await db.execute(
-            select(RequestLog).where(RequestLog.project_id == runtime.project_id, RequestLog.created_at >= since)
-        )).scalars().all())
-    latencies = sorted(float(row.latency_ms) for row in usage_rows if row.latency_ms is not None)
-    p95 = latencies[min(len(latencies) - 1, max(0, int(len(latencies) * 0.95) - 1))] if latencies else None
-    total_requests = sum(int(row.requests or 1) for row in usage_rows)
-    total_tokens = sum(int(row.input_tokens or 0) + int(row.output_tokens or 0) for row in usage_rows)
-    total_cost = sum(float(row.cost or 0) for row in usage_rows)
-    errors = sum(1 for row in request_rows if int(row.status or 0) >= 400)
-    provider_counts = Counter(row.provider for row in usage_rows if row.provider)
-    model_counts = Counter(row.model for row in usage_rows if row.model)
-    integrations = list((await db.execute(
-        select(RuntimeIntegration).where(RuntimeIntegration.runtime_id == runtime.id)
-    )).scalars().all())
-
-    telemetry = {
-        "requests_24h": total_requests,
-        "tokens_24h": total_tokens,
-        "cost_24h": round(total_cost, 8),
-        "errors_24h": errors,
-        "error_rate": round(errors / max(1, len(request_rows)), 6),
-        "average_latency_ms": round(sum(latencies) / len(latencies), 2) if latencies else None,
-        "p95_latency_ms": p95,
-        "providers": dict(provider_counts),
-        "models": dict(model_counts),
-    }
-
-    node_status = {
-        "application": "active",
-        "runtime": runtime.status,
-        "router": "active",
-        "model": "active" if runtime.provider and runtime.model else "unconfigured",
-        "knowledge": "ready" if runtime.embeddings or runtime.documents == 0 else "indexing",
-        "vector_store": "active" if runtime.vector_store else "unconfigured",
-    }
-    simulated = simulation is not None
-    if simulation == "postgres_degraded":
-        node_status["vector_store"] = "degraded"
-        node_status["knowledge"] = "degraded"
-    elif simulation == "traffic_surge":
-        node_status["application"] = "pressured"
-        node_status["router"] = "balancing"
-    elif simulation == "llm_failover":
-        node_status["model"] = "failed_over"
-
-    nodes = [
-        RuntimeTopologyNode(id="application", kind="application", label="Your Application", status=node_status["application"], metrics={"requests_24h": total_requests, "error_rate": telemetry["error_rate"]}, simulated=simulated),
-        RuntimeTopologyNode(id="runtime", kind="runtime", label=runtime.name, status=node_status["runtime"], health=float(runtime.health or 0), metrics={"documents": runtime.documents, "chunks": runtime.chunks, "embeddings": runtime.embeddings, "index_size": runtime.index_size}, simulated=simulated),
-        RuntimeTopologyNode(id="router", kind="router", label="AI Router", status=node_status["router"], metrics={"strategy": runtime.routing_strategy, "p95_latency_ms": p95}, simulated=simulated),
-        RuntimeTopologyNode(id="model", kind="model", label=f"{runtime.provider or 'Unassigned'} / {runtime.model or 'Unassigned'}", status=node_status["model"], metrics={"average_latency_ms": telemetry["average_latency_ms"], "requests_24h": provider_counts.get(runtime.provider, 0)}, metadata={"provider": runtime.provider, "model": runtime.model}, simulated=simulated),
-        RuntimeTopologyNode(id="knowledge", kind="knowledge", label="Indexed Knowledge", status=node_status["knowledge"], metrics={"documents": runtime.documents, "chunks": runtime.chunks, "embeddings": runtime.embeddings}, simulated=simulated),
-        RuntimeTopologyNode(id="vector_store", kind="vector_store", label=runtime.vector_store or "Vector Store", status=node_status["vector_store"], metrics={"index_size": runtime.index_size}, simulated=simulated),
-    ]
-    for integration in integrations:
-        nodes.append(RuntimeTopologyNode(
-            id=f"integration:{integration.integration_slug}", kind="integration", label=integration.integration_slug,
-            status=integration.connection_status if integration.is_enabled else "disabled",
-            metadata={"capabilities": integration.enabled_capabilities or [], "connection_mode": integration.connection_mode},
-            simulated=simulated,
-        ))
-
-    edges = [
-        RuntimeTopologyEdge(source="application", target="runtime"),
-        RuntimeTopologyEdge(source="runtime", target="router"),
-        RuntimeTopologyEdge(source="router", target="model", status="degraded" if simulation == "llm_failover" else "active"),
-        RuntimeTopologyEdge(source="runtime", target="knowledge"),
-        RuntimeTopologyEdge(source="knowledge", target="vector_store", status="degraded" if simulation == "postgres_degraded" else "active"),
-    ]
-    edges.extend(RuntimeTopologyEdge(source="router", target=f"integration:{item.integration_slug}") for item in integrations if item.is_enabled)
-    fallback_models = list(runtime.fallback_models or [])
-    if simulation == "llm_failover":
-        for index, fallback in enumerate(fallback_models):
-            node_id = f"fallback:{index}"
-            nodes.append(RuntimeTopologyNode(id=node_id, kind="model", label=fallback, status="active", metadata={"fallback": True}, simulated=True))
-            edges.append(RuntimeTopologyEdge(source="router", target=node_id, metadata={"selected": index == 0, "reason": "simulated primary failure"}))
-
-    return {
-        "runtime_id": runtime.id,
-        "project_id": runtime.project_id,
-        "generated_at": now,
-        "window_seconds": 86400,
-        "simulated": simulated,
-        "nodes": nodes,
-        "edges": edges,
-        "routing": {
-            "strategy": runtime.routing_strategy,
-            "provider": runtime.provider,
-            "model": runtime.model,
-            "fallback_models": fallback_models,
-            "failover_enabled": True,
-            "simulation_mode": simulation,
-        },
-        "telemetry": telemetry,
-    }
+    """Compatibility wrapper while callers migrate to the topology service."""
+    return await build_runtime_topology(runtime, db, simulation=simulation)
 
 
 @router.get("/{runtime_id}/topology", response_model=RuntimeTopologyResponse, dependencies=OBSERVABILITY_GUARD)
@@ -811,7 +713,7 @@ async def simulate_runtime_topology(
 ) -> RuntimeTopologySimulationResponse:
     runtime = await _runtime_for_topology(runtime_id, current_user, db)
     generated = await _build_topology(runtime, db, simulation=body.mode)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return RuntimeTopologySimulationResponse(
         **generated,
         simulation_id=uuid.uuid4(),
@@ -863,7 +765,6 @@ async def list_runtime_logs(
         rid = uuid.UUID(runtime_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid runtime_id format") from None
-    uow = UnitOfWork(db)
     await require_runtime_access(rid, current_user, db)
 
     result = await db.execute(
@@ -875,18 +776,18 @@ async def list_runtime_logs(
     logs = result.scalars().all()
     return [
         RuntimeBuildLogRead(
-            id=l.id,
-            runtime_id=l.runtime_id,
-            stage=l.stage,
-            status=l.status,
-            started_at=l.started_at,
-            completed_at=l.completed_at,
-            error_message=l.error_message,
-            metadata=l.metadata_,
-            created_at=l.created_at,
-            updated_at=l.updated_at,
+            id=log.id,
+            runtime_id=log.runtime_id,
+            stage=log.stage,
+            status=log.status,
+            started_at=log.started_at,
+            completed_at=log.completed_at,
+            error_message=log.error_message,
+            metadata=log.metadata_,
+            created_at=log.created_at,
+            updated_at=log.updated_at,
         )
-        for l in logs
+        for log in logs
     ]
 
 
@@ -901,7 +802,6 @@ async def list_runtime_chunks(
         rid = uuid.UUID(runtime_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid runtime_id format") from None
-    uow = UnitOfWork(db)
     await require_runtime_access(rid, current_user, db)
 
     result = await db.execute(

@@ -29,7 +29,7 @@ async def admin_list_feature_flags(
     flags = await service.list_all(scope=scope, enabled_only=enabled_only, limit=limit, offset=offset)
     return [
         FeatureFlagRead(
-            id=str(f.id) if f.id else None,
+            id=str(f.id),
             key=f.key,
             name=f.name,
             description=f.description,
@@ -57,7 +57,7 @@ async def admin_get_feature_flag(
     if flag is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Feature flag not found")
     return FeatureFlagRead(
-        id=str(flag.id) if flag.id else None,
+        id=str(flag.id),
         key=flag.key,
         name=flag.name,
         description=flag.description,
@@ -94,7 +94,7 @@ async def admin_create_feature_flag(
     await db.commit()
     await service.invalidate(flag.key)
     return FeatureFlagRead(
-        id=str(flag.id) if flag.id else None,
+        id=str(flag.id),
         key=flag.key,
         name=flag.name,
         description=flag.description,
@@ -127,7 +127,7 @@ async def admin_update_feature_flag(
     await db.commit()
     await service.invalidate(flag.key)
     return FeatureFlagRead(
-        id=str(flag.id) if flag.id else None,
+        id=str(flag.id),
         key=flag.key,
         name=flag.name,
         description=flag.description,
@@ -155,7 +155,7 @@ async def admin_enable_feature_flag(
     await db.commit()
     await service.invalidate(flag.key)
     return FeatureFlagRead(
-        id=str(flag.id) if flag.id else None,
+        id=str(flag.id),
         key=flag.key,
         name=flag.name,
         description=flag.description,
@@ -183,7 +183,7 @@ async def admin_disable_feature_flag(
     await db.commit()
     await service.invalidate(flag.key)
     return FeatureFlagRead(
-        id=str(flag.id) if flag.id else None,
+        id=str(flag.id),
         key=flag.key,
         name=flag.name,
         description=flag.description,

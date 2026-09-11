@@ -107,7 +107,7 @@ async def get_admin_context(request: Request, db: AsyncSession = Depends(get_ses
 
     if settings.ADMIN_IP_ALLOWLIST:
         client_ip = get_client_ip(request)
-        result3 = await db.execute(select(IPAllowList).where(IPAllowList.ip_address == client_ip, IPAllowList.is_active == True))
+        result3 = await db.execute(select(IPAllowList).where(IPAllowList.ip_address == client_ip, IPAllowList.is_active.is_(True)))
         allowlist = result3.scalars().all()
         if not check_ip_allowlist(client_ip, allowlist):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="IP not allowed")

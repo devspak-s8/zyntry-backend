@@ -23,6 +23,6 @@ class NotificationRepository(BaseRepository[Notification]):
 
     async def list_unread_for_user(self, user_id: uuid.UUID) -> list[Notification]:
         result = await self.session.execute(
-            select(self.model).where(self.model.user_id == user_id, self.model.read == False)
+            select(self.model).where(self.model.user_id == user_id, self.model.read.is_(False))
         )
         return list(result.scalars().all())

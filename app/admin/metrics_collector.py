@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import asyncio
+import time
 from typing import Any
 
 import psutil
@@ -25,7 +25,7 @@ class MetricsCollector:
 
     def get_network_throughput_mb(self) -> float:
         net1 = psutil.net_io_counters()
-        asyncio.sleep(0.1)
+        time.sleep(0.1)
         net2 = psutil.net_io_counters()
         bytes_diff = net2.bytes_sent + net2.bytes_recv - net1.bytes_sent - net1.bytes_recv
         return round(bytes_diff / (1024 * 1024), 2)

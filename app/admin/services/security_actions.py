@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from sqlalchemy import select
@@ -81,7 +82,7 @@ class SecurityActionsService:
         return True
 
     async def clear_alert(self, alert_id: str) -> bool:
-        return bool(await self._repo.update_status(alert_id, AlertStatus.RESOLVED))
+        return bool(await self._repo.update_status(uuid.UUID(alert_id), AlertStatus.RESOLVED))
 
     async def apply_action(self, alert_id: str, action: str, reason: str | None = None) -> dict[str, Any]:
         # The admin console also uses this endpoint for direct resource actions
@@ -96,7 +97,7 @@ class SecurityActionsService:
             success = await RuntimeMonitorService(self.db).disable_runtime(alert_id)
             return {"success": success, "action": action, "resource_id": alert_id}
 
-        alert = await self._repo.get_by_id(alert_id)
+        alert = await self._repo.get(uuid.UUID(alert_id))
         if alert is None:
             return {"success": False, "error": "Alert not found"}
 

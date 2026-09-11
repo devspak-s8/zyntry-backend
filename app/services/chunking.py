@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from typing import Any
 
 
@@ -137,7 +136,6 @@ def chunk_markdown(text: str, chunk_size: int, overlap: int) -> list[str]:
         return []
 
     heading_pattern = re.compile(r'^(#{1,6}\s+.*)$', re.MULTILINE)
-    code_block_pattern = re.compile(r'```[\s\S]*?```')
     lines = text.split("\n")
 
     sections: list[tuple[str, str]] = []
@@ -174,7 +172,7 @@ def chunk_markdown(text: str, chunk_size: int, overlap: int) -> list[str]:
         sections.append((current_heading, "\n".join(current_lines + code_buffer)))
 
     chunks: list[str] = []
-    for heading, content in sections:
+    for _heading, content in sections:
         if not content.strip():
             continue
         token_limit = chunk_size // _CHARS_PER_TOKEN
@@ -266,7 +264,7 @@ def chunk_heading(text: str, chunk_size: int, overlap: int) -> list[str]:
 
     chunks: list[str] = []
     token_limit = chunk_size // _CHARS_PER_TOKEN
-    for heading, content in sections:
+    for _heading, content in sections:
         if not content.strip():
             continue
         if _estimate_tokens(content) <= token_limit:

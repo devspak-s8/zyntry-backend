@@ -7,7 +7,6 @@ from typing import Any
 
 from app.core.redis import redis_client
 
-
 RUNTIME_EVENT_CHANNEL = "zyntry:runtime-events"
 
 

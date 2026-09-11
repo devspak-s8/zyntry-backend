@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
 from typing import Any
 
 from app.core.database import run_async
@@ -25,9 +24,8 @@ def log_audit_event_task(
     new_value: dict[str, Any] | None = None,
 ) -> str:
     async def _run() -> str:
-        from app.admin.models import AdminAuditLog
-        from sqlalchemy.ext.asyncio import AsyncSession
 
+        from app.admin.models import AdminAuditLog
         from app.core.database import async_session_factory
 
         async with async_session_factory() as db:

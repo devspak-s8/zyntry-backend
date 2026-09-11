@@ -10,13 +10,15 @@ from app.services.billing import BillingService
 from app.services.health import HealthService
 from app.services.knowledge import KnowledgeService
 from app.services.providers import ProviderService
+from app.services.runtime_assistant.schemas import RuntimeContext, UserRole
 from app.services.runtimes import RuntimeService
 from app.services.tools import ToolService
-from app.services.runtime_assistant.schemas import RuntimeContext
 
 
 class RuntimeContextBuilder:
-    def __init__(self, uow: UnitOfWork, runtime_id: str, user_id: str, user_role: str) -> None:
+    def __init__(
+        self, uow: UnitOfWork, runtime_id: str, user_id: str, user_role: UserRole
+    ) -> None:
         self.uow = uow
         self.runtime_id = runtime_id
         self.user_id = user_id
@@ -73,7 +75,7 @@ class RuntimeContextBuilder:
         analytics = await collect("analytics", lambda: project_value(lambda: self.analytics_service.get_summary(project_id), {}), {})
         billing_summary = await collect(
             "billing",
-            lambda: self.billing_service.get_usage_summary(uuid.UUID(self.user_id) if self.user_id else None),
+            lambda: self.billing_service.get_usage_summary(uuid.UUID(self.user_id)),
             {},
         )
         integration_models = await collect(
@@ -190,7 +192,7 @@ class RuntimeContextBuilder:
         try:
             from app.services.apikeys import ApiKeyService
 
-            api_key_service = ApiKeyService(self.uow)
+            api_key_service = ApiKeyService(self.uow.session)
             keys = await api_key_service.list_keys(
                 # Match the console's project scope when the runtime is bound
                 # to a project; fall back to runtime scope for unbound

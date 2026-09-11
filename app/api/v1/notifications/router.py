@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
 from app.core.database import get_session
 from app.models.users import User
 from app.repositories import UnitOfWork
-from app.schemas.events import NotificationRead, NotificationUpdate
+from app.schemas.notifications import NotificationRead, NotificationUpdate
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
@@ -47,13 +47,12 @@ async def update_notification(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> NotificationRead:
-    from app.models.notifications import Notification
     from app.services.webhooks import NotificationService
 
     try:
         nid = uuid.UUID(notification_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid notification id")
+        raise HTTPException(status_code=400, detail="Invalid notification id") from None
 
     service = NotificationService(db)
     notification = await service.mark_read(nid, current_user.id)

@@ -4,12 +4,11 @@ import json
 import time
 import uuid
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
-from typing import Any, AsyncGenerator
-from uuid import UUID
+from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
+from typing import Any
 
 import httpx
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.repositories import UnitOfWork
@@ -64,14 +63,14 @@ class BaseLLMProvider(ABC):
         ...
 
     @abstractmethod
-    async def astream(
+    def astream(
         self,
         messages: list[dict[str, str]],
         model: str,
         max_tokens: int = 2048,
         temperature: float = 0.7,
         on_usage: UsageCallback | None = None,
-    ) -> AsyncGenerator[str, None]:
+    ) -> AsyncGenerator[str]:
         ...
 
 
@@ -114,7 +113,7 @@ class OpenAILLMProvider(BaseLLMProvider):
         max_tokens: int = 2048,
         temperature: float = 0.7,
         on_usage: UsageCallback | None = None,
-    ) -> AsyncGenerator[str, None]:
+    ) -> AsyncGenerator[str]:
         async with httpx.AsyncClient(timeout=120) as client:
             async with client.stream(
                 "POST",
@@ -203,7 +202,7 @@ class AnthropicLLMProvider(BaseLLMProvider):
         max_tokens: int = 2048,
         temperature: float = 0.7,
         on_usage: UsageCallback | None = None,
-    ) -> AsyncGenerator[str, None]:
+    ) -> AsyncGenerator[str]:
         system_prompt = ""
         filtered_messages: list[dict[str, str]] = []
         for msg in messages:
@@ -253,14 +252,12 @@ class AnthropicLLMProvider(BaseLLMProvider):
 
 
 def get_llm_provider(provider_name: str, api_key: str) -> BaseLLMProvider:
-    providers: dict[str, type[BaseLLMProvider]] = {
-        "openai": OpenAILLMProvider,
-        "anthropic": AnthropicLLMProvider,
-    }
-    provider_cls = providers.get(provider_name.lower())
-    if not provider_cls:
-        raise ValueError(f"Unsupported LLM provider: {provider_name}")
-    return provider_cls(api_key=api_key)
+    normalized = provider_name.lower()
+    if normalized == "openai":
+        return OpenAILLMProvider(api_key)
+    if normalized == "anthropic":
+        return AnthropicLLMProvider(api_key)
+    raise ValueError(f"Unsupported LLM provider: {provider_name}")
 
 
 class RAGPipeline:
@@ -276,10 +273,10 @@ class RAGPipeline:
         self.embedding_provider = embedding_provider
         self.llm_provider = llm_provider
 
-    async def query(self, rag_query: RAGQuery) -> RAGResponse | AsyncGenerator[str, None]:
+    async def query(self, rag_query: RAGQuery) -> RAGResponse | AsyncGenerator[str]:
         start_time = time.perf_counter()
 
-        intent = await self.detect_intent(rag_query.question)
+        await self.detect_intent(rag_query.question)
         context = None
         if rag_query.conversation_id:
             context = await self._get_conversation_context(
@@ -309,9 +306,9 @@ class RAGPipeline:
 
         runtime = None
         if rag_query.runtime_id:
-            runtime = await self.uow.runtimes.get(rag_query.runtime_id)
+            runtime = await self.uow.runtimes.get(uuid.UUID(rag_query.runtime_id))
         elif rag_query.project_id:
-            runtime = await self.uow.runtimes.get_by_project(rag_query.project_id)
+            runtime = await self.uow.runtimes.get_by_project(uuid.UUID(rag_query.project_id))
 
         rerank = False
         if runtime and runtime.config and runtime.config.get("rerank"):
@@ -435,7 +432,7 @@ class RAGPipeline:
         rerank_items: int,
         start_time: float,
         context: dict[str, Any],
-    ) -> AsyncGenerator[str, None]:
+    ) -> AsyncGenerator[str]:
         full_answer = ""
         stream_usage: dict[str, Any] = {}
 
@@ -499,7 +496,7 @@ class RAGPipeline:
             return None
         messages = sorted(
             [r for r in records if r.content and not r.parent_key],
-            key=lambda r: r.created_at or datetime.min.replace(tzinfo=timezone.utc),
+            key=lambda r: r.created_at or datetime.min.replace(tzinfo=UTC),
         )
         if not messages:
             return None

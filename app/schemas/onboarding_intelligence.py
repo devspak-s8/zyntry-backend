@@ -6,7 +6,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-
 ConnectionOwnership = Literal["company", "end_user", "hybrid"]
 MemoryScope = Literal["request", "session", "user", "organization"]
 

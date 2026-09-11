@@ -1,26 +1,28 @@
 from __future__ import annotations
 
+import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from app.repositories import UnitOfWork
 from app.services.health import HealthService
 from app.services.knowledge import KnowledgeService
 from app.services.providers import ProviderService
-from app.services.runtimes import RuntimeService
-from app.services.tools import ToolService
-from app.services.runtime_assistant.permissions import PermissionDeniedError, check_tool_permission
 from app.services.runtime_assistant.configuration import (
     configuration_change_impact,
     normalize_configuration_changes,
 )
+from app.services.runtime_assistant.permissions import PermissionDeniedError, check_tool_permission
 from app.services.runtime_assistant.schemas import (
-    ActionType,
     ToolCall,
     ToolDefinition,
     UserRole,
 )
+from app.services.runtimes import RuntimeService
+from app.services.tools import ToolService
+
+logger = logging.getLogger(__name__)
 
 
 class RuntimeAssistantTools:
@@ -42,6 +44,13 @@ class RuntimeAssistantTools:
         self.knowledge_service = KnowledgeService(uow)
         self.tool_service = ToolService(uow)
         self.health_service = HealthService(uow)
+
+    def _project_id_for_runtime(self, runtime: dict[str, Any]) -> str:
+        """Return the project scope required by project-backed tools."""
+        project_id = self.project_id or runtime.get("project_id")
+        if not project_id:
+            raise ValueError("Runtime is not attached to a project")
+        return str(project_id)
 
     def get_available_tools(self) -> list[ToolDefinition]:
         all_tools = _ALL_TOOLS
@@ -65,10 +74,10 @@ class RuntimeAssistantTools:
         if not handler:
             tool_call.status = "error"
             tool_call.error = f"Unknown tool: {tool_name}"
-            tool_call.timestamp = datetime.now(timezone.utc)
+            tool_call.timestamp = datetime.now(UTC)
             return tool_call
 
-        start = datetime.now(timezone.utc)
+        start = datetime.now(UTC)
         try:
             result = await handler(self, **arguments)
             tool_call.status = "success"
@@ -79,11 +88,18 @@ class RuntimeAssistantTools:
         except ValueError as exc:
             tool_call.status = "error"
             tool_call.error = str(exc)
-        except Exception as exc:
+        except Exception:
             tool_call.status = "error"
-            tool_call.error = f"Tool execution failed: {exc}"
+            # Connector/database exceptions may contain URLs, credentials, or
+            # SQL details. Keep the public tool result safe and retain the
+            # diagnostic in server logs with the runtime/tool scope.
+            logger.exception(
+                "Runtime Assistant tool execution failed",
+                extra={"runtime_id": self.runtime_id, "tool": tool_name},
+            )
+            tool_call.error = "Tool execution failed. Check the execution log for details."
         finally:
-            end = datetime.now(timezone.utc)
+            end = datetime.now(UTC)
             tool_call.duration_ms = (end - start).total_seconds() * 1000
             tool_call.timestamp = start
 
@@ -96,7 +112,7 @@ async def _get_runtime_summary(self: RuntimeAssistantTools) -> dict[str, Any]:
         raise ValueError("Runtime not found")
 
     health = await self.health_service.get_runtime_health(self.runtime_id)
-    project_id = runtime.get("project_id", "")
+    project_id = self._project_id_for_runtime(runtime)
 
     knowledge_sources = await self.knowledge_service.list_sources(project_id)
     tools = await self.tool_service.list_tools(project_id)
@@ -104,9 +120,7 @@ async def _get_runtime_summary(self: RuntimeAssistantTools) -> dict[str, Any]:
     from app.services.billing import BillingService
 
     billing_service = BillingService(self.uow.session)
-    billing_summary = await billing_service.get_usage_summary(
-        uuid.UUID(self.user_id) if self.user_id else None
-    )
+    billing_summary = await billing_service.get_usage_summary(uuid.UUID(self.user_id))
 
     failed_sources = [
         s for s in knowledge_sources if s.get("status") in ("error", "failed")
@@ -178,7 +192,7 @@ async def _get_providers(self: RuntimeAssistantTools) -> list[dict[str, Any]]:
     runtime = await self.runtime_service.get(self.runtime_id)
     if not runtime:
         raise ValueError("Runtime not found")
-    return await self.provider_service.list_providers(runtime.get("project_id"))
+    return await self.provider_service.list_providers(self._project_id_for_runtime(runtime))
 
 
 async def _get_models(self: RuntimeAssistantTools) -> list[dict[str, Any]]:
@@ -198,14 +212,14 @@ async def _get_knowledge_sources(self: RuntimeAssistantTools) -> list[dict[str, 
     runtime = await self.runtime_service.get(self.runtime_id)
     if not runtime:
         raise ValueError("Runtime not found")
-    return await self.knowledge_service.list_sources(runtime.get("project_id"))
+    return await self.knowledge_service.list_sources(self._project_id_for_runtime(runtime))
 
 
 async def _get_tools(self: RuntimeAssistantTools) -> list[dict[str, Any]]:
     runtime = await self.runtime_service.get(self.runtime_id)
     if not runtime:
         raise ValueError("Runtime not found")
-    return await self.tool_service.list_tools(runtime.get("project_id"))
+    return await self.tool_service.list_tools(self._project_id_for_runtime(runtime))
 
 
 async def _get_logs(self: RuntimeAssistantTools, limit: int = 50) -> list[dict[str, Any]]:
@@ -215,7 +229,7 @@ async def _get_logs(self: RuntimeAssistantTools, limit: int = 50) -> list[dict[s
     if not runtime:
         raise ValueError("Runtime not found")
 
-    project_id = runtime.get("project_id", "")
+    project_id = self._project_id_for_runtime(runtime)
     repo = RequestLogRepository(self.uow.session)
     logs = await repo.list(limit=limit, offset=0)
     project_logs = [log for log in logs if str(log.project_id) == str(project_id)]
@@ -244,22 +258,20 @@ async def _get_analytics(self: RuntimeAssistantTools) -> dict[str, Any]:
     from app.services.analytics import AnalyticsService
 
     analytics_service = AnalyticsService(self.uow)
-    return await analytics_service.get_summary(runtime.get("project_id"))
+    return await analytics_service.get_summary(self._project_id_for_runtime(runtime))
 
 
 async def _get_billing(self: RuntimeAssistantTools) -> dict[str, Any]:
     from app.services.billing import BillingService
 
     billing_service = BillingService(self.uow.session)
-    return await billing_service.get_usage_summary(
-        uuid.UUID(self.user_id) if self.user_id else None
-    )
+    return await billing_service.get_usage_summary(uuid.UUID(self.user_id))
 
 
 async def _get_security_settings(self: RuntimeAssistantTools) -> dict[str, Any]:
     from app.services.apikeys import ApiKeyService
 
-    api_key_service = ApiKeyService(self.uow)
+    api_key_service = ApiKeyService(self.uow.session)
     keys = await api_key_service.list_keys(
         user_id=self.user_id or None,
         project_id=self.project_id or None,
@@ -305,6 +317,7 @@ async def _get_change_history(
     self: RuntimeAssistantTools, limit: int = 20
 ) -> dict[str, Any]:
     from sqlalchemy import select
+
     from app.models.actions import ActionAuditLog
     from app.models.runtimes import RuntimeBuildLog
 
@@ -457,16 +470,24 @@ async def _sync_sources(self: RuntimeAssistantTools) -> dict[str, Any]:
     runtime = await self.runtime_service.get(self.runtime_id)
     if not runtime:
         raise ValueError("Runtime not found")
-    project_id = runtime.get("project_id", "")
+    project_id = self._project_id_for_runtime(runtime)
     sources = await self.knowledge_service.list_sources(project_id)
     results = []
     for source in sources:
         try:
             result = await self.knowledge_service.sync_source(str(source.get("id", "")))
             results.append({"source_id": str(source.get("id")), "status": "queued", "result": result})
-        except Exception as exc:
+        except Exception:
+            logger.exception(
+                "Runtime Assistant source sync failed",
+                extra={"runtime_id": self.runtime_id, "source_id": str(source.get("id", ""))},
+            )
             results.append(
-                {"source_id": str(source.get("id")), "status": "error", "error": str(exc)}
+                {
+                    "source_id": str(source.get("id")),
+                    "status": "error",
+                    "error": "Source sync failed. Check the execution log for details.",
+                }
             )
     return {"status": "completed", "synced": len(results), "results": results}
 
@@ -487,8 +508,12 @@ async def _clear_cache(self: RuntimeAssistantTools) -> dict[str, Any]:
         if keys:
             await redis_client.delete(*keys)
         return {"status": "success", "cleared_keys": len(keys)}
-    except Exception as exc:
-        return {"status": "error", "error": str(exc)}
+    except Exception:
+        logger.exception("Runtime Assistant database probe failed", extra={"runtime_id": self.runtime_id})
+        return {
+            "status": "error",
+            "error": "Database test failed. Check the execution log for details.",
+        }
 
 
 async def _restart_runtime(self: RuntimeAssistantTools) -> dict[str, Any]:
@@ -509,9 +534,7 @@ async def _run_cost_analysis(self: RuntimeAssistantTools) -> dict[str, Any]:
     from app.services.billing import BillingService
 
     billing_service = BillingService(self.uow.session)
-    summary = await billing_service.get_usage_summary(
-        uuid.UUID(self.user_id) if self.user_id else None
-    )
+    summary = await billing_service.get_usage_summary(uuid.UUID(self.user_id))
     return {
         "runtime_id": self.runtime_id,
         "total_cost": float(summary.get("total_cost", 0)) if summary.get("total_cost") else 0.0,
@@ -563,7 +586,7 @@ async def _pause_runtime(self: RuntimeAssistantTools) -> dict[str, Any]:
     runtime = await self.runtime_service.get(self.runtime_id)
     if not runtime:
         raise ValueError("Runtime not found")
-    updated = await self.runtime_service.update_status(self.runtime_id, "paused")
+    await self.runtime_service.update_status(self.runtime_id, "paused")
     await self.uow.commit()
     return {"status": "paused", "runtime_id": self.runtime_id}
 
@@ -572,7 +595,7 @@ async def _resume_runtime(self: RuntimeAssistantTools) -> dict[str, Any]:
     runtime = await self.runtime_service.get(self.runtime_id)
     if not runtime:
         raise ValueError("Runtime not found")
-    updated = await self.runtime_service.update_status(self.runtime_id, "active")
+    await self.runtime_service.update_status(self.runtime_id, "active")
     await self.uow.commit()
     return {"status": "active", "runtime_id": self.runtime_id}
 
@@ -601,7 +624,7 @@ async def _rotate_api_key(self: RuntimeAssistantTools) -> dict[str, Any]:
 async def _revoke_api_key(self: RuntimeAssistantTools, key_id: str) -> dict[str, Any]:
     from app.services.apikeys import ApiKeyService
 
-    api_key_service = ApiKeyService(self.uow)
+    api_key_service = ApiKeyService(self.uow.session)
     await api_key_service.revoke_key(key_id)
     await self.uow.commit()
     return {"status": "revoked", "key_id": key_id}
@@ -616,8 +639,9 @@ async def _test_provider(self: RuntimeAssistantTools, provider_name: str) -> dic
 
 async def _test_database(self: RuntimeAssistantTools) -> dict[str, Any]:
     try:
-        from app.core.database import async_session_factory
         from sqlalchemy import text
+
+        from app.core.database import async_session_factory
 
         async with async_session_factory() as session:
             await session.execute(text("SELECT 1"))
@@ -627,7 +651,7 @@ async def _test_database(self: RuntimeAssistantTools) -> dict[str, Any]:
 
 
 async def _test_tool(self: RuntimeAssistantTools, tool_id: str) -> dict[str, Any]:
-    tool = await self.uow.tools.get(tool_id)
+    tool = await self.uow.tools.get(uuid.UUID(tool_id))
     if not tool:
         raise ValueError("Tool not found")
     return {"tool_id": tool_id, "name": tool.name, "status": "tested", "result": "ok"}

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from app.services.runtime_assistant.schemas import ActionType, PermissionCheck, UserRole
 
 

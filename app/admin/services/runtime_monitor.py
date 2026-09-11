@@ -9,9 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.repositories import IPRecordRepository
 from app.core.cache import cache as redis_cache
-from app.models.runtimes import Runtime
 from app.models.billing import UsageLog
 from app.models.integrations import RuntimeIntegration
+from app.models.runtimes import Runtime
 from app.models.tools import Tool
 
 
@@ -113,6 +113,7 @@ class RuntimeMonitorService:
         runtime = result.scalar_one_or_none()
         if runtime is None:
             return None
+        last_invocation = await self._get_last_invocation(runtime_id)
         return {
             "id": str(runtime.id) if runtime.id else None,
             "project_id": str(runtime.project_id) if runtime.project_id else None,
@@ -142,7 +143,7 @@ class RuntimeMonitorService:
             "queue_time_ms": await self._get_queue_time(runtime_id),
             "connected_sources": await self._count_connected_sources(runtime_id),
             "connected_tools": await self._count_connected_tools(str(runtime.project_id)) if runtime.project_id else 0,
-            "last_invocation": (await self._get_last_invocation(runtime_id)).isoformat() if await self._get_last_invocation(runtime_id) else None,
+            "last_invocation": last_invocation.isoformat() if last_invocation else None,
         }
 
     async def get_runtime_usage(self, runtime_id: str) -> dict[str, Any] | None:

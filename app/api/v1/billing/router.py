@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Annotated
 
@@ -13,14 +13,16 @@ from app.api.v1.dependencies import get_current_user
 from app.api.v1.features.dependencies import require_feature
 from app.core.config import settings
 from app.core.database import get_session
+from app.core.ws_events import emit_checkout_completed, emit_wallet_updated
 from app.models.apikeys import ApiKey
-from app.models.billing import BillingLedger, SpendingLimit, UsageLog
+from app.models.billing import BillingLedger, Budget, SpendingLimit, UsageLog
 from app.models.projects import Project
 from app.models.runtimes import Runtime
 from app.models.users import User
 from app.repositories import UnitOfWork
 from app.repositories.processed_webhook_events import ProcessedWebhookEventRepository
 from app.schemas.billing import (
+    BillingLedgerRead,
     BudgetCreate,
     BudgetRead,
     BudgetUpdate,
@@ -28,21 +30,18 @@ from app.schemas.billing import (
     CheckoutSessionResponse,
     EstimateCostRequest,
     EstimateCostResponse,
-    InsufficientCreditsError,
     PricingRuleRead,
     RefundRequest,
+    SpendingLimitCreate,
+    SpendingLimitRead,
     UsageLogRead,
     UsageSummary,
     WalletRead,
     WalletTransactionRead,
-    BillingLedgerRead,
-    SpendingLimitCreate,
-    SpendingLimitRead,
 )
-from app.services.bachs import BachsService, BachsError
-from app.services.billing import BillingService, InsufficientCredits
+from app.services.bachs import BachsCustomer, BachsError, BachsService
+from app.services.billing import BillingService
 from app.services.metered_billing import MeteredBillingService
-from app.core.ws_events import emit_checkout_completed, emit_wallet_updated
 
 router = APIRouter(prefix="/wallet", tags=["wallet"])
 BILLING_GUARD = [Depends(require_feature("billing"))]
@@ -161,7 +160,7 @@ async def billing_analytics(
     days: int = Query(default=30, ge=1, le=365),
 ) -> dict:
     """Return customer-visible spend breakdowns for billing dashboards."""
-    since = datetime.now(timezone.utc) - timedelta(days=days)
+    since = datetime.now(UTC) - timedelta(days=days)
     base = [BillingLedger.user_id == current_user.id, BillingLedger.status == "settled", BillingLedger.created_at >= since]
 
     async def grouped(label: str, expression):
@@ -208,7 +207,7 @@ async def create_checkout_session(
     cancel_url = body.cancel_url or f"{settings.APP_URL}/billing?canceled=true"
 
     amount_str = str(Decimal(body.amount).quantize(Decimal("0.01")))
-    reference = f"wallet-{current_user.id}-{int(datetime.now(timezone.utc).timestamp())}"
+    reference = f"wallet-{current_user.id}-{int(datetime.now(UTC).timestamp())}"
 
     customer = None
     existing_customers = await bachs.list_customers(search=current_user.email, limit=1)
@@ -268,7 +267,7 @@ async def bachs_webhook(
     try:
         event = await request.json()
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+        raise HTTPException(status_code=400, detail="Invalid JSON payload") from None
 
     event_id = event.get("id", "")
     event_type = event.get("type", "")
@@ -313,13 +312,13 @@ async def bachs_webhook(
             except Exception:
                 raise
 
-        processed_repo.create(
+        await processed_repo.create(
             event_id=event_id,
             source="bachs",
             event_type=event_type,
             status="processed",
             payload=event,
-            received_at=datetime.now(timezone.utc),
+            received_at=datetime.now(UTC),
         )
         await db.commit()
         return {"received": True}
@@ -478,12 +477,16 @@ async def update_budget(
     db: Annotated[AsyncSession, Depends(get_session)],
 ) -> BudgetRead:
     service = BillingService(db)
+    budget: Budget | None
     if body.monthly_limit is not None and body.monthly_limit > Decimal("0"):
         budget = await service.create_or_update_budget(current_user.id, BudgetCreate(monthly_limit=body.monthly_limit))
     else:
         budget = await service.update_budget(current_user.id, body)
         if budget is None:
             budget = await service.create_or_update_budget(current_user.id, BudgetCreate(monthly_limit=Decimal("0")))
+
+    if budget is None:
+        raise HTTPException(status_code=500, detail="Unable to save billing budget")
 
     return BudgetRead(
         id=budget.id,

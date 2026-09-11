@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from app.workers.celery_app import celery_app
 from app.core.database import run_async
+from app.workers.celery_app import celery_app
 
 
 @celery_app.task(name="app.tasks.scheduler.run_scheduled_syncs")
@@ -16,6 +16,7 @@ def run_scheduled_syncs() -> dict:
             service = SchedulerService(uow)
             result = await service.run_pending()
             return result
+        return {"status": "no_database_session"}
 
     return run_async(_run())
 
@@ -29,6 +30,7 @@ def run_scheduled_workflows() -> dict:
 
         async for session in get_session():
             return await SchedulerService(UnitOfWork(session)).run_pending_workflows()
+        return {"status": "no_database_session"}
     return run_async(_run())
 
 
@@ -44,6 +46,7 @@ def retry_failed_sync(job_id: str) -> dict:
             service = SchedulerService(uow)
             result = await service.retry_sync_job(job_id, max_retries=3)
             return result
+        return {"status": "no_database_session", "job_id": job_id}
 
     return run_async(_retry())
 
@@ -60,5 +63,6 @@ def priority_sync(source_id: str) -> dict:
             service = KnowledgeService(uow)
             result = await service.sync_source(source_id=source_id, options={"priority": True})
             return result
+        return {"status": "no_database_session", "source_id": source_id}
 
     return run_async(_priority())

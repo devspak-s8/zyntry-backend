@@ -12,20 +12,20 @@ import base64
 import json
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote
 
 import httpx
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from app.services.connectors import registry
 from app.services.connectors.base import BaseConnector, ConnectorAuthError
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class GoogleApiConnector(BaseConnector):
@@ -130,6 +130,8 @@ class GoogleApiConnector(BaseConnector):
         unsigned = f"{encode(header)}.{encode(claims)}".encode("ascii")
         try:
             key = serialization.load_pem_private_key(private_key.encode("utf-8"), password=None)
+            if not isinstance(key, rsa.RSAPrivateKey):
+                raise ConnectorAuthError("Google service account key must be an RSA private key")
             signature = key.sign(unsigned, padding.PKCS1v15(), hashes.SHA256())
         except Exception as exc:
             raise ConnectorAuthError("Invalid Google service account private key") from exc

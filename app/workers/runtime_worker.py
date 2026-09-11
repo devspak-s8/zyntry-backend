@@ -25,7 +25,6 @@ from app.services.embeddings import (
 from app.services.provider_credentials import resolve_provider_key
 from app.services.vector_stores import get_vector_store
 
-
 RUNTIME_STAGES = [
     "collect_sources",
     "validate_sources",
@@ -61,16 +60,20 @@ class RuntimeWorker:
             self._session_gen = get_session()
             self._session = await self._session_gen.__anext__()
             self._uow = UnitOfWork(self._session)
-        return self._session, self._uow  # type: ignore[return-value]
+        if self._uow is None:
+            raise RuntimeError("Runtime worker unit of work was not initialized")
+        return self._session, self._uow
 
     async def _ensure_cache_service(self) -> Any:
+        if self._session is None:
+            raise RuntimeError("Runtime worker session was not initialized")
         if self._cache_service is None:
             from app.services.embedding_cache import EmbeddingCacheService
             self._cache_service = EmbeddingCacheService(self._session)  # type: ignore[arg-type]
         return self._cache_service
 
     async def _get_documents(self) -> list[Document]:
-        if not self._runtime or not self._uow:
+        if not self._runtime or not self._uow or self._runtime.project_id is None:
             return []
         kbs = await self._uow.knowledge_bases.get_by_project(self._runtime.project_id)
         if not kbs:
@@ -160,16 +163,16 @@ class RuntimeWorker:
                 log_id = log.id
                 runtime_id = self._runtime.id
                 await self._uow.session.rollback()
-                log = await self._uow.runtime_build_logs.get(log_id)
+                persisted_log = await self._uow.runtime_build_logs.get(log_id)
                 self._runtime = await self._uow.runtimes.get(runtime_id)
-                if log is not None:
+                if persisted_log is not None:
                     await self._uow.runtime_build_logs.update(
-                        log,
+                        persisted_log,
                         status="failed",
                         error_message=str(e),
                         completed_at=datetime.now(UTC),
                         metadata_={
-                            **(log.metadata_ or {}),
+                            **(persisted_log.metadata_ or {}),
                             "duration_ms": int((datetime.now(UTC) - start_time).total_seconds() * 1000),
                         },
                     )
@@ -194,10 +197,14 @@ class RuntimeWorker:
         await self._uow.session.commit()
 
     async def _stage_collect_sources(self) -> None:
+        assert self._runtime is not None
         self._runtime.status = "validating"
         await self._update_runtime_status("validating")
 
     async def _stage_validate_sources(self) -> None:
+        assert self._runtime is not None
+        assert self._uow is not None
+        assert self._runtime.project_id is not None
         sources = await self._uow.knowledge_sources.get_by_project(self._runtime.project_id)
         for source in sources:
             if not source.is_active:
@@ -206,10 +213,13 @@ class RuntimeWorker:
         await self._update_runtime_status("discovering")
 
     async def _stage_discover_resources(self) -> None:
+        assert self._runtime is not None
         self._runtime.status = "extracting"
         await self._update_runtime_status("extracting")
 
     async def _stage_extract_documents(self) -> None:
+        assert self._runtime is not None
+        assert self._uow is not None
         docs = await self._get_documents()
         if docs:
             doc_ids = [doc.id for doc in docs]
@@ -221,7 +231,7 @@ class RuntimeWorker:
             )
             chunk_lookup: dict[uuid.UUID, RuntimeBuildChunk] = {}
             for chunk in existing_chunks.scalars().all():
-                if chunk.document_id not in chunk_lookup:
+                if chunk.document_id is not None and chunk.document_id not in chunk_lookup:
                     chunk_lookup[chunk.document_id] = chunk
             for doc in docs:
                 content_hash = compute_content_hash(doc.content or "")
@@ -232,6 +242,7 @@ class RuntimeWorker:
         await self._update_runtime_status("cleaning")
 
     async def _stage_normalize_documents(self) -> None:
+        assert self._runtime is not None
         self._runtime.status = "chunking"
         await self._update_runtime_status("chunking")
 
@@ -239,6 +250,8 @@ class RuntimeWorker:
         pass
 
     async def _stage_chunk_documents(self) -> None:
+        assert self._runtime is not None
+        assert self._uow is not None
         docs = await self._get_documents()
         if not docs:
             self._runtime.documents = 0
@@ -291,6 +304,9 @@ class RuntimeWorker:
         await self._update_runtime_counts(documents=len(docs), chunks=len(chunks_to_create))
 
     async def _stage_generate_embeddings(self) -> None:
+        assert self._runtime is not None
+        assert self._uow is not None
+        assert self._runtime.project_id is not None
         provider_name = self._runtime.embedding_model.split("/")[0] if "/" in self._runtime.embedding_model else "openai"
         api_key, _ = await resolve_provider_key(
             self._uow,
@@ -354,6 +370,8 @@ class RuntimeWorker:
         await self._update_runtime_counts(embeddings=self._runtime.embeddings)
 
     async def _stage_store_embeddings(self) -> None:
+        assert self._runtime is not None
+        assert self._uow is not None
         self._vector_store = get_vector_store(
             provider=self._runtime.vector_store,
             session=self._uow.session,  # type: ignore[arg-type]
@@ -400,10 +418,13 @@ class RuntimeWorker:
         await self._update_runtime_status("building")
 
     async def _stage_build_runtime(self) -> None:
+        assert self._runtime is not None
         self._runtime.status = "provisioning"
         await self._update_runtime_status("provisioning")
 
     async def _stage_generate_api_key(self) -> None:
+        assert self._runtime is not None
+        assert self._uow is not None
         raw_key = generate_api_key(
             "sk_live" if self._runtime.environment == "production" else "sk_test"
         )
@@ -432,12 +453,14 @@ class RuntimeWorker:
         await self._uow.runtimes.update(self._runtime, api_key_id=api_key.id)
 
     async def _stage_activate_runtime(self) -> None:
+        assert self._runtime is not None
+        assert self._uow is not None
         self._runtime.last_build_completed = datetime.now(UTC)
         await self._uow.runtimes.update(self._runtime, last_build_completed=datetime.now(UTC))
         await self._uow.commit()
 
     async def _notify_runtime_ready(self, project: Any | None) -> None:
-        if not self._runtime:
+        if not self._runtime or not self._uow:
             return
         from sqlalchemy import select
 
@@ -455,14 +478,14 @@ class RuntimeWorker:
             await send_runtime_ready(email, runtime_name)
 
     async def _update_runtime_status(self, status: str) -> None:
-        if not self._runtime:
+        if not self._runtime or not self._uow:
             return
         self._runtime.status = status
         await self._uow.runtimes.update(self._runtime, status=status)
         await self._uow.session.commit()
 
     async def _update_runtime_counts(self, **kwargs: int) -> None:
-        if not self._runtime:
+        if not self._runtime or not self._uow:
             return
         for key, value in kwargs.items():
             setattr(self._runtime, key, value)

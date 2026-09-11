@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Body, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
@@ -36,7 +36,7 @@ def _to_legacy_state_read(state: dict[str, Any]) -> OnboardingStateRead:
 @router.post("/session", response_model=OnboardingSessionRead, status_code=status.HTTP_201_CREATED)
 async def create_or_resume_session(
     current_user: Annotated[User, Depends(get_current_user)],
-    body: OnboardingSessionCreate = OnboardingSessionCreate(),
+    body: OnboardingSessionCreate = Body(default_factory=OnboardingSessionCreate),
     db: AsyncSession = Depends(get_session),
 ) -> OnboardingSessionRead:
     uow = UnitOfWork(db)

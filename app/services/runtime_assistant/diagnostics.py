@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from typing import Any
+import uuid
 
 from app.repositories import UnitOfWork
 from app.services.health import HealthService
 from app.services.knowledge import KnowledgeService
-from app.services.runtimes import RuntimeService
 from app.services.runtime_assistant.schemas import DiagnosticResult
+from app.services.runtimes import RuntimeService
 
 
 class RuntimeDiagnostics:
@@ -134,7 +134,7 @@ class RuntimeDiagnostics:
         from app.services.billing import BillingService
 
         billing_service = BillingService(self.uow.session)
-        summary = await billing_service.get_usage_summary(uuid.UUID(self.user_id) if self.user_id else None)
+        summary = await billing_service.get_usage_summary(uuid.UUID(self.user_id))
 
         total_cost = summary.get("total_cost", 0)
         if hasattr(total_cost, "__float__"):

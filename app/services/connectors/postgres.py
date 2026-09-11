@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
-from app.services.connectors.base import BaseConnector, ConnectorAuthError, ConnectorDiscoveryError, ConnectorNetworkError, ConnectorRateLimitError
 from app.services.connectors import registry
+from app.services.connectors.base import (
+    BaseConnector,
+    ConnectorAuthError,
+)
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class PostgresConnector(BaseConnector):

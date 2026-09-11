@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import httpx
 from typing import Any, Protocol
+
+import httpx
 
 from app.schemas.actions import ActionDefinition, ActionResponse
 

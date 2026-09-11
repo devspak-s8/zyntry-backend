@@ -66,7 +66,11 @@ class WebsiteConnector(BaseConnector):
         text = "\n".join(
             line for line in (part.strip() for part in soup.get_text("\n").splitlines()) if line
         )
-        links = [urljoin(url, anchor.get("href")) for anchor in soup.find_all("a", href=True)]
+        links = [
+            urljoin(url, str(href))
+            for anchor in soup.find_all("a", href=True)
+            if (href := anchor.get("href")) is not None
+        ]
         return title, text, links
 
     async def _crawl(self, *, include_content: bool) -> list[dict[str, Any]]:

@@ -69,6 +69,16 @@ target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "C4", "UP"]
+# E501 is handled by the formatter in review, B008 is the supported FastAPI
+# dependency-declaration idiom, and UP042 is intentionally retained for
+# str-backed enums used in public API contracts. Runtime-fatal and undefined
+# name rules remain hard gates in CI.
+extend-ignore = ["E501", "B008", "UP042"]
+
+[tool.ruff.lint.per-file-ignores]
+# Package initializers intentionally import public symbols to preserve the
+# existing import surface; those re-exports are not unused application code.
+"app/**/__init__.py" = ["F401", "F403", "F811"]
 
 [tool.mypy]
 python_version = "3.13"
@@ -78,3 +88,6 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["app/tests"]
+markers = [
+    "integration: requires explicitly configured Postgres, Redis, or provider credentials",
+]

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from app.services.runtime_assistant.service import RuntimeAssistantService
 from app.services.runtime_assistant.schemas import (
     AssistantMessage,
     AssistantResponse,
@@ -13,6 +12,7 @@ from app.services.runtime_assistant.schemas import (
     ToolCall,
     ToolDefinition,
 )
+from app.services.runtime_assistant.service import RuntimeAssistantService
 
 __all__ = [
     "RuntimeAssistantService",

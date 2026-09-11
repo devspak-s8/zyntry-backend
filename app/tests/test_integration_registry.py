@@ -6,7 +6,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
 from app.main import app as fastapi_app
-from app.models.users import User
 from app.repositories import UnitOfWork
 from app.schemas.integrations import RuntimeIntegrationCreate
 from app.services.integrations.definitions import integration_registry
