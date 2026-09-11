@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
 from app.models.onboarding_session import OnboardingSession
-from app.models.runtimes import Runtime
 from app.repositories import UnitOfWork
-from app.schemas.integrations import RuntimeIntegrationCreate
 from app.schemas.onboarding_chat import (
     OnboardingCompleteRequest,
     OnboardingCompleteResponse,
@@ -131,6 +130,26 @@ class OnboardingEngine:
             return session
 
         session = await self.uow.onboarding_sessions.get_latest_active_by_user(user_id)
+        if session and not reset and initial_prompt:
+            # A new initial prompt is a new runtime draft. Older clients used
+            # to send it to this endpoint without ``reset=true``; blindly
+            # resuming the active session made the UI show stale requirements
+            # (for example a previous customer-support/GitHub draft).
+            prior_prompt = next(
+                (
+                    str(item.get("content", ""))
+                    for item in (session.messages or [])
+                    if item.get("role") == "user" and item.get("content")
+                ),
+                "",
+            )
+            def normalize(value: str) -> str:
+                return re.sub(r"\s+", " ", value).strip().casefold()
+            if normalize(prior_prompt) != normalize(initial_prompt):
+                await self.uow.onboarding_sessions.cancel_all_active_by_user(user_id)
+                await self.uow.commit()
+                session = None
+
         if session and not reset:
             # Repair active sessions created before explicit-name extraction
             # was fixed. This keeps the review card and name input correct
@@ -161,7 +180,7 @@ class OnboardingEngine:
             ),
             "timestamp": datetime.now(UTC).isoformat(),
         }
-        messages = [welcome_msg]
+        messages: list[dict[str, Any]] = [welcome_msg]
 
         if initial_prompt:
             messages.append({
@@ -193,6 +212,7 @@ class OnboardingEngine:
                     **ai_resp.proposed_data,
                     "runtime_name": runtime_name,
                 }
+            self._apply_explicit_integration_exclusions(ai_resp, initial_prompt)
             self._filter_unavailable_integrations(ai_resp.proposed_data)
             self._append_integration_availability_notice(ai_resp)
             config, next_state = self._authorize_and_transition(
@@ -317,6 +337,7 @@ class OnboardingEngine:
                 **ai_resp.proposed_data,
                 "runtime_name": runtime_name,
             }
+        self._apply_explicit_integration_exclusions(ai_resp, req.message)
 
         # Step 2: Check for direct execution / confirmation
         msg_lower = req.message.lower().strip()
@@ -436,7 +457,7 @@ class OnboardingEngine:
                 "zyntry_managed": "company",
                 "end_user_oauth": "end_user",
                 "hybrid": "hybrid",
-            }.get(configured_mode)
+            }.get(configured_mode if isinstance(configured_mode, str) else "")
             if ownership:
                 stored_requirements = {**stored_requirements, "connection_ownership": ownership}
         requirements = await self.requirements_extractor.extract(
@@ -568,6 +589,57 @@ class OnboardingEngine:
         return result
 
     @staticmethod
+    def _apply_explicit_integration_exclusions(
+        ai_resp: OnboardingModelResponse,
+        message: str,
+    ) -> None:
+        """Prevent stale/model-suggested connectors from re-entering a draft.
+
+        A user can explicitly say that this runtime receives sanitized context
+        from its host application and must not configure direct integrations.
+        This guard runs after both the model and fallback extractor so a stale
+        session or an over-eager model cannot add GitHub/Slack by mention alone.
+        """
+        lowered = message.lower()
+        if not any(term in lowered for term in (
+            "no direct integration", "without integrations", "no integrations",
+            "do not configure", "don't configure", "do not use end-user oauth",
+        )):
+            return
+
+        ai_resp.proposed_data["integrations"] = []
+        ai_resp.proposed_data["capabilities"] = {}
+        ai_resp.proposed_data["requires_tools"] = False
+        requirements = ai_resp.proposed_data.get("application_requirements")
+        if isinstance(requirements, dict):
+            requirements["integrations"] = []
+            requirements["requires_tools"] = False
+            ai_resp.proposed_data["application_requirements"] = requirements
+        if any(name in lowered for name in ("company-managed", "company managed", "internal data")):
+            ai_resp.proposed_data["integration_mode"] = "zyntry_managed"
+        if any(term in lowered for term in (
+            "architecture investigation", "architecture analysis", "software architecture",
+            "call graph", "dependency graph", "data-flow analysis", "engineering graph",
+        )):
+            ai_resp.proposed_data["use_case"] = "architecture_analysis"
+            ai_resp.proposed_data["application_type"] = "architecture_analysis"
+        runtime_name = ai_resp.proposed_data.get("runtime_name")
+        label = f" for '{runtime_name}'" if runtime_name else ""
+        use_case = str(ai_resp.proposed_data.get("use_case") or "general_ai_application")
+        title = {
+            "architecture_analysis": "architecture-analysis",
+            "ai_customer_support": "customer-support",
+            "developer_ai_assistant": "developer-assistant",
+            "knowledge_search_rag": "knowledge-search",
+        }.get(use_case, use_case.replace("_", "-"))
+        ai_resp.text = (
+            f"I’ll configure a {title} runtime{label} without direct integrations. "
+            "Your application will provide a limited, sanitized context slice and evidence references. "
+            "You can add approved integrations later if the workflow needs them."
+        )
+        ai_resp.suggested_actions = ["Continue without integrations", "Add an integration later"]
+
+    @staticmethod
     def _filter_unavailable_integrations(proposed_data: dict[str, Any]) -> None:
         """Keep beta/coming-soon/unknown connectors out of a runtime draft.
 
@@ -681,6 +753,15 @@ class OnboardingEngine:
                 proposed_data["application_requirements"]
             )
             config["application_requirements"] = requirements.model_dump(mode="json")
+        # Empty integrations normally mean that a step did not change the
+        # selection. When the extractor also marks tools as disabled, it is an
+        # explicit request to clear connectors from a legacy draft.
+        if (
+            proposed_data.get("integrations") == []
+            and proposed_data.get("requires_tools") is False
+        ):
+            config["integrations"] = []
+            config["capabilities"] = {}
         # A name is independent of the onboarding intent. In particular, the
         # first long prompt often asks a clarification question, and that
         # branch must not discard an explicit name while requirements are being

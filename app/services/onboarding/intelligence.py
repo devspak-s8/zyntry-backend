@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any, AsyncGenerator
+from collections.abc import AsyncGenerator
+from typing import Any
 
 import httpx
-
 from pydantic import ValidationError
 
 from app.core.config import settings
@@ -53,6 +53,16 @@ _USE_CASE_DEFAULTS: dict[str, dict[str, Any]] = {
         "requires_documents": False,
         "requires_external_data": False,
         "requires_tools": True,
+        "requires_memory": False,
+    },
+    "architecture_analysis": {
+        "primary_function": "Analyze software architecture using sanitized context and engineering graphs",
+        "target_users": ["developers", "architects", "engineering teams"],
+        "inputs": ["engineering question", "sanitized code context", "dependency and call graphs", "evidence references"],
+        "outputs": ["architecture findings", "evidence references", "recommended follow-up"],
+        "requires_documents": False,
+        "requires_external_data": False,
+        "requires_tools": False,
         "requires_memory": False,
     },
     "autonomous_issue_triage_agent": {
@@ -139,10 +149,15 @@ class RuleBasedRequirementsExtractor:
                 data.get("external_source_types"), source_types
             )
 
-        integrations = self._extract_integrations(lowered, data.get("integrations", []))
-        if integrations:
-            data["integrations"] = integrations
-            data["requires_tools"] = True
+        no_integrations_requested = self._explicitly_disables_integrations(lowered)
+        if no_integrations_requested:
+            data["integrations"] = []
+            data["requires_tools"] = False
+        else:
+            integrations = self._extract_integrations(lowered, data.get("integrations", []))
+            if integrations:
+                data["integrations"] = integrations
+                data["requires_tools"] = True
 
         if any(term in lowered for term in ("remember", "memory", "previous conversation", "follow-up")):
             data["requires_memory"] = True
@@ -187,11 +202,12 @@ class RuleBasedRequirementsExtractor:
         # would incorrectly fall back to company-managed connections.
         if not data.get("connection_ownership"):
             configured_mode = data.get("integration_mode")
-            data["connection_ownership"] = {
-                "zyntry_managed": "company",
-                "end_user_oauth": "end_user",
-                "hybrid": "hybrid",
-            }.get(configured_mode)
+            if isinstance(configured_mode, str):
+                data["connection_ownership"] = {
+                    "zyntry_managed": "company",
+                    "end_user_oauth": "end_user",
+                    "hybrid": "hybrid",
+                }.get(configured_mode)
 
         self._apply_pending_answer(data, pending_requirement, lowered)
         data["confidence"] = max(float(data.get("confidence") or 0), 0.55)
@@ -235,20 +251,64 @@ class RuleBasedRequirementsExtractor:
                 source_types.append(domain)
         return list(dict.fromkeys(source_types))
 
+    @staticmethod
+    def _explicitly_disables_integrations(text: str) -> bool:
+        return any(term in text for term in (
+            "no direct integration", "without integrations", "no integrations",
+            "do not configure", "don't configure", "do not use end-user oauth",
+        ))
+
     # These helpers are shared with the model adapter below. Keeping the
     # fallback implementation available preserves test/dev operation when no
     # provider key is configured, but it is never preferred over the model.
-    _application_type = staticmethod(lambda text, current: (
-        current
-        or ("resume_analyzer" if ("resume" in text or " ats " in f" {text} " or "cv" in text) else
-            "ai_customer_support" if ("support" in text or "customer" in text or "order status" in text) else
-            "autonomous_issue_triage_agent" if ("triage" in text or ("issue" in text and "github" in text)) else
-            "developer_ai_assistant" if ("code" in text or "developer" in text or "repository" in text) else
-            "knowledge_search_rag" if any(term in text for term in ("knowledge", "rag", "study", "course material", "research")) else
-            "autonomous_ai_agent" if "agent" in text else "general_ai_application")
-    ))
+    @staticmethod
+    def _application_type(text: str, current: str | None) -> str:
+        if any(term in text for term in (
+            "architecture investigation", "architecture analysis", "software architecture",
+            "call graph", "dependency graph", "data-flow analysis", "engineering graph",
+        )):
+            return "architecture_analysis"
+        if current:
+            return current
+        if "resume" in text or " ats " in f" {text} " or "cv" in text:
+            return "resume_analyzer"
+        if "support" in text or "customer" in text or "order status" in text:
+            return "ai_customer_support"
+        if "triage" in text or ("issue" in text and "github" in text):
+            return "autonomous_issue_triage_agent"
+        if "code" in text or "developer" in text or "repository" in text:
+            return "developer_ai_assistant"
+        if any(term in text for term in ("knowledge", "rag", "study", "course material", "research")):
+            return "knowledge_search_rag"
+        if "agent" in text:
+            return "autonomous_ai_agent"
+        return "general_ai_application"
     _merge_list = staticmethod(lambda existing, additions: list(dict.fromkeys([*(existing or []), *additions])))
-    _extract_integrations = lambda self, text, existing: GeminiLLMProvider._extract_integrations(self, text, existing)
+    def _extract_integrations(
+        self,
+        text: str,
+        existing: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        non_integrations = {"pdf", "docx", "txt", "csv", "markdown", "html", "document_storage"}
+        by_slug = {
+            item.get("slug"): dict(item)
+            for item in existing
+            if item.get("slug") and item.get("slug") not in non_integrations
+        }
+        for slug in integration_registry.list_slugs():
+            if slug in non_integrations:
+                continue
+            definition = integration_registry.get(slug)
+            aliases = {slug, slug.replace("_", " ")}
+            if definition:
+                aliases.add(definition.name.lower())
+            if any(alias in text for alias in aliases):
+                canonical_slug = definition.slug if definition else slug
+                by_slug.setdefault(
+                    canonical_slug,
+                    {"slug": canonical_slug, "purpose": "Provide application data or actions"},
+                )
+        return list(by_slug.values())
     _apply_pending_answer = staticmethod(lambda data, pending, text: GeminiLLMProvider._apply_pending_answer(data, pending, text))
 
 
@@ -296,12 +356,18 @@ class GeminiLLMProvider(BaseLLMProvider):
         model: str,
         max_tokens: int = 2048,
         temperature: float = 0.7,
-    ) -> AsyncGenerator[str, None]:
+        on_usage: Any = None,
+    ) -> AsyncGenerator[str]:
         content, _ = await self.generate(messages, model, max_tokens, temperature)
         yield content
 
     @staticmethod
     def _application_type(text: str, current: str | None) -> str:
+        if any(term in text for term in (
+            "architecture investigation", "architecture analysis", "software architecture",
+            "call graph", "dependency graph", "data-flow analysis", "engineering graph",
+        )):
+            return "architecture_analysis"
         if current:
             return current
         if "resume" in text or " ats " in f" {text} " or "cv" in text:
@@ -328,6 +394,8 @@ class GeminiLLMProvider(BaseLLMProvider):
         existing: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         # File formats are document metadata, not external integrations.
+        if RuleBasedRequirementsExtractor._explicitly_disables_integrations(text):
+            return []
         non_integration_slugs = {"pdf", "docx", "txt", "csv", "markdown", "html", "document_storage"}
         by_slug = {
             item.get("slug"): dict(item)
@@ -395,7 +463,7 @@ class ModelBackedRequirementsExtractor:
         fallback: RuleBasedRequirementsExtractor | None = None,
     ) -> None:
         self.provider = provider if provider is not None else self._configured_provider()
-        self.model = model or getattr(settings, "ONBOARDING_MODEL", "gemini-2.5-flash")
+        self.model = str(model or getattr(settings, "ONBOARDING_MODEL", "gemini-2.5-flash") or "gemini-2.5-flash")
         self.fallback = fallback or RuleBasedRequirementsExtractor()
 
     async def extract(
@@ -433,6 +501,9 @@ class ModelBackedRequirementsExtractor:
             )
             extracted = ApplicationRequirements.model_validate(self._parse_json(content))
             merged = self._merge(baseline, extracted)
+            if self.fallback._explicitly_disables_integrations(message.lower()):
+                merged.integrations = []
+                merged.requires_tools = False
             merged.extraction_source = "hybrid"
             return merged
         except (ValidationError, ValueError, KeyError, TypeError, json.JSONDecodeError):

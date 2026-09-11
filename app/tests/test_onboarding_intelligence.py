@@ -3,12 +3,12 @@ from __future__ import annotations
 import pytest
 
 from app.schemas.onboarding_intelligence import ApplicationRequirements
+from app.services.onboarding.engine import OnboardingEngine
 from app.services.onboarding.intelligence import (
     AdaptiveClarificationService,
     ModelBackedRequirementsExtractor,
     RuntimePlanGenerator,
 )
-from app.services.onboarding.engine import OnboardingEngine
 from app.services.onboarding.models import OnboardingModelResponse
 
 
@@ -128,3 +128,19 @@ def test_runtime_name_survives_clarification_transition() -> None:
 
     assert state == "clarifying_requirements"
     assert config["runtime_name"] == "LearnFlow Student Success Assistant"
+
+
+@pytest.mark.asyncio
+async def test_architecture_prompt_does_not_infer_mentioned_connectors() -> None:
+    """Explicitly excluded services must not leak into a new runtime plan."""
+    from app.services.onboarding.intelligence import RuleBasedRequirementsExtractor
+
+    requirements = await RuleBasedRequirementsExtractor().extract(
+        "Create a company-managed architecture analysis runtime. "
+        "Do not configure GitHub, Slack, or end-user OAuth; the host app will "
+        "provide sanitized context and dependency graphs."
+    )
+
+    assert requirements.application_type == "architecture_analysis"
+    assert requirements.integrations == []
+    assert requirements.requires_tools is False

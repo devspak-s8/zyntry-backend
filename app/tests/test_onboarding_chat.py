@@ -1,17 +1,13 @@
 from __future__ import annotations
 
-import uuid
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.users import User
 from app.repositories import UnitOfWork
-from app.schemas.apikeys import ApiKeyCreate
 from app.schemas.onboarding_chat import (
     OnboardingCompleteRequest,
     OnboardingMessageRequest,
 )
-from app.services.apikeys import ApiKeyService
 from app.services.onboarding import OnboardingService
 from app.services.onboarding.engine import OnboardingNameMismatchError
 
@@ -20,7 +16,6 @@ from app.services.onboarding.engine import OnboardingNameMismatchError
 async def test_chat_onboarding_full_lifecycle(db_session: AsyncSession) -> None:
     uow = UnitOfWork(db_session)
     onboarding = OnboardingService(uow)
-    apikey_service = ApiKeyService(db_session)
 
     # 1. Create a User without an organization (user-first onboarding)
     user = await uow.users.create(
@@ -229,7 +224,7 @@ async def test_active_legacy_session_recovers_explicit_runtime_name(
         name="Legacy Named Runtime User",
         is_active=True,
     )
-    session = await uow.onboarding_sessions.create(
+    await uow.onboarding_sessions.create(
         user_id=user.id,
         state="clarifying_requirements",
         messages=[
@@ -267,6 +262,37 @@ async def test_chat_onboarding_reset_and_fresh_session(db_session: AsyncSession)
     assert s2["id"] != s1_id
     assert s2["state"] == "onboarding_started"
     assert len(s2["messages"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_new_initial_prompt_replaces_stale_active_session(
+    db_session: AsyncSession,
+) -> None:
+    """A changed prompt must not resume an unrelated active draft."""
+    uow = UnitOfWork(db_session)
+    onboarding = OnboardingService(uow)
+    user = await uow.users.create(
+        email="stale_prompt@zyntry.space",
+        name="Stale Prompt User",
+        is_active=True,
+    )
+    await uow.commit()
+
+    old = await onboarding.create_chat_session(
+        user_id=user.id,
+        initial_prompt="Build a customer support assistant with GitHub and Slack.",
+    )
+    fresh = await onboarding.create_chat_session(
+        user_id=user.id,
+        initial_prompt=(
+            "Create a company-managed runtime named Architecture Analysis Runtime. "
+            "Do not configure GitHub or Slack; receive sanitized context and graphs."
+        ),
+    )
+
+    assert fresh["id"] != old["id"]
+    assert fresh["configuration"]["runtime_name"] == "Architecture Analysis Runtime"
+    assert fresh["configuration"].get("integrations", []) == []
 
 
 @pytest.mark.asyncio

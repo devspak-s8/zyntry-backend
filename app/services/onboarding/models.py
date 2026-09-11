@@ -64,6 +64,7 @@ class FastOnboardingModelProvider:
         "autonomous_issue_triage_agent": "Autonomous Issue Triage Agent",
         "ai_customer_support": "AI Customer Support Agent",
         "developer_ai_assistant": "Developer AI Assistant",
+        "architecture_analysis": "Architecture Analysis Runtime",
         "knowledge_search_rag": "Knowledge Search & RAG System",
         "autonomous_ai_agent": "Autonomous AI Agent",
         "saas_ai_copilot": "SaaS AI Copilot",
@@ -87,6 +88,13 @@ class FastOnboardingModelProvider:
         return self._USE_CASE_TITLES.get(slug, slug.replace("_", " ").title())
 
     def _context_aware_integration_question(self, use_case: str) -> tuple[str, list[str]]:
+        if use_case == "architecture_analysis":
+            return (
+                "This runtime can receive a limited, sanitized context slice from your application "
+                "without connecting directly to an external service. You can add approved integrations "
+                "later if the workflow needs them.",
+                ["Continue without integrations", "Add an integration later"],
+            )
         if use_case == "autonomous_issue_triage_agent":
             return (
                 "What data sources should your triage agent work with?\n\n"
@@ -176,7 +184,10 @@ class FastOnboardingModelProvider:
             use_case = self._extract_use_case(msg_lower)
             detected_integrations = self._detect_integrations(msg_lower)
             has_user_connect = any(k in msg_lower for k in ["their own", "users connect", "user connect", "users' accounts", "byo", "mode b"])
-            has_company_data = any(k in msg_lower for k in ["company data", "our company", "company's data", "internal data", "mode a"])
+            has_company_data = any(k in msg_lower for k in [
+                "company data", "our company", "company's data", "internal data", "company-managed",
+                "company managed", "mode a",
+            ])
             uc_title = self._use_case_title(use_case)
             runtime_name = self._extract_runtime_name(msg_lower)
             name_hint = f" Runtime name: {runtime_name}." if runtime_name else ""
@@ -232,6 +243,26 @@ class FastOnboardingModelProvider:
                     ],
                 )
             else:
+                if any(term in msg_lower for term in (
+                    "no direct integration", "without integrations", "no integrations",
+                    "do not configure", "don't configure", "do not use end-user oauth",
+                )):
+                    return OnboardingModelResponse(
+                        text=(
+                            f"Configured {uc_title} without direct integrations.{name_hint}\n\n"
+                            "The runtime will receive the sanitized context supplied by your application. "
+                            "You can add approved integrations later if needed."
+                        ),
+                        proposed_intent="set_use_case_and_mode",
+                        proposed_data={
+                            "use_case": use_case,
+                            "application_type": "internal_ai_agent",
+                            "integration_mode": "zyntry_managed",
+                            "integrations": [],
+                            "capabilities": {},
+                        },
+                        suggested_actions=["Continue without integrations", "Add an integration later"],
+                    )
                 return OnboardingModelResponse(
                     text=(
                         f"Configured {uc_title}.{name_hint}\n\n"
@@ -412,6 +443,11 @@ class FastOnboardingModelProvider:
         # Prefer an explicit application description over incidental words in
         # a long capability list (for example, GitHub issues in a knowledge
         # assistant description should not turn it into an issue-triage app).
+        if any(term in cleaned for term in (
+            "architecture investigation", "architecture analysis", "software architecture",
+            "call graph", "dependency graph", "data-flow analysis", "engineering graph",
+        )):
+            return "architecture_analysis"
         if any(term in cleaned for term in ("operations and knowledge", "knowledge assistant", "ai operations")):
             return "knowledge_search_rag"
         if "triage" in cleaned or "engineer" in cleaned or "issue" in cleaned:
@@ -430,6 +466,11 @@ class FastOnboardingModelProvider:
 
     def _detect_integrations(self, msg: str) -> list[str]:
         msg = msg.lower()
+        if any(term in msg for term in (
+            "no direct integration", "without integrations", "no integrations",
+            "do not configure", "don't configure", "do not use end-user oauth",
+        )):
+            return []
         found: list[str] = []
         slugs = integration_registry.list_slugs()
         for slug in slugs:
@@ -509,7 +550,7 @@ class FastOnboardingModelProvider:
             # ``Create/build/provision a runtime named/called Foo``
             r"(?:create|build|provision|configure)\s+(?:an?\s+)?runtime\s+(?:named|called|with\s+name)\s*[:\-]?\s*",
             # ``Name the runtime Foo`` / ``Runtime name: Foo``
-            r"(?:name\s+(?:the\s+)?runtime|runtime\s+name)\s*[:\-]?\s*",
+            r"(?:name\s+(?:the\s+)?runtime|runtime\s+(?:named|name))\s*[:\-]?\s*",
             # ``Call the runtime Foo`` / ``Call it Foo``
             r"call\s+(?:(?:the\s+)?runtime|it)\s*[:\-]?\s*",
         )
