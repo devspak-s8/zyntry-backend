@@ -141,7 +141,17 @@ class RuleBasedRequirementsExtractor:
         )
         if any(term in lowered for term in external_terms):
             data["requires_external_data"] = True
-        if any(term in lowered for term in ("internal only", "no external", "without external")):
+        if any(term in lowered for term in (
+            "internal only",
+            "internal company data only",
+            "private data only",
+            "private sources only",
+            "no external",
+            "no external sources",
+            "no external websites",
+            "without external",
+            "without public web",
+        )):
             data["requires_external_data"] = False
         source_types = self._extract_external_source_types(lowered)
         if source_types:
