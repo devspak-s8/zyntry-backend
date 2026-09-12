@@ -67,7 +67,9 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16
+        # The migration chain enables pgvector and creates native vector
+        # indexes, so the contract database must ship that extension.
+        image: pgvector/pgvector:0.8.6-pg16
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
