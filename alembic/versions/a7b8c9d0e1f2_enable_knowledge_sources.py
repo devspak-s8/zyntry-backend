@@ -19,9 +19,12 @@ def upgrade() -> None:
     # Knowledge sources are now part of the supported project setup flow.
     op.execute(
         sa.text(
+            "DO $$ BEGIN "
+            "IF to_regclass('public.admin_feature_flags') IS NOT NULL THEN "
             "UPDATE admin_feature_flags "
             "SET enabled = TRUE, default_value = TRUE, rollout_percentage = 100 "
-            "WHERE key = 'knowledge_sources'"
+            "WHERE key = 'knowledge_sources'; "
+            "END IF; END $$;"
         )
     )
 
@@ -29,8 +32,11 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.execute(
         sa.text(
+            "DO $$ BEGIN "
+            "IF to_regclass('public.admin_feature_flags') IS NOT NULL THEN "
             "UPDATE admin_feature_flags "
             "SET enabled = TRUE, default_value = FALSE, rollout_percentage = 0 "
-            "WHERE key = 'knowledge_sources'"
+            "WHERE key = 'knowledge_sources'; "
+            "END IF; END $$;"
         )
     )
