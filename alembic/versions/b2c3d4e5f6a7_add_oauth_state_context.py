@@ -1,7 +1,7 @@
 """add OAuth connection context to states
 
 Revision ID: b2c3d4e5f6a7
-Revises: a1b2c3d4e5f6
+Revises: a2b3c4d5e6f7
 """
 from typing import Sequence, Union
 
@@ -9,18 +9,26 @@ from alembic import op
 import sqlalchemy as sa
 
 revision: str = "b2c3d4e5f6a7"
-down_revision: Union[str, None] = "a1b2c3d4e5f6"
+down_revision: Union[str, None] = "a2b3c4d5e6f7"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column("oauth_states", sa.Column("purpose", sa.String(16), nullable=False, server_default="tool"))
-    op.add_column("oauth_states", sa.Column("display_name", sa.String(255)))
-    op.add_column("oauth_states", sa.Column("source_config", sa.JSON(), nullable=False, server_default=sa.text("'{}'::json")))
+    # Use IF NOT EXISTS for compatibility with databases that already had the
+    # columns created by the application's historical ``create_all`` startup.
+    op.execute(
+        "ALTER TABLE oauth_states ADD COLUMN IF NOT EXISTS purpose VARCHAR(16) NOT NULL DEFAULT 'tool'"
+    )
+    op.execute(
+        "ALTER TABLE oauth_states ADD COLUMN IF NOT EXISTS display_name VARCHAR(255)"
+    )
+    op.execute(
+        "ALTER TABLE oauth_states ADD COLUMN IF NOT EXISTS source_config JSON NOT NULL DEFAULT '{}'::json"
+    )
 
 
 def downgrade() -> None:
-    op.drop_column("oauth_states", "source_config")
-    op.drop_column("oauth_states", "display_name")
-    op.drop_column("oauth_states", "purpose")
+    op.execute("ALTER TABLE oauth_states DROP COLUMN IF EXISTS source_config")
+    op.execute("ALTER TABLE oauth_states DROP COLUMN IF EXISTS display_name")
+    op.execute("ALTER TABLE oauth_states DROP COLUMN IF EXISTS purpose")
