@@ -25,10 +25,16 @@ async def initialize_cache() -> None:
     """Initialize the shared response cache once per API process."""
     from fastapi_cache import FastAPICache
     from fastapi_cache.backends.redis import RedisBackend
+    from redis import asyncio as redis
 
-    from app.core.redis import redis_client
+    from app.core.config import settings
 
-    FastAPICache.init(RedisBackend(redis_client), prefix="cache")
+    # fastapi-cache2 stores serialized bytes.  The rest of the application
+    # intentionally uses a text-decoding client, so keep this backend client
+    # separate instead of changing the shared Redis contract.
+    cache_client = redis.from_url(settings.redis_url, decode_responses=False)
+
+    FastAPICache.init(RedisBackend(cache_client), prefix="cache")
 
 
 async def seed_application_data() -> None:

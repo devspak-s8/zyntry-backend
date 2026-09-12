@@ -32,7 +32,7 @@ beautifulsoup4==4.15.0
 openpyxl==3.1.5
 markdown==3.10.2
 python-multipart==0.0.32
-fastapi-cache2[redis]==0.1.0
+fastapi-cache2[redis]==0.2.2
 aiomysql==0.3.2
 motor==3.3.0
 libsql-experimental==0.0.55
