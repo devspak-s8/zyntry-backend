@@ -8,6 +8,30 @@ from pydantic import BaseModel, Field, field_validator
 
 ConnectionOwnership = Literal["company", "end_user", "hybrid"]
 MemoryScope = Literal["request", "session", "user", "organization"]
+IntegrationDecision = Literal[
+    "direct",
+    "host_managed",
+    "excluded",
+    "unsupported",
+    "unclear",
+]
+
+
+class IntegrationDecisionRecord(BaseModel):
+    """Model's interpretation of a mentioned service.
+
+    Only ``direct`` decisions become runtime integrations. The other values
+    preserve context for the onboarding explanation without granting access.
+    """
+
+    slug: str = Field(min_length=1, max_length=64)
+    decision: IntegrationDecision
+    reason: str = Field(default="", max_length=500)
+
+    @field_validator("slug")
+    @classmethod
+    def normalize_slug(cls, value: str) -> str:
+        return value.strip().lower().replace(" ", "_")
 
 
 class ApplicationIntegrationRequirement(BaseModel):
@@ -52,6 +76,7 @@ class ApplicationRequirements(BaseModel):
 
     connection_ownership: ConnectionOwnership | None = None
     integrations: list[ApplicationIntegrationRequirement] = Field(default_factory=list)
+    integration_decisions: list[IntegrationDecisionRecord] = Field(default_factory=list)
     requested_actions: list[str] = Field(default_factory=list)
     constraints: list[str] = Field(default_factory=list)
     data_sensitivity: Literal["public", "internal", "confidential", "regulated"] | None = None
@@ -137,6 +162,7 @@ class RuntimePlan(BaseModel):
     summary: str
     components: list[RuntimePlanComponent] = Field(default_factory=list)
     integration_policies: list[dict[str, Any]] = Field(default_factory=list)
+    integration_decisions: list[IntegrationDecisionRecord] = Field(default_factory=list)
     model_routing: dict[str, Any] = Field(default_factory=dict)
     security: dict[str, Any] = Field(default_factory=dict)
     observability: dict[str, Any] = Field(default_factory=dict)

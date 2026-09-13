@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+from app.core.config import settings
 from app.models.onboarding_session import OnboardingSession
 from app.repositories import UnitOfWork
 from app.schemas.onboarding_chat import (
@@ -20,7 +21,9 @@ from app.services.integrations.service import IntegrationService
 from app.services.onboarding.intelligence import (
     AdaptiveClarificationService,
     ModelBackedRequirementsExtractor,
+    OnboardingRequirementsError,
     RuntimePlanGenerator,
+    explicitly_disables_integrations,
 )
 from app.services.onboarding.models import (
     OnboardingModelProvider,
@@ -76,7 +79,10 @@ class OnboardingEngine:
         self.uow = uow
         self.model_provider = model_provider or default_onboarding_model_provider
         self.integration_service = IntegrationService(uow)
-        self.requirements_extractor = ModelBackedRequirementsExtractor()
+        allow_fallback = bool(getattr(settings, "ONBOARDING_ALLOW_FALLBACK", False))
+        self.requirements_extractor = ModelBackedRequirementsExtractor(
+            allow_fallback=allow_fallback,
+        )
         self.clarification_service = AdaptiveClarificationService()
         self.runtime_plan_generator = RuntimePlanGenerator()
 
@@ -460,16 +466,52 @@ class OnboardingEngine:
             }.get(configured_mode if isinstance(configured_mode, str) else "")
             if ownership:
                 stored_requirements = {**stored_requirements, "connection_ownership": ownership}
-        requirements = await self.requirements_extractor.extract(
-            message=message,
-            current_data=stored_requirements,
-            history=history,
-            pending_requirement=current_config.get("pending_requirement"),
-        )
+        try:
+            requirements = await self.requirements_extractor.extract(
+                message=message,
+                current_data=stored_requirements,
+                history=history,
+                pending_requirement=current_config.get("pending_requirement"),
+            )
+        except OnboardingRequirementsError as exc:
+            # Never silently infer a plan when the production model is
+            # unavailable. Preserve an existing validated snapshot, if any,
+            # but discard the deterministic conversational provider's guesses.
+            requirements = (
+                ModelBackedRequirementsExtractor._validated_current(stored_requirements)
+                or ApplicationRequirements()
+            )
+            ai_resp.proposed_data = {
+                "application_requirements": requirements.model_dump(mode="json"),
+                "onboarding_model_error": {
+                    "code": type(exc).__name__,
+                    "message": str(exc),
+                    "retryable": True,
+                },
+            }
+            ai_resp.proposed_intent = "clarify_requirements"
+            ai_resp.text = (
+                "I can’t safely continue because the onboarding model is unavailable. "
+                "Nothing was configured. Please try again in a moment."
+            )
+            ai_resp.suggested_actions = ["Try again"]
+            return ai_resp, requirements
+
+        requirement_configuration = self._requirements_configuration(requirements)
         ai_resp.proposed_data = {
             **ai_resp.proposed_data,
             "application_requirements": requirements.model_dump(mode="json"),
+            # The model-backed requirements are authoritative for connector
+            # selection. This prevents the conversational provider from
+            # carrying a service mention into the draft as a direct connector.
+            "integrations": requirement_configuration["integrations"],
+            "capabilities": requirement_configuration["capabilities"],
+            "requires_tools": requirements.requires_tools,
         }
+        for key in ("use_case", "application_type", "integration_mode"):
+            value = requirement_configuration.get(key)
+            if value is not None:
+                ai_resp.proposed_data[key] = value
 
         question = self.clarification_service.next_question(requirements)
         if self._should_prioritize_clarification(current_state, requirements, question):
@@ -601,10 +643,9 @@ class OnboardingEngine:
         session or an over-eager model cannot add GitHub/Slack by mention alone.
         """
         lowered = message.lower()
-        if not any(term in lowered for term in (
-            "no direct integration", "without integrations", "no integrations",
-            "do not configure", "don't configure", "do not use end-user oauth",
-        )):
+        if not explicitly_disables_integrations(lowered):
+            return
+        if "onboarding_model_error" in ai_resp.proposed_data:
             return
 
         ai_resp.proposed_data["integrations"] = []

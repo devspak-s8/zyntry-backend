@@ -35,7 +35,7 @@ async def test_model_extraction_is_validated_and_merged() -> None:
     assert requirements.application_type == "resume_analyzer"
     assert requirements.document_formats == ["pdf", "docx"]
     assert requirements.confidence == 0.94
-    assert requirements.extraction_source == "hybrid"
+    assert requirements.extraction_source == "model"
 
 
 @pytest.mark.asyncio

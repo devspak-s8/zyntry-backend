@@ -72,6 +72,9 @@ class AppSettings(BaseSettings):
     FIREWORKS_API_KEY: str = ""
     ONBOARDING_PROVIDER: str = "google"
     ONBOARDING_MODEL: str = "gemini-2.5-flash"
+    # Disabled by default so production never guesses requirements when the
+    # model is unavailable. Local tests may opt in explicitly.
+    ONBOARDING_ALLOW_FALLBACK: bool = False
     RUNTIME_ASSISTANT_PROVIDER: str = "google"
     RUNTIME_ASSISTANT_MODEL: str = "gemini-2.5-flash"
     AZURE_OPENAI_ENDPOINT: str = ""

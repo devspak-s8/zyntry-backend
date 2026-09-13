@@ -12,8 +12,13 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.ext.compiler import compiles
 
+from app.core.config import settings
 from app.core.database import Base, get_session
 from app.main import app as fastapi_app
+
+# Unit/API tests intentionally run without provider credentials. Production
+# keeps this disabled and pauses onboarding when Gemini is unavailable.
+settings.ONBOARDING_ALLOW_FALLBACK = True
 
 
 # Register SQLite dialect mappings for Postgres-specific types in testing
