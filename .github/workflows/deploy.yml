@@ -159,6 +159,10 @@ jobs:
           context: .
           push: true
           tags: ${{ steps.image.outputs.uri }}
+          # Always resolve the current security-patched base image.  The
+          # published image is the artifact scanned and deployed below, so a
+          # stale BuildKit base layer must not survive between releases.
+          pull: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -191,6 +195,16 @@ jobs:
           ignore-unfixed: true
           vuln-type: os,library
           severity: CRITICAL,HIGH
+
+      - name: Print Trivy report
+        if: always()
+        shell: bash
+        run: |
+          if [[ -s trivy-image-report.txt ]]; then
+            cat trivy-image-report.txt
+          else
+            echo "Trivy produced no report file."
+          fi
 
       - name: Upload Trivy report
         if: always()
