@@ -33,6 +33,11 @@ async def test_runtime_topology_uses_runtime_configuration_and_integrations(db_s
     assert {node.id for node in topology["nodes"]} >= {"application", "runtime", "router", "model", "knowledge", "vector_store"}
     assert topology["routing"]["provider"] == "openai"
     assert topology["telemetry"]["requests_24h"] == 0
+    assert topology["telemetry"]["error_rate"] is None
+    statuses = {node.id: node.status for node in topology["nodes"]}
+    assert statuses["application"] == "idle"
+    assert statuses["model"] == "configured"
+    assert statuses["knowledge"] == "unconfigured"
 
 
 @pytest.mark.asyncio

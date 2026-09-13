@@ -160,11 +160,18 @@ class RuntimeAssistantService:
         )
         if generated_message:
             response.message = generated_message
+        configuration_clarification = _configuration_change_clarification(
+            message,
+            context,
+            has_action_proposal=action_proposal is not None,
+        )
         # Configuration and routing answers are control-plane facts. The LLM
         # may phrase ordinary conversation naturally, but it must not replace
         # a verified saved value with an inferred or stale statement.
         verified_configuration = _verified_configuration_message(message, tool_results)
-        if verified_configuration:
+        if configuration_clarification:
+            response.message = configuration_clarification
+        elif verified_configuration:
             response.message = verified_configuration
         verified_completion = _verified_completion_message(message, tool_results)
         if verified_completion:
@@ -457,6 +464,68 @@ def _current_configuration_value(context: RuntimeContext, field: str) -> Any:
     return "(not set)" if value is None else value
 
 
+def _configuration_change_clarification(
+    user_message: str,
+    context: RuntimeContext,
+    *,
+    has_action_proposal: bool,
+) -> str | None:
+    """Ask for the missing target of an explicit model/provider change.
+
+    A request such as ``switch provider`` is not a request to display the
+    current configuration, and it is not safe to guess a target.  Explicit
+    proposals still take precedence because they already contain a validated
+    target value.
+    """
+    if has_action_proposal:
+        return None
+    lowered = " ".join(user_message.lower().split())
+    mutation_requested = bool(
+        re.search(
+            r"\b(?:change|switch|sketch|update|set|use|want|move|migrate)\b",
+            lowered,
+        )
+    )
+    if not mutation_requested:
+        return None
+
+    asks_provider_change = "provider" in lowered
+    asks_model_change = bool(re.search(r"\bmodel\b", lowered))
+    if not asks_provider_change and not asks_model_change:
+        return None
+
+    if asks_provider_change:
+        current = str(context.runtime.get("provider") or "not configured")
+        providers = sorted(
+            {
+                str(item.get("provider_name") or item.get("provider") or "").strip()
+                for item in context.providers
+                if item.get("provider_name") or item.get("provider")
+            }
+        )
+        alternatives = [provider for provider in providers if provider.lower() != current.lower()]
+        if alternatives:
+            return (
+                f"Which provider and compatible model should replace `{current}`? "
+                f"Providers configured for this "
+                f"project: {', '.join(f'`{provider}`' for provider in alternatives)}. "
+                "For example: `Switch provider to anthropic and set model to claude-3-5-sonnet`. "
+                "I will validate both values before proposing the change."
+            )
+        return (
+            f"Which provider and compatible model should replace `{current}`? "
+            "No alternative provider credentials "
+            "are currently configured for this project, so you may need to connect one first."
+        )
+
+    current_model = str(context.runtime.get("model") or "not configured")
+    current_provider = str(context.runtime.get("provider") or "not configured")
+    return (
+        f"Which model should replace `{current_model}`? The current provider is "
+        f"`{current_provider}`. Include the provider too if the new model belongs to a different provider."
+    )
+
+
 def _verified_configuration_message(
     user_message: str,
     tool_results: list[Any],
@@ -658,7 +727,37 @@ def _context_factual_message(user_message: str, context: RuntimeContext) -> str 
             lines.append(f"- API keys visible in this scope: {keys_count}")
         sections.append("\n".join(lines))
 
-    if any(term in lowered for term in ("health", "p95 latency", "latency")):
+    asks_last_execution = any(
+        term in lowered
+        for term in ("last execution", "latest execution", "recent execution")
+    )
+    if asks_last_execution:
+        if context.logs:
+            latest = context.logs[0]
+            execution_status = latest.get("status")
+            status_text = str(execution_status) if execution_status is not None else "not reported"
+            latency = latest.get("latency_ms")
+            latency_text = f"{latency} ms" if latency is not None else "not reported"
+            tokens = latest.get("tokens")
+            token_text = str(tokens) if tokens is not None else "not reported"
+            cost = latest.get("cost")
+            cost_text = f"${float(cost):.6f}" if cost is not None else "not reported"
+            sections.append(
+                "Latest persisted runtime execution:\n"
+                f"- Request: `{latest.get('request_id') or 'not reported'}`\n"
+                f"- Status: `{status_text}`\n"
+                f"- Provider / model: `{latest.get('provider') or 'not reported'}` / "
+                f"`{latest.get('model') or 'not reported'}`\n"
+                f"- Latency: `{latency_text}`\n"
+                f"- Tokens: `{token_text}`\n"
+                f"- Cost: `{cost_text}`"
+            )
+        else:
+            sections.append("No persisted execution records are available for this runtime.")
+
+    if not asks_last_execution and any(
+        term in lowered for term in ("health", "p95 latency", "latency")
+    ):
         health = context.health or {}
         score = health.get("health_score", health.get("health", context.runtime.get("health", "unknown")))
         errors = health.get("error_count", health.get("errors", "unknown"))

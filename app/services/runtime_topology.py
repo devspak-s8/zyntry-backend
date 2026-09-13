@@ -43,12 +43,14 @@ async def build_runtime_topology(
         .all()
     )
     request_rows = []
-    if runtime.project_id:
+    usage_request_ids = [row.request_id for row in usage_rows if row.request_id]
+    if runtime.project_id and usage_request_ids:
         request_rows = list(
             (
                 await db.execute(
                     select(RequestLog).where(
                         RequestLog.project_id == runtime.project_id,
+                        RequestLog.request_id.in_(usage_request_ids),
                         RequestLog.created_at >= since,
                     )
                 )
@@ -86,7 +88,7 @@ async def build_runtime_topology(
         "tokens_24h": total_tokens,
         "cost_24h": round(total_cost, 8),
         "errors_24h": errors,
-        "error_rate": round(errors / max(1, len(request_rows)), 6),
+        "error_rate": round(errors / len(request_rows), 6) if request_rows else None,
         "average_latency_ms": round(sum(latencies) / len(latencies), 2) if latencies else None,
         "p95_latency_ms": p95,
         "providers": dict(provider_counts),
@@ -94,12 +96,18 @@ async def build_runtime_topology(
     }
 
     node_status = {
-        "application": "active",
+        "application": "active" if total_requests else "idle",
         "runtime": runtime.status,
-        "router": "active",
-        "model": "active" if runtime.provider and runtime.model else "unconfigured",
-        "knowledge": "ready" if runtime.embeddings or runtime.documents == 0 else "indexing",
-        "vector_store": "active" if runtime.vector_store else "unconfigured",
+        "router": "active" if runtime.status == "active" else "standby",
+        "model": "configured" if runtime.provider and runtime.model else "unconfigured",
+        "knowledge": (
+            "ready"
+            if runtime.documents > 0 and runtime.embeddings > 0
+            else "indexing"
+            if runtime.documents > 0
+            else "unconfigured"
+        ),
+        "vector_store": "configured" if runtime.vector_store else "unconfigured",
     }
     simulated = simulation is not None
     if simulation == "postgres_degraded":
@@ -185,6 +193,7 @@ async def build_runtime_topology(
                 metadata={
                     "capabilities": integration.enabled_capabilities or [],
                     "connection_mode": integration.connection_mode,
+                    "is_enabled": integration.is_enabled,
                 },
                 simulated=simulated,
             )
@@ -245,7 +254,7 @@ async def build_runtime_topology(
             "provider": runtime.provider,
             "model": runtime.model,
             "fallback_models": fallback_models,
-            "failover_enabled": True,
+            "failover_enabled": bool(fallback_models),
             "simulation_mode": simulation,
         },
         "telemetry": telemetry,

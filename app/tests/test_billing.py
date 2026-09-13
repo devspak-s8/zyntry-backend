@@ -6,7 +6,7 @@ from decimal import Decimal
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.api.v1.billing.router import billing_analytics
+from app.api.v1.billing.router import billing_analytics, list_usage_logs
 from app.main import app
 from app.models.billing import UsageLog
 from app.models.organizations import Organization
@@ -134,3 +134,79 @@ async def test_billing_analytics_uses_usage_dimensions_and_resource_names(db_ses
     assert result["by_project"][0]["project"] == "Support Console"
     assert result["by_runtime"][0]["runtime"] == "Support Runtime"
     assert result["daily"][0]["date"]
+
+
+@pytest.mark.asyncio
+async def test_usage_logs_can_be_scoped_to_runtime_and_project(db_session):
+    organization = Organization(name="Usage Scope", slug=f"usage-{uuid.uuid4().hex}")
+    db_session.add(organization)
+    await db_session.flush()
+    user = User(
+        email=f"usage-{uuid.uuid4().hex}@example.com",
+        name="Usage Scope",
+        organization_id=organization.id,
+        is_active=True,
+        email_verified=True,
+    )
+    db_session.add(user)
+    await db_session.flush()
+    project = Project(
+        name="Scoped Project",
+        slug=f"scoped-{uuid.uuid4().hex}",
+        organization_id=organization.id,
+    )
+    db_session.add(project)
+    await db_session.flush()
+    selected_runtime = Runtime(
+        name="Selected Runtime",
+        user_id=user.id,
+        organization_id=organization.id,
+        project_id=project.id,
+    )
+    other_runtime = Runtime(
+        name="Other Runtime",
+        user_id=user.id,
+        organization_id=organization.id,
+    )
+    db_session.add_all([selected_runtime, other_runtime])
+    await db_session.flush()
+    db_session.add_all([
+        UsageLog(
+            user_id=user.id,
+            organization_id=organization.id,
+            project_id=project.id,
+            runtime_id=selected_runtime.id,
+            request_id="req-selected",
+            provider="google",
+            model="gemini-2.5-flash",
+            operation="invoke",
+            requests=1,
+            cost=Decimal("0.0001"),
+        ),
+        UsageLog(
+            user_id=user.id,
+            organization_id=organization.id,
+            runtime_id=other_runtime.id,
+            request_id="req-other",
+            provider="openai",
+            model="gpt-4o-mini",
+            operation="invoke",
+            requests=1,
+            cost=Decimal("0.0001"),
+        ),
+    ])
+    await db_session.commit()
+
+    result = await list_usage_logs(
+        current_user=user,
+        db=db_session,
+        limit=50,
+        offset=0,
+        runtime_id=selected_runtime.id,
+        project_id=project.id,
+        since=None,
+    )
+
+    assert len(result) == 1
+    assert result[0].request_id == "req-selected"
+    assert result[0].runtime_id == selected_runtime.id

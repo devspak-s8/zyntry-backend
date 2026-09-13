@@ -56,6 +56,12 @@ def test_explicit_configuration_change_is_normalized_and_planned_as_write() -> N
     assert plan.tool_calls[0].arguments == {"changes": {"model": "gemini-2.5-flash"}}
 
 
+def test_common_switch_typo_still_requires_an_explicit_provider_target() -> None:
+    assert parse_configuration_change("Now sketch provider to anthropic") == {
+        "provider": "anthropic"
+    }
+
+
 def test_configuration_values_are_validated_before_proposal() -> None:
     with pytest.raises(ValueError, match="temperature must be between 0 and 2"):
         normalize_configuration_changes({"config": {"temperature": 2.1}})

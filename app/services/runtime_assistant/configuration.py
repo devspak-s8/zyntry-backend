@@ -74,7 +74,7 @@ ROUTING_STRATEGIES = frozenset(
     {"latency_optimized", "quality_optimized", "balanced"}
 )
 
-_MUTATION_WORDS = r"(?:set|change|update|switch|make|use)"
+_MUTATION_WORDS = r"(?:set|change|update|switch|sketch|make|use)"
 _VALUE = r"([^\n,;]+?)(?=\s+and\s+(?:set|change|update|switch|make|use|rebuild)\b|$)"
 _VALUE_LIST = r"([^\n;]+?)(?=\s+and\s+(?:set|change|update|switch|make|use|rebuild)\b|$)"
 

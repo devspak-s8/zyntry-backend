@@ -4,6 +4,10 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy import select
+
+from app.models.billing import UsageLog
+from app.models.request_logs import RequestLog
 from app.repositories import UnitOfWork
 from app.services.analytics import AnalyticsService
 from app.services.billing import BillingService
@@ -94,7 +98,14 @@ class RuntimeContextBuilder:
             }
             for item in integration_models
         ]
-        logs = await collect("logs", lambda: project_value(lambda: self._get_recent_logs(project_id), []), [])
+        logs = await collect(
+            "logs",
+            lambda: project_value(
+                lambda: self._get_recent_logs(project_id, self.runtime_id),
+                [],
+            ),
+            [],
+        )
         # Keep the security snapshot scoped to the selected project/runtime
         # and current user. The assistant must never count or expose API keys
         # from another project or tenant just because they share the database.
@@ -142,32 +153,58 @@ class RuntimeContextBuilder:
                 )
         return models
 
-    async def _get_recent_logs(self, project_id: str, limit: int = 50) -> list[dict[str, Any]]:
-        from app.repositories.request_logs import RequestLogRepository
-
-        request_logs = []
-        try:
-            repo = RequestLogRepository(self.uow.session)
-            logs = await repo.list(limit=limit, offset=0)
-            request_logs = [log for log in logs if str(log.project_id) == str(project_id)]
-        except Exception:
-            pass
+    async def _get_recent_logs(
+        self,
+        project_id: str,
+        runtime_id: str,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        usage_rows = list(
+            (
+                await self.uow.session.execute(
+                    select(UsageLog)
+                    .where(
+                        UsageLog.project_id == uuid.UUID(project_id),
+                        UsageLog.runtime_id == uuid.UUID(runtime_id),
+                    )
+                    .order_by(UsageLog.created_at.desc())
+                    .limit(limit)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        request_ids = [row.request_id for row in usage_rows if row.request_id]
+        status_by_request: dict[str, int] = {}
+        if request_ids:
+            request_rows = list(
+                (
+                    await self.uow.session.execute(
+                        select(RequestLog).where(
+                            RequestLog.project_id == uuid.UUID(project_id),
+                            RequestLog.request_id.in_(request_ids),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            status_by_request = {row.request_id: row.status for row in request_rows}
 
         return [
             {
-                "id": str(log.id),
-                "method": log.method,
-                "endpoint": log.endpoint,
-                "status": log.status,
-                "latency_ms": log.latency_ms,
-                "tokens": log.tokens,
-                "provider": log.provider,
-                "model": log.model,
-                "cost": log.cost,
-                "started_at": log.started_at,
-                "completed_at": log.completed_at,
+                "id": str(row.id),
+                "request_id": row.request_id,
+                "operation": row.operation,
+                "status": status_by_request.get(row.request_id or ""),
+                "latency_ms": row.latency_ms,
+                "tokens": int(row.input_tokens or 0) + int(row.output_tokens or 0),
+                "provider": row.provider,
+                "model": row.model,
+                "cost": float(row.cost or 0),
+                "started_at": row.created_at,
             }
-            for log in request_logs
+            for row in usage_rows
         ]
 
     def _serialize_analytics(self, analytics: dict[str, Any]) -> dict[str, Any]:

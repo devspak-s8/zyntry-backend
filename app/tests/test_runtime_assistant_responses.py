@@ -7,6 +7,7 @@ from app.services.runtime_assistant.planner import RuntimeAssistantPlanner
 from app.services.runtime_assistant.responder import _strip_control_payload
 from app.services.runtime_assistant.schemas import RuntimeContext, ToolCall, UserRole
 from app.services.runtime_assistant.service import (
+    _configuration_change_clarification,
     _context_factual_message,
     _verified_configuration_message,
 )
@@ -113,6 +114,42 @@ def test_verified_configuration_explains_dynamic_routing() -> None:
     assert "available provider credentials" in message
 
 
+def test_incomplete_provider_and_model_changes_request_the_missing_target() -> None:
+    context = RuntimeContext(
+        runtime_id="runtime", project_id="project", organization_id="org",
+        user_id="user", user_role=UserRole.DEVELOPER,
+        runtime={"provider": "google", "model": "gemini-2.5-flash"},
+        providers=[
+            {"provider_name": "google", "status": "active"},
+            {"provider_name": "anthropic", "status": "active"},
+        ],
+    )
+
+    provider_message = _configuration_change_clarification(
+        "I want to switch provider", context, has_action_proposal=False
+    )
+    model_message = _configuration_change_clarification(
+        "Change the model used to another model", context, has_action_proposal=False
+    )
+
+    assert provider_message is not None
+    assert "Which provider" in provider_message
+    assert "`anthropic`" in provider_message
+    assert model_message is not None
+    assert "Which model" in model_message
+    assert "`gemini-2.5-flash`" in model_message
+
+
+def test_validated_action_proposal_does_not_get_replaced_by_clarification() -> None:
+    context = RuntimeContext(
+        runtime_id="runtime", project_id="project", organization_id="org",
+        user_id="user", user_role=UserRole.DEVELOPER,
+    )
+    assert _configuration_change_clarification(
+        "Switch provider to anthropic", context, has_action_proposal=True
+    ) is None
+
+
 def test_context_facts_answer_provider_integrations_and_security_questions() -> None:
     context = RuntimeContext(
         runtime_id="runtime", project_id="project", organization_id="org",
@@ -146,3 +183,30 @@ def test_context_facts_cover_security_subquestions() -> None:
     ban_message = _context_factual_message("Is temporary IP blocking enabled?", context)
     assert key_message == "Active runtime security policy:\n- API keys visible in this scope: 3"
     assert ban_message == "Active runtime security policy:\n- Temporary IP blocking: enabled"
+
+
+def test_last_execution_uses_runtime_scoped_persisted_log() -> None:
+    context = RuntimeContext(
+        runtime_id="runtime", project_id="project", organization_id="org",
+        user_id="user", user_role=UserRole.DEVELOPER,
+        health={"health_score": 100, "llm_latency_ms": 0},
+        logs=[{
+            "request_id": "req-real",
+            "status": 200,
+            "provider": "google",
+            "model": "gemini-2.5-flash",
+            "latency_ms": 1850,
+            "tokens": 42,
+            "cost": 0.000012,
+        }],
+    )
+
+    message = _context_factual_message(
+        "Explain the last execution and its latency.", context
+    )
+
+    assert message is not None
+    assert "req-real" in message
+    assert "1850 ms" in message
+    assert "gemini-2.5-flash" in message
+    assert "Runtime health" not in message

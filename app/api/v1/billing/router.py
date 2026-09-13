@@ -417,11 +417,21 @@ async def list_usage_logs(
     db: Annotated[AsyncSession, Depends(get_session)],
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    runtime_id: uuid.UUID | None = Query(default=None),
+    project_id: uuid.UUID | None = Query(default=None),
+    since: datetime | None = Query(default=None),
 ) -> list[UsageLogRead]:
     uow = UnitOfWork(db)
+    filters = [UsageLog.user_id == current_user.id]
+    if runtime_id is not None:
+        filters.append(UsageLog.runtime_id == runtime_id)
+    if project_id is not None:
+        filters.append(UsageLog.project_id == project_id)
+    if since is not None:
+        filters.append(UsageLog.created_at >= since)
     result = await uow.session.execute(
         select(UsageLog)
-        .where(UsageLog.user_id == current_user.id)
+        .where(*filters)
         .order_by(UsageLog.created_at.desc())
         .limit(limit)
         .offset(offset)
