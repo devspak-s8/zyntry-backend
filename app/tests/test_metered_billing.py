@@ -5,8 +5,9 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import select
 
-from app.models.billing import SpendingLimit
+from app.models.billing import BillingLedger, SpendingLimit
 from app.models.users import User
 from app.services.billing import BillingService
 from app.services.metered_billing import (
@@ -56,6 +57,40 @@ async def test_reservation_settlement_releases_unused_amount_and_is_idempotent(d
     assert wallet.balance == Decimal("4.25")
     assert wallet.reserved_balance == Decimal("0")
     assert wallet.total_spent == Decimal("0.75")
+
+
+@pytest.mark.asyncio
+async def test_settlement_persists_provider_and_model_metadata(db_session):
+    user = await _user(db_session)
+    await BillingService(db_session).add_credit(
+        user.id,
+        Decimal("1"),
+        "test topup",
+        reference_id=f"topup-{uuid.uuid4()}",
+    )
+    service = MeteredBillingService(db_session)
+    reservation = await service.reserve(
+        user_id=user.id,
+        amount=Decimal("0.10"),
+        request_id="req-metadata",
+        idempotency_key="idem-metadata",
+    )
+
+    await service.settle(
+        reservation.id,
+        actual_amount=Decimal("0.01"),
+        metadata={"provider": "google", "model": "gemini-2.5-flash"},
+    )
+
+    ledger = await db_session.scalar(
+        select(BillingLedger).where(
+            BillingLedger.request_id == "req-metadata",
+            BillingLedger.status == "settled",
+        )
+    )
+    assert ledger is not None
+    assert ledger.metadata_["provider"] == "google"
+    assert ledger.metadata_["model"] == "gemini-2.5-flash"
 
 
 @pytest.mark.asyncio

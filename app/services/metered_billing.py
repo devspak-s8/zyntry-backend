@@ -175,6 +175,10 @@ class MeteredBillingService:
         return wallet
 
     async def _ledger(self, **data: Any) -> BillingLedger:
+        # SQLAlchemy reserves ``metadata`` on declarative models. Accept the
+        # service-facing name but always persist it through the mapped alias.
+        if "metadata" in data and "metadata_" not in data:
+            data["metadata_"] = data.pop("metadata")
         row = BillingLedger(**data)
         self.session.add(row)
         await self.session.flush()

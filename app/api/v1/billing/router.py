@@ -161,35 +161,88 @@ async def billing_analytics(
 ) -> dict:
     """Return customer-visible spend breakdowns for billing dashboards."""
     since = datetime.now(UTC) - timedelta(days=days)
-    base = [BillingLedger.user_id == current_user.id, BillingLedger.status == "settled", BillingLedger.created_at >= since]
+    base = [UsageLog.user_id == current_user.id, UsageLog.created_at >= since]
 
     async def grouped(label: str, expression):
         result = await db.execute(
-            select(expression.label(label), func.sum(BillingLedger.amount).label("amount"), func.count().label("events"))
+            select(
+                expression.label(label),
+                func.sum(UsageLog.cost).label("amount"),
+                func.sum(UsageLog.requests).label("events"),
+            )
             .where(*base)
             .group_by(expression)
-            .order_by(func.sum(BillingLedger.amount).desc())
+            .order_by(func.sum(UsageLog.cost).desc())
             .limit(100)
         )
         return [
-            {label: row[0], "amount": float(row[1] or 0), "events": int(row[2] or 0)}
+            {label: row[0] or "Unassigned", "amount": float(row[1] or 0), "events": int(row[2] or 0)}
             for row in result.all()
         ]
 
-    daily = await db.execute(
-        select(func.date(BillingLedger.created_at).label("day"), func.sum(BillingLedger.amount).label("amount"), func.count().label("events"))
+    project_result = await db.execute(
+        select(
+            UsageLog.project_id,
+            Project.name,
+            func.sum(UsageLog.cost).label("amount"),
+            func.sum(UsageLog.requests).label("events"),
+        )
+        .outerjoin(Project, Project.id == UsageLog.project_id)
         .where(*base)
-        .group_by(func.date(BillingLedger.created_at))
-        .order_by(func.date(BillingLedger.created_at))
+        .group_by(UsageLog.project_id, Project.name)
+        .order_by(func.sum(UsageLog.cost).desc())
+        .limit(100)
+    )
+    runtime_result = await db.execute(
+        select(
+            UsageLog.runtime_id,
+            Runtime.name,
+            func.sum(UsageLog.cost).label("amount"),
+            func.sum(UsageLog.requests).label("events"),
+        )
+        .outerjoin(Runtime, Runtime.id == UsageLog.runtime_id)
+        .where(*base)
+        .group_by(UsageLog.runtime_id, Runtime.name)
+        .order_by(func.sum(UsageLog.cost).desc())
+        .limit(100)
+    )
+    daily = await db.execute(
+        select(
+            func.date(UsageLog.created_at).label("date"),
+            func.sum(UsageLog.cost).label("amount"),
+            func.sum(UsageLog.requests).label("events"),
+        )
+        .where(*base)
+        .group_by(func.date(UsageLog.created_at))
+        .order_by(func.date(UsageLog.created_at))
     )
     return {
         "period_days": days,
-        "by_provider": await grouped("provider", BillingLedger.metadata_["provider"].as_string()),
-        "by_model": await grouped("model", BillingLedger.metadata_["model"].as_string()),
-        "by_operation": await grouped("resource_type", BillingLedger.resource_type),
-        "by_project": await grouped("project_id", BillingLedger.project_id),
-        "by_runtime": await grouped("runtime_id", BillingLedger.runtime_id),
-        "daily": [{"day": str(row.day), "amount": float(row.amount or 0), "events": int(row.events or 0)} for row in daily.all()],
+        "by_provider": await grouped("provider", UsageLog.provider),
+        "by_model": await grouped("model", UsageLog.model),
+        "by_operation": await grouped("operation", UsageLog.operation),
+        "by_project": [
+            {
+                "project_id": str(row.project_id) if row.project_id else None,
+                "project": row.name or "Unassigned",
+                "amount": float(row.amount or 0),
+                "events": int(row.events or 0),
+            }
+            for row in project_result.all()
+        ],
+        "by_runtime": [
+            {
+                "runtime_id": str(row.runtime_id) if row.runtime_id else None,
+                "runtime": row.name or "Unassigned",
+                "amount": float(row.amount or 0),
+                "events": int(row.events or 0),
+            }
+            for row in runtime_result.all()
+        ],
+        "daily": [
+            {"date": str(row.date), "amount": float(row.amount or 0), "events": int(row.events or 0)}
+            for row in daily.all()
+        ],
     }
 
 
