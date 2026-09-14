@@ -47,6 +47,8 @@ async def _deliver_project_created_email(event: NotificationEvent, project_id: u
 
 
 def _to_read(p: Project, runtime_id: uuid.UUID | None = None) -> ProjectRead:
+    raw_environment = (p.settings or {}).get("environment", "development")
+    environment = raw_environment if raw_environment in {"development", "staging", "production"} else "development"
     return ProjectRead(
         id=p.id,
         name=p.name,
@@ -55,6 +57,7 @@ def _to_read(p: Project, runtime_id: uuid.UUID | None = None) -> ProjectRead:
         organization_id=p.organization_id,
         created_at=p.created_at.isoformat() if p.created_at else "",
         settings=p.settings or {},
+        environment=environment,
         status=p.status or "ready",
         connected_providers=[pr.name for pr in p.providers] if p.providers else [],
         has_built_runtime=p.has_built_runtime,
@@ -231,6 +234,7 @@ async def create_project(
         organization_id=proj.organization_id,
         created_at=proj.created_at.isoformat() if proj.created_at else "",
         settings=proj.settings or {},
+        environment=(body.environment or "development"),
         status=proj.status or "ready",
         connected_providers=[],
         has_built_runtime=proj.has_built_runtime,
@@ -409,6 +413,7 @@ async def update_project(
         raise HTTPException(status_code=404, detail="Project not found")
 
     update_data = body.model_dump(exclude_unset=True)
+    requested_environment = update_data.pop("environment", None)
     runtime_requested = "runtime_id" in update_data
     runtime_id = update_data.pop("runtime_id", None)
     if update_data.get("name") is None and "name" in update_data:
@@ -417,6 +422,12 @@ async def update_project(
         raise HTTPException(status_code=422, detail="slug cannot be null")
     if update_data.get("settings") is None and "settings" in update_data:
         update_data["settings"] = {}
+    if requested_environment is not None:
+        merged_settings = dict(proj.settings or {})
+        if isinstance(update_data.get("settings"), dict):
+            merged_settings.update(update_data["settings"])
+        merged_settings["environment"] = requested_environment
+        update_data["settings"] = merged_settings
 
     uow = UnitOfWork(db)
     try:

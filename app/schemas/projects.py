@@ -26,6 +26,7 @@ class ProjectUpdate(ORMModel):
     description: str | None = None
     settings: dict | None = None
     runtime_id: uuid.UUID | None = None
+    environment: Literal["development", "staging", "production"] | None = None
 
 
 class ProjectConfigUpdate(ORMModel):
@@ -45,6 +46,7 @@ class ProjectRead(ORMModel):
     organization_id: uuid.UUID
     created_at: str
     settings: dict
+    environment: Literal["development", "staging", "production"] = "development"
     status: str
     connected_providers: list[str] = []
     hasBuiltRuntime: bool = Field(default=False, alias="has_built_runtime")
