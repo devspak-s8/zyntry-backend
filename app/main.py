@@ -20,7 +20,7 @@ from app.api import router as api_router
 from app.api.v1.logs.router import router as logs_router
 from app.core.config import settings
 from app.core.database import async_session_factory
-from app.core.errors import DomainError
+from app.core.errors import DomainError, safe_http_detail
 from app.core.lifecycle import start_application, stop_application
 from app.core.logging import get_logger
 from app.core.security import hash_token, now
@@ -114,6 +114,16 @@ def create_app() -> FastAPI:
                 "code": "internal_error",
                 "message": "An internal error occurred. Please try again.",
             },
+        )
+
+    @app.exception_handler(HTTPException)
+    async def handle_http_error(request: Request, exc: HTTPException) -> JSONResponse:
+        """Return stable user-facing HTTP errors while logging no internals."""
+        public_detail = safe_http_detail(exc.status_code, exc.detail)
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": public_detail},
+            headers=exc.headers,
         )
 
     @app.exception_handler(DomainError)
