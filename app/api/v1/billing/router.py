@@ -158,9 +158,13 @@ async def billing_analytics(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_session)],
     days: int = Query(default=30, ge=1, le=365),
+    hours: Annotated[int | None, Query(ge=1, le=24 * 365)] = None,
 ) -> dict:
     """Return customer-visible spend breakdowns for billing dashboards."""
-    since = datetime.now(UTC) - timedelta(days=days)
+    # ``hours`` is used for short dashboard windows (last hour/24 hours).  Keep
+    # ``days`` as the backwards-compatible default for existing clients.
+    window_hours = hours if hours is not None else days * 24
+    since = datetime.now(UTC) - timedelta(hours=window_hours)
     base = [UsageLog.user_id == current_user.id, UsageLog.created_at >= since]
 
     async def grouped(label: str, expression):
@@ -217,7 +221,10 @@ async def billing_analytics(
         .order_by(func.date(UsageLog.created_at))
     )
     return {
+        # Keep the original field semantics for existing clients; consumers
+        # that need a short window can use the explicit period_hours field.
         "period_days": days,
+        "period_hours": window_hours,
         "by_provider": await grouped("provider", UsageLog.provider),
         "by_model": await grouped("model", UsageLog.model),
         "by_operation": await grouped("operation", UsageLog.operation),

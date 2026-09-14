@@ -137,6 +137,40 @@ async def test_billing_analytics_uses_usage_dimensions_and_resource_names(db_ses
 
 
 @pytest.mark.asyncio
+async def test_billing_analytics_accepts_short_hour_window(db_session):
+    """The dashboard can query recent usage without widening to a full day."""
+    user = User(
+        email=f"analytics-hours-{uuid.uuid4().hex}@example.com",
+        name="Short Window Test",
+        is_active=True,
+        email_verified=True,
+    )
+    db_session.add(user)
+    await db_session.flush()
+
+    db_session.add(
+        UsageLog(
+            user_id=user.id,
+            request_id="req-hours",
+            provider="google",
+            model="gemini-2.5-flash",
+            operation="invoke",
+            input_tokens=2,
+            output_tokens=1,
+            requests=1,
+            cost=Decimal("0.0001"),
+        )
+    )
+    await db_session.commit()
+
+    result = await billing_analytics(user, db_session, days=30, hours=1)
+
+    assert result["period_hours"] == 1
+    assert result["period_days"] == 30
+    assert result["by_provider"][0]["provider"] == "google"
+
+
+@pytest.mark.asyncio
 async def test_usage_logs_can_be_scoped_to_runtime_and_project(db_session):
     organization = Organization(name="Usage Scope", slug=f"usage-{uuid.uuid4().hex}")
     db_session.add(organization)
