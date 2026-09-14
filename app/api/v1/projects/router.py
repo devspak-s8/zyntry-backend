@@ -5,7 +5,7 @@ import hashlib
 import json
 import logging
 import uuid
-from typing import Annotated
+from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy import select
@@ -48,7 +48,9 @@ async def _deliver_project_created_email(event: NotificationEvent, project_id: u
 
 def _to_read(p: Project, runtime_id: uuid.UUID | None = None) -> ProjectRead:
     raw_environment = (p.settings or {}).get("environment", "development")
-    environment = raw_environment if raw_environment in {"development", "staging", "production"} else "development"
+    environment: Literal["development", "staging", "production"] = "development"
+    if raw_environment in {"development", "staging", "production"}:
+        environment = cast(Literal["development", "staging", "production"], raw_environment)
     return ProjectRead(
         id=p.id,
         name=p.name,
