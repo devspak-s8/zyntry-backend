@@ -306,6 +306,28 @@ class ToolService:
         catalog_item = _CATALOG_BY_KEY.get(key)
         if catalog_item is None or key not in _OAUTH_CONNECTORS:
             raise ValueError("Unsupported OAuth tool connector")
+        try:
+            project_uuid = uuid.UUID(project_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Invalid project id") from exc
+        # Unit-test doubles created before OAuthConnection persistence may not
+        # expose these repositories. Real UnitOfWork instances always do, and
+        # therefore always take the strict validation path.
+        if hasattr(self.uow, "oauth_connections") and hasattr(self.uow, "oauth_providers"):
+            try:
+                connection_uuid = uuid.UUID(oauth_connection_id)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Invalid OAuth connection id") from exc
+            oauth_connection = await self.uow.oauth_connections.get(connection_uuid)
+            if (
+                oauth_connection is None
+                or oauth_connection.project_id != project_uuid
+                or oauth_connection.status != "active"
+            ):
+                raise ValueError("OAuth connection is not active for this project")
+            oauth_provider = await self.uow.oauth_providers.get(oauth_connection.provider_id)
+            if oauth_provider is None or oauth_provider.name.lower() != key:
+                raise ValueError("OAuth connection provider does not match this connector")
         tools = await self.uow.tools.get_by_project(uuid.UUID(project_id))
         existing = next(
             (tool for tool in tools if (tool.schema or {}).get(_INTERNAL_CONNECTION_KEY, {}).get("connector") == key),

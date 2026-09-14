@@ -41,11 +41,14 @@ async def create_or_resume_session(
 ) -> OnboardingSessionRead:
     uow = UnitOfWork(db)
     service = OnboardingService(uow)
-    session_data = await service.create_chat_session(
-        user_id=current_user.id,
-        initial_prompt=body.initial_prompt,
-        reset=body.reset,
-    )
+    try:
+        session_data = await service.create_chat_session(
+            user_id=current_user.id,
+            initial_prompt=body.initial_prompt,
+            reset=body.reset,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     return OnboardingSessionRead(**session_data)
 
 
@@ -56,11 +59,14 @@ async def reset_onboarding_session(
 ) -> OnboardingSessionRead:
     uow = UnitOfWork(db)
     service = OnboardingService(uow)
-    session_data = await service.create_chat_session(
-        user_id=current_user.id,
-        initial_prompt=None,
-        reset=True,
-    )
+    try:
+        session_data = await service.create_chat_session(
+            user_id=current_user.id,
+            initial_prompt=None,
+            reset=True,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     return OnboardingSessionRead(**session_data)
 
 
@@ -76,6 +82,8 @@ async def send_onboarding_message(
         return await service.send_chat_message(user_id=current_user.id, req=body)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
 
 @router.get("/session/{session_id}", response_model=OnboardingSessionRead)

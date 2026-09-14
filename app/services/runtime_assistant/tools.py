@@ -654,7 +654,16 @@ async def _test_tool(self: RuntimeAssistantTools, tool_id: str) -> dict[str, Any
     tool = await self.uow.tools.get(uuid.UUID(tool_id))
     if not tool:
         raise ValueError("Tool not found")
-    return {"tool_id": tool_id, "name": tool.name, "status": "tested", "result": "ok"}
+    # Loading a persisted definition is not an execution test.  A tool call
+    # can have side effects and must go through the normal permission and
+    # confirmation path, so report configuration readiness explicitly.
+    return {
+        "tool_id": tool_id,
+        "name": tool.name,
+        "status": "not_executed",
+        "result": None,
+        "message": "Tool definition is available; invoke it through an authorized workflow to test execution.",
+    }
 
 
 async def _generate_runtime_summary(self: RuntimeAssistantTools) -> dict[str, Any]:

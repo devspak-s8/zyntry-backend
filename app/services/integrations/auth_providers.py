@@ -90,7 +90,9 @@ class OAuth2AuthProvider:
         if code_verifier:
             payload["code_verifier"] = code_verifier
 
-        # Allow offline / mock exchange in testing or missing external server
+        # OAuth exchanges always go through the provider token endpoint. A
+        # network or provider error is surfaced to the caller; no synthetic
+        # token is ever returned.
         try:
             async with httpx.AsyncClient(timeout=15) as client:
                 headers = {"Accept": "application/json"}

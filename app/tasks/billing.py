@@ -46,8 +46,15 @@ def expire_billing_reservations() -> dict:
 
 
 @celery_app.task(name="app.tasks.billing.send_budget_notification")
-def send_budget_notification_task(user_id: str, event_type: str, limit: str) -> None:
-    logger.info("Budget notification queued", extra={"user_id": user_id, "event_type": event_type})
+def send_budget_notification_task(user_id: str, event_type: str, limit: str) -> dict[str, str]:
+    """Compatibility task for older producers.
+
+    Budget notifications are persisted by ``NotificationService`` before this
+    task is enqueued.  Do not report a delivery that this task does not
+    perform; return an explicit status for workers and observability instead.
+    """
+    logger.info("Budget notification already persisted", extra={"user_id": user_id, "event_type": event_type})
+    return {"status": "already_persisted", "user_id": user_id, "event_type": event_type, "limit": limit}
 
 
 @celery_app.task(name="app.tasks.billing.retry_failed_webhooks")

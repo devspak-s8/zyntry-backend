@@ -415,27 +415,41 @@ async def test_workflow(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> WorkflowTestResult:
+    """Validate a workflow definition without executing any provider/tool.
+
+    The endpoint is retained for the builder's preflight action.  It must not
+    claim that a workflow ran when it only inspected the JSON structure.
+    Actual execution is performed by ``POST /{workflow_id}/run`` and produces
+    a persisted execution record.
+    """
     definition = body.definition
     start = datetime.now(UTC)
     try:
         sequence = definition.get("sequence", [])
-        for step in sequence:
-            step_type = step.get("type")
-            if step_type == "model":
-                # Model validation is performed by the runtime planner; this
-                # endpoint only verifies that the step is structurally valid.
-                step.get("settings", {})
-            elif step_type == "knowledge":
-                pass
-            elif step_type == "memory":
-                pass
-            elif step_type == "tools":
-                pass
-            elif step_type == "validator":
-                pass
-        result = {"result": "Test completed successfully", "steps_processed": len(sequence)}
+        errors: list[str] = []
+        if not isinstance(sequence, list):
+            errors.append("'sequence' must be an array")
+            sequence = []
+        for index, step in enumerate(sequence):
+            if not isinstance(step, dict):
+                errors.append(f"Step {index} must be an object")
+                continue
+            if not step.get("type"):
+                errors.append(f"Step {index} is missing 'type' field")
+        valid = not errors
+        result = {
+            "mode": "structural_validation",
+            "validated": valid,
+            "steps_checked": len(sequence),
+            "execution_started": False,
+        }
         duration = int((datetime.now(UTC) - start).total_seconds() * 1000)
-        return WorkflowTestResult(success=True, output=result, error=None, duration_ms=duration)
+        return WorkflowTestResult(
+            success=valid,
+            output=result,
+            error="; ".join(errors) if errors else None,
+            duration_ms=duration,
+        )
     except Exception as exc:
         duration = int((datetime.now(UTC) - start).total_seconds() * 1000)
         return WorkflowTestResult(success=False, output=None, error=str(exc), duration_ms=duration)

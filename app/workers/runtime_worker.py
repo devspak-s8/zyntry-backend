@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-import random
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -181,19 +179,10 @@ class RuntimeWorker:
                 await self._uow.session.commit()
                 raise
         else:
-            await asyncio.sleep(random.uniform(0.1, 0.5))
-            log.status = "completed"
-            log.completed_at = datetime.now(UTC)
-            completed_at = datetime.now(UTC)
-            await self._uow.runtime_build_logs.update(
-                log,
-                status="completed",
-                completed_at=completed_at,
-                metadata_={
-                    **(log.metadata_ or {}),
-                    "duration_ms": int((completed_at - start_time).total_seconds() * 1000),
-                },
-            )
+            # Never mark an unknown build stage as completed.  A newly added
+            # stage must have a concrete implementation before it can be
+            # included in RUNTIME_STAGES.
+            raise RuntimeError(f"Runtime build stage is not implemented: {stage}")
         await self._uow.session.commit()
 
     async def _stage_collect_sources(self) -> None:

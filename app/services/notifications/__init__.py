@@ -155,16 +155,40 @@ class NotificationWorker:
         return result
 
     async def _send_webhook(self, event: NotificationEvent) -> dict[str, Any]:
-        return {"success": True, "channel": "webhook", "event": event.event_type}
+        return {
+            "success": False,
+            "status": "unsupported",
+            "channel": "webhook",
+            "event": event.event_type,
+            "error": "Webhook notification delivery is not configured for this workspace.",
+        }
 
     async def _send_realtime(self, event: NotificationEvent) -> dict[str, Any]:
-        return {"success": True, "channel": "realtime", "event": event.event_type}
+        return {
+            "success": False,
+            "status": "unsupported",
+            "channel": "realtime",
+            "event": event.event_type,
+            "error": "Use the authenticated realtime event publisher for user notifications.",
+        }
 
     async def _send_slack(self, event: NotificationEvent) -> dict[str, Any]:
-        return {"success": True, "channel": "slack", "event": event.event_type}
+        return {
+            "success": False,
+            "status": "unsupported",
+            "channel": "slack",
+            "event": event.event_type,
+            "error": "Slack notification delivery requires a configured Slack connection.",
+        }
 
     async def _send_discord(self, event: NotificationEvent) -> dict[str, Any]:
-        return {"success": True, "channel": "discord", "event": event.event_type}
+        return {
+            "success": False,
+            "status": "unsupported",
+            "channel": "discord",
+            "event": event.event_type,
+            "error": "Discord notification delivery is not configured for this workspace.",
+        }
 
 
 notification_worker = NotificationWorker()

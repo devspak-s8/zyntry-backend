@@ -139,7 +139,7 @@ class MongoDBConnector(BaseConnector):
         return self._status
 
     async def refresh(self) -> dict:
-        return {"success": True, "message": "Connection remains valid"}
+        return await self.test()
 
     def validate(self) -> dict:
         errors: list[str] = []

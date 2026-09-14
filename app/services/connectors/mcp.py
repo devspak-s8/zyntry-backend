@@ -73,7 +73,7 @@ class MCPConnector(BaseConnector):
         return self._status
 
     async def refresh(self) -> dict:
-        return {"success": True, "message": "MCP session remains valid"}
+        return await self.test()
 
     async def list_tools(self) -> list[dict[str, Any]]:
         return await self._list_tools()

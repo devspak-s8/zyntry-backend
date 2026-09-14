@@ -679,6 +679,8 @@ class ConfiguredOnboardingModelProvider:
     }
 
     def __init__(self, fallback: FastOnboardingModelProvider | None = None) -> None:
+        from app.core.config import settings
+
         self.fallback = fallback or FastOnboardingModelProvider()
 
     @staticmethod
@@ -812,10 +814,16 @@ class ConfiguredOnboardingModelProvider:
         current_config: dict[str, Any],
         history: list[dict[str, Any]],
     ) -> OnboardingModelResponse:
+        from app.core.config import settings
+
         provider, model = self._provider()
         if provider is None:
-            return await self.fallback.generate_step_response(
-                user_message, current_state, current_config, history
+            if bool(getattr(settings, "ONBOARDING_ALLOW_FALLBACK", False)):
+                return await self.fallback.generate_step_response(
+                    user_message, current_state, current_config, history
+                )
+            raise RuntimeError(
+                "The configured onboarding model is unavailable. Configure GOOGLE_API_KEY and try again."
             )
 
         system = """You are Zyntry's conversational runtime architect.
@@ -864,10 +872,12 @@ stores a draft; project attachment and connector authorization happen later.
             )
             return self._parse_response(content)
         except Exception:
-            logger.exception("Onboarding conversational model failed; using fallback provider")
-            return await self.fallback.generate_step_response(
-                user_message, current_state, current_config, history
-            )
+            logger.exception("Onboarding conversational model failed")
+            if bool(getattr(settings, "ONBOARDING_ALLOW_FALLBACK", False)):
+                return await self.fallback.generate_step_response(
+                    user_message, current_state, current_config, history
+                )
+            raise
 
     def _extract_runtime_name(self, message: str) -> str | None:
         """Keep the engine's name extraction compatible with the fallback."""
