@@ -13,6 +13,15 @@ class ObservabilityService:
     def __init__(self, uow: UnitOfWork) -> None:
         self.uow = uow
 
+    def _runtime_filter(self, runtime_id: uuid.UUID):
+        """Scope usage events by the runtime id recorded in event metadata.
+
+        ``UsageEvent.project_id`` identifies the owning project, not the runtime.
+        The old aggregate queries compared that project id with a runtime id and
+        consequently returned empty/zero telemetry for real runtime requests.
+        """
+        return self.uow.analytics.model.metadata_["runtime_id"].astext == str(runtime_id)
+
     async def track_document(self, runtime_id: str, project_id: str) -> None:
         rid = uuid.UUID(runtime_id)
         pid = uuid.UUID(project_id)
@@ -180,7 +189,7 @@ class ObservabilityService:
         since = datetime.now(UTC) - timedelta(hours=hours)
         result = await self.uow.session.execute(
             select(func.sum(self.uow.analytics.model.quantity))
-            .where(self.uow.analytics.model.project_id == rid)
+            .where(self._runtime_filter(rid))
             .where(self.uow.analytics.model.metric == "documents")
             .where(self.uow.analytics.model.created_at >= since)
         )
@@ -192,7 +201,7 @@ class ObservabilityService:
         since = datetime.now(UTC) - timedelta(hours=hours)
         result = await self.uow.session.execute(
             select(func.sum(self.uow.analytics.model.quantity))
-            .where(self.uow.analytics.model.project_id == rid)
+            .where(self._runtime_filter(rid))
             .where(self.uow.analytics.model.metric == "chunks")
             .where(self.uow.analytics.model.created_at >= since)
         )
@@ -204,7 +213,7 @@ class ObservabilityService:
         since = datetime.now(UTC) - timedelta(hours=hours)
         result = await self.uow.session.execute(
             select(func.sum(self.uow.analytics.model.quantity))
-            .where(self.uow.analytics.model.project_id == rid)
+            .where(self._runtime_filter(rid))
             .where(self.uow.analytics.model.metric == "embeddings")
             .where(self.uow.analytics.model.created_at >= since)
         )
@@ -216,7 +225,7 @@ class ObservabilityService:
         since = datetime.now(UTC) - timedelta(hours=hours)
         result = await self.uow.session.execute(
             select(func.sum(self.uow.analytics.model.quantity))
-            .where(self.uow.analytics.model.project_id == rid)
+            .where(self._runtime_filter(rid))
             .where(self.uow.analytics.model.metric == "index_size")
             .where(self.uow.analytics.model.created_at >= since)
         )
@@ -239,7 +248,7 @@ class ObservabilityService:
                     )
                 ).label("avg_latency_ms"),
             )
-            .where(self.uow.analytics.model.project_id == rid)
+            .where(self._runtime_filter(rid))
             .where(self.uow.analytics.model.metric == "provider_usage")
             .where(self.uow.analytics.model.created_at >= since)
             .group_by(
@@ -274,7 +283,7 @@ class ObservabilityService:
                 ).label("output_tokens"),
                 func.sum(self.uow.analytics.model.quantity).label("total_tokens"),
             )
-            .where(self.uow.analytics.model.project_id == rid)
+            .where(self._runtime_filter(rid))
             .where(self.uow.analytics.model.metric == "tokens")
             .where(self.uow.analytics.model.created_at >= since)
         )
@@ -297,7 +306,7 @@ class ObservabilityService:
                 func.max(self.uow.analytics.model.quantity).label("max_latency_ms"),
                 func.count(self.uow.analytics.model.id).label("count"),
             )
-            .where(self.uow.analytics.model.project_id == rid)
+            .where(self._runtime_filter(rid))
             .where(self.uow.analytics.model.metric.like("latency_%"))
             .where(self.uow.analytics.model.created_at >= since)
             .group_by(self.uow.analytics.model.metric)
@@ -323,7 +332,7 @@ class ObservabilityService:
                 self.uow.analytics.model.metadata_["category"].astext.label("category"),
                 func.sum(self.uow.analytics.model.quantity).label("count"),
             )
-            .where(self.uow.analytics.model.project_id == rid)
+            .where(self._runtime_filter(rid))
             .where(self.uow.analytics.model.metric == "error")
             .where(self.uow.analytics.model.created_at >= since)
             .group_by(
@@ -351,7 +360,7 @@ class ObservabilityService:
                     )
                 ).label("misses"),
             )
-            .where(self.uow.analytics.model.project_id == rid)
+            .where(self._runtime_filter(rid))
             .where(
                 self.uow.analytics.model.metric.in_(["cache_hit", "cache_miss"])
             )
@@ -372,7 +381,7 @@ class ObservabilityService:
         since = datetime.now(UTC) - timedelta(hours=hours)
         result = await self.uow.session.execute(
             select(func.avg(self.uow.analytics.model.quantity))
-            .where(self.uow.analytics.model.project_id == rid)
+            .where(self._runtime_filter(rid))
             .where(self.uow.analytics.model.metric == "retrieval_quality")
             .where(self.uow.analytics.model.created_at >= since)
         )

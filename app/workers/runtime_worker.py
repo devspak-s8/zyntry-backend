@@ -418,15 +418,17 @@ class RuntimeWorker:
             "sk_live" if self._runtime.environment == "production" else "sk_test"
         )
         hashed_key = hash_token(raw_key)
+        runtime_name = (self._runtime.name or "Runtime").strip()
+        environment = self._runtime.environment or "development"
         api_key = await self._uow.api_keys.create(
-            name=f"Runtime API Key - {self._runtime.project_id}",
+            name=f"{runtime_name} · {environment.capitalize()} API Key",
             hashed_key=hashed_key,
             prefix=raw_key[:12],
             user_id=self._runtime.user_id,
             organization_id=self._runtime.organization_id,
             project_id=self._runtime.project_id,
             runtime_id=self._runtime.id,
-            environment=self._runtime.environment or "development",
+            environment=environment,
             # Runtime credentials are read-only by default.  A project owner
             # must explicitly enable write access in the runtime configuration;
             # individual mutating actions still require confirmation at the
