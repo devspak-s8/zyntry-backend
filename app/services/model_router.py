@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -49,6 +50,15 @@ class ModelCandidate:
 
 
 class ModelRouter:
+    # Live provider catalogs include embeddings, moderation, guard, reranking,
+    # speech, and classifier models alongside normal chat models. They must not
+    # be eligible for a user-facing text generation request.
+    _NON_GENERATION_MODEL = re.compile(
+        r"(?:^|[/_.:-])(?:embedding|embed|rerank|reranker|moderation|moderator|"
+        r"prompt[-_]?guard|safe[-_]?guard|classifier|classification|detector|"
+        r"whisper|transcri(?:be|ption)|text[-_]?to[-_]?speech|tts)(?:$|[/_.:-])",
+        re.IGNORECASE,
+    )
     PROVIDER_PRIORITY: dict[RoutingGoal, list[str]] = {
         RoutingGoal.CODING: ["anthropic", "openai", "deepseek", "groq"],
         RoutingGoal.FASTEST: ["groq", "deepseek", "openrouter", "openai"],
@@ -166,6 +176,10 @@ class ModelRouter:
                 self.record_latency(candidate.provider_name, candidate.model_info.id, latency)
                 await self.failover.succeeded_async(candidate, latency)
                 self.last_invoked_candidate = candidate
+                # A lower-ranked candidate may answer after earlier candidates
+                # fail. Keep telemetry tied to the model that actually
+                # produced the response, not the first candidate considered.
+                self.last_routing_reason = self._routing_reason(preference, candidate)
                 text, usage = TokenEngine.normalize_usage(
                     result,
                     estimated_input_tokens=TokenEngine.estimate_messages(messages),
@@ -332,6 +346,8 @@ class ModelRouter:
                 if not models:
                     models = [item.as_model_info() for item in list_registered_models(provider_name)]
                 for model in models:
+                    if not self._is_generation_model(model):
+                        continue
                     if preference.requires_vision and not model.supports_vision:
                         continue
                     if preference.requires_tools and not model.supports_tools:
@@ -347,6 +363,15 @@ class ModelRouter:
                 await self.failover.health.record_failure_async(provider_name, str(exc))
                 continue
         return candidates
+
+    @classmethod
+    def _is_generation_model(cls, model: ModelInfo) -> bool:
+        """Return whether a discovered model is safe for normal text output."""
+
+        if model.supports_embeddings or model.max_output_tokens <= 0:
+            return False
+        identifier = f"{model.provider}/{model.id}"
+        return cls._NON_GENERATION_MODEL.search(identifier) is None
 
     def _score_model(self, model: ModelInfo, preference: RoutingPreference, provider_name: str) -> float:
         score = 50.0
