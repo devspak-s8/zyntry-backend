@@ -679,8 +679,6 @@ class ConfiguredOnboardingModelProvider:
     }
 
     def __init__(self, fallback: FastOnboardingModelProvider | None = None) -> None:
-        from app.core.config import settings
-
         self.fallback = fallback or FastOnboardingModelProvider()
 
     @staticmethod
