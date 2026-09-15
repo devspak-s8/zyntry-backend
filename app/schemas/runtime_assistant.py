@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -158,6 +158,7 @@ class AssistantChatRequest(BaseModel):
     runtime_id: str
     stream: bool = False
     conversation_id: str | None = None
+    client_request_id: str | None = Field(default=None, min_length=8, max_length=128)
 
 
 class AssistantChatResponse(BaseModel):
@@ -179,3 +180,9 @@ class AssistantActionProposalRequest(BaseModel):
 class AssistantActionConfirmationRequest(BaseModel):
     runtime_id: str
     confirm: bool
+
+
+class AssistantMessageFeedbackRequest(BaseModel):
+    runtime_id: str
+    rating: Literal["helpful", "not_helpful"]
+    reason: str | None = Field(default=None, max_length=500)

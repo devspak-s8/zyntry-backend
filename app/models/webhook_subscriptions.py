@@ -14,9 +14,10 @@ class WebhookSubscription(Base, UUIDMixin, TimestampMixin):
     __tablename__ = "webhook_subscriptions"
 
     project_id: Mapped[uuid.UUID] = mapped_column(nullable=False)
+    environment: Mapped[str] = mapped_column(String(32), default="development", nullable=False)
     url: Mapped[str] = mapped_column(String(2048), nullable=False)
     events: Mapped[list[str]] = mapped_column(JSONB, default=list)
-    secret: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    secret: Mapped[str | None] = mapped_column(String(512), nullable=True)
     retry_count: Mapped[int] = mapped_column(Integer, default=3)
     timeout_seconds: Mapped[int] = mapped_column(Integer, default=10)
     active: Mapped[bool] = mapped_column(Boolean, default=True)

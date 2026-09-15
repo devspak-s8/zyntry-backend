@@ -7,6 +7,7 @@ from typing import Any
 from uuid import UUID
 
 from app.core.config import settings
+from app.core.errors import OAuthAuthorizationError
 from app.models.integrations import IntegrationConnection
 from app.models.oauth import OAuthState
 from app.repositories import UnitOfWork
@@ -35,23 +36,37 @@ class ConnectionService:
     ) -> ConnectionAuthorizeResponse:
         defn = integration_registry.get(integration_slug)
         if defn is None:
-            raise ValueError(f"Integration '{integration_slug}' is not supported")
+            raise OAuthAuthorizationError(
+                "This integration is not supported yet.",
+                code="integration_not_supported",
+                status_code=404,
+            )
 
         # Only integrations explicitly configured for OAuth may enter this
         # flow. File-upload and other managed capabilities (for example
         # ``document_storage``) must be handled by their own endpoints.
         if "oauth2" not in defn.auth_methods:
-            raise ValueError(
-                f"Integration '{integration_slug}' does not support OAuth authorization"
+            raise OAuthAuthorizationError(
+                "This integration uses a direct connection instead of OAuth.",
+                code="oauth_not_supported",
+                status_code=422,
             )
 
         if data.connection_mode not in defn.supported_connection_modes:
-            raise ValueError(
-                f"Connection mode '{data.connection_mode}' is not supported for '{integration_slug}'"
+            raise OAuthAuthorizationError(
+                "The selected connection mode is not available for this integration.",
+                code="connection_mode_not_supported",
+                status_code=422,
             )
 
         # Mode B check: end_user_id is recommended for end_user_oauth
-        runtime_uuid = UUID(data.runtime_id) if data.runtime_id else None
+        try:
+            runtime_uuid = UUID(data.runtime_id) if data.runtime_id else None
+        except ValueError:
+            raise OAuthAuthorizationError(
+                "Select a valid runtime and try again.",
+                code="invalid_runtime",
+            ) from None
 
         # Verify runtime has integration capability enabled if runtime_id is provided
         if runtime_uuid:
@@ -59,8 +74,10 @@ class ConnectionService:
                 runtime_uuid, integration_slug
             )
             if runtime_int is None or not runtime_int.is_enabled:
-                raise ValueError(
-                    f"Integration capability '{integration_slug}' is not enabled on runtime {data.runtime_id}"
+                raise OAuthAuthorizationError(
+                    "Add this integration to the runtime before authorizing it.",
+                    code="integration_not_enabled",
+                    status_code=409,
                 )
 
         # Check existing active connection
@@ -93,11 +110,22 @@ class ConnectionService:
         )
 
         auth_provider = default_github_provider if integration_slug == "github" else default_oauth_provider
-        flow = auth_provider.generate_auth_flow(
-            integration=defn,
-            redirect_uri=redirect_uri,
-            scope_override=data.scopes,
-        )
+        try:
+            flow = auth_provider.generate_auth_flow(
+                integration=defn,
+                redirect_uri=redirect_uri,
+                scope_override=data.scopes,
+            )
+        except ValueError as exc:
+            logger.warning(
+                "OAuth authorization configuration unavailable",
+                extra={"integration_slug": integration_slug},
+            )
+            raise OAuthAuthorizationError(
+                "OAuth is not configured for this integration yet. Ask a workspace administrator to verify its provider credentials and callback URL.",
+                code="oauth_not_configured",
+                status_code=503,
+            ) from exc
 
         # Persist state with cryptographic expiration
         expires_at = datetime.now(UTC) + timedelta(minutes=10)
@@ -225,6 +253,9 @@ class ConnectionService:
                     connection_status="connected",
                 )
 
+        # OAuth state is single-use. Consume it after a successful exchange so
+        # a copied callback URL cannot mint another connection.
+        await self.uow.session.delete(state_obj)
         await self.uow.commit()
         return connection
 

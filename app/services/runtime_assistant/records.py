@@ -84,6 +84,87 @@ class RuntimeAssistantRecords:
         await self.session.flush()
         return message
 
+    async def branch_conversation(
+        self,
+        *,
+        conversation_id: uuid.UUID,
+        runtime_id: uuid.UUID,
+        user_id: uuid.UUID,
+        from_message_id: uuid.UUID,
+    ) -> RuntimeAssistantConversation | None:
+        """Create an editable conversation branch up to a selected message.
+
+        The original transcript remains immutable. The branch receives a
+        redacted copy of the selected context, while pending action metadata is
+        intentionally removed so editing a prompt can never replay a write.
+        """
+        conversation_result = await self.session.execute(
+            select(RuntimeAssistantConversation).where(
+                RuntimeAssistantConversation.id == conversation_id,
+                RuntimeAssistantConversation.runtime_id == runtime_id,
+                RuntimeAssistantConversation.user_id == user_id,
+                RuntimeAssistantConversation.status == "active",
+            )
+        )
+        source = conversation_result.scalar_one_or_none()
+        if source is None:
+            return None
+
+        messages_result = await self.session.execute(
+            select(RuntimeAssistantMessage)
+            .where(RuntimeAssistantMessage.conversation_id == source.id)
+            .order_by(RuntimeAssistantMessage.created_at.asc())
+        )
+        source_messages = list(messages_result.scalars().all())
+        selected_index = next(
+            (index for index, item in enumerate(source_messages) if item.id == from_message_id),
+            None,
+        )
+        if selected_index is None:
+            return None
+
+        branch = RuntimeAssistantConversation(
+            organization_id=source.organization_id,
+            project_id=source.project_id,
+            runtime_id=source.runtime_id,
+            user_id=source.user_id,
+            environment=source.environment,
+            title=((source.title or "Runtime investigation") + " (edited)")[:255],
+        )
+        self.session.add(branch)
+        await self.session.flush()
+
+        copied_messages: list[RuntimeAssistantMessage] = []
+        for item in source_messages[: selected_index + 1]:
+            metadata = dict(item.metadata_ or {})
+            # A branch is a new execution context; never carry an executable
+            # approval card into it.
+            metadata.pop("action_proposal", None)
+            metadata.pop("message_id", None)
+            metadata.pop("client_request_id", None)
+            metadata.pop("user_feedback", None)
+            metadata.pop("user_feedback_reason", None)
+            metadata["approval_required"] = False
+            metadata["branched_from_message_id"] = str(item.id)
+            copied = RuntimeAssistantMessage(
+                conversation_id=branch.id,
+                role=item.role,
+                content=redact_sensitive(item.content),
+                mode=item.mode,
+                confidence=item.confidence,
+                metadata_=redact_sensitive(metadata),
+            )
+            self.session.add(copied)
+            copied_messages.append(copied)
+        await self.session.flush()
+        for copied in copied_messages:
+            copied.metadata_ = redact_sensitive({
+                **(copied.metadata_ or {}),
+                "message_id": str(copied.id),
+            })
+        await self.session.flush()
+        return branch
+
     async def add_evidence(
         self,
         conversation: RuntimeAssistantConversation,
@@ -206,6 +287,30 @@ class RuntimeAssistantRecords:
             message.metadata_ = metadata
         return messages
 
+    async def find_idempotent_response(
+        self, runtime_id: uuid.UUID, user_id: uuid.UUID, client_request_id: str
+    ) -> RuntimeAssistantMessage | None:
+        """Find a previously completed assistant turn for a retried request."""
+        result = await self.session.execute(
+            select(RuntimeAssistantMessage)
+            .join(
+                RuntimeAssistantConversation,
+                RuntimeAssistantConversation.id == RuntimeAssistantMessage.conversation_id,
+            )
+            .where(
+                RuntimeAssistantMessage.role == "assistant",
+                RuntimeAssistantConversation.runtime_id == runtime_id,
+                RuntimeAssistantConversation.user_id == user_id,
+                RuntimeAssistantConversation.status == "active",
+            )
+            .order_by(RuntimeAssistantMessage.created_at.desc())
+            .limit(100)
+        )
+        for message in result.scalars().all():
+            if str((message.metadata_ or {}).get("client_request_id") or "") == client_request_id:
+                return message
+        return None
+
     async def list_conversations(
         self, runtime_id: uuid.UUID, user_id: uuid.UUID, limit: int = 20
     ) -> list[RuntimeAssistantConversation]:
@@ -235,6 +340,59 @@ class RuntimeAssistantRecords:
         if conversation is None:
             return False
         await self.session.delete(conversation)
+        await self.session.flush()
+        return True
+
+    async def set_message_feedback(
+        self,
+        *,
+        message_id: uuid.UUID,
+        runtime_id: uuid.UUID,
+        user_id: uuid.UUID,
+        rating: str,
+        reason: str | None = None,
+    ) -> bool:
+        result = await self.session.execute(
+            select(RuntimeAssistantMessage)
+            .join(
+                RuntimeAssistantConversation,
+                RuntimeAssistantConversation.id == RuntimeAssistantMessage.conversation_id,
+            )
+            .where(
+                RuntimeAssistantMessage.id == message_id,
+                RuntimeAssistantMessage.role == "assistant",
+                RuntimeAssistantConversation.runtime_id == runtime_id,
+                RuntimeAssistantConversation.user_id == user_id,
+                RuntimeAssistantConversation.status == "active",
+            )
+        )
+        message = result.scalar_one_or_none()
+        if message is None:
+            return False
+        feedback = {"user_feedback": rating}
+        if reason:
+            feedback["user_feedback_reason"] = reason
+        message.metadata_ = redact_sensitive({**(message.metadata_ or {}), **feedback})
+        await self.session.flush()
+        return True
+
+    async def delete_message(
+        self, *, message_id: uuid.UUID, runtime_id: uuid.UUID, user_id: uuid.UUID
+    ) -> bool:
+        result = await self.session.execute(
+            select(RuntimeAssistantMessage)
+            .join(RuntimeAssistantConversation, RuntimeAssistantConversation.id == RuntimeAssistantMessage.conversation_id)
+            .where(
+                RuntimeAssistantMessage.id == message_id,
+                RuntimeAssistantMessage.role == "user",
+                RuntimeAssistantConversation.runtime_id == runtime_id,
+                RuntimeAssistantConversation.user_id == user_id,
+            )
+        )
+        message = result.scalar_one_or_none()
+        if message is None:
+            return False
+        await self.session.delete(message)
         await self.session.flush()
         return True
 

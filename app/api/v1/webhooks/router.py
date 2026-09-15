@@ -44,6 +44,7 @@ async def list_webhooks(
         WebhookSubscriptionRead(
             id=s.id,
             project_id=s.project_id,
+            environment=getattr(s, "environment", "development"),
             url=s.url,
             events=s.events,
             secret=_safe_secret(s.secret),
@@ -66,15 +67,21 @@ async def create_webhook(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid project id") from None
     await require_project_membership(project_id, current_user, db)
+    from app.models.projects import Project
+    project = await db.get(Project, pid)
+    project_environment = str((project.settings or {}).get("environment", "development")) if project else "development"
+    if body.environment != project_environment:
+        raise HTTPException(status_code=409, detail="Webhook environment must match the selected project environment")
     try:
         validate_outbound_url(body.url)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     service = WebhookService(db)
-    sub = await service.create_subscription(pid, body.url, body.events, body.secret)
+    sub = await service.create_subscription(pid, body.url, body.events, body.secret, body.environment)
     return WebhookSubscriptionRead(
         id=sub.id,
         project_id=sub.project_id,
+        environment=getattr(sub, "environment", "development"),
         url=sub.url,
         events=sub.events,
         secret=_safe_secret(sub.secret),

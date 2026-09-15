@@ -20,6 +20,7 @@ from app.schemas.runtime_assistant import (
     AssistantActionProposalRequest,
     AssistantChatRequest,
     AssistantChatResponse,
+    AssistantMessageFeedbackRequest,
 )
 from app.services.runtime_assistant.commands import RuntimeAssistantCommandService
 from app.services.runtime_assistant.records import RuntimeAssistantRecords
@@ -66,6 +67,7 @@ async def chat_with_assistant(
         message=body.message,
         stream=False,
         conversation_id=body.conversation_id,
+        client_request_id=body.client_request_id,
     )
     if not isinstance(response, ServiceAssistantResponse):
         raise HTTPException(status_code=500, detail="Assistant returned an invalid response")
@@ -114,6 +116,7 @@ async def get_chat_history(
             {
                 "role": msg.role,
                 "content": msg.content,
+                "id": str(msg.id),
                 "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
                 "metadata": msg.metadata,
             }
@@ -145,6 +148,7 @@ async def stream_assistant_chat(
                 message=body.message,
                 stream=False,
                 conversation_id=body.conversation_id,
+                client_request_id=body.client_request_id,
             )
             if not isinstance(response, ServiceAssistantResponse):
                 raise RuntimeError("Assistant returned an invalid response")
@@ -221,6 +225,78 @@ async def clear_conversation(
         raise HTTPException(status_code=404, detail="Conversation not found")
     await session.commit()
     return {"status": "cleared", "conversation_id": conversation_id}
+
+
+@router.post("/{runtime_id}/conversations/{conversation_id}/branch")
+async def branch_conversation(
+    runtime_id: str,
+    conversation_id: str,
+    message_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, str]:
+    """Start a new transcript branch from a selected message for edit/resend."""
+    await _authorize_runtime(runtime_id, current_user, session)
+    try:
+        branch = await RuntimeAssistantRecords(session).branch_conversation(
+            conversation_id=uuid.UUID(conversation_id),
+            runtime_id=uuid.UUID(runtime_id),
+            user_id=current_user.id,
+            from_message_id=uuid.UUID(message_id),
+        )
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid conversation or message id") from None
+    if branch is None:
+        raise HTTPException(status_code=404, detail="Conversation message not found")
+    await session.commit()
+    return {"conversation_id": str(branch.id), "status": "branched"}
+
+
+@router.post("/messages/{message_id}/feedback")
+async def record_message_feedback(
+    message_id: str,
+    body: AssistantMessageFeedbackRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, str]:
+    await _authorize_runtime(body.runtime_id, current_user, session)
+    try:
+        parsed_message = uuid.UUID(message_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid message id") from None
+    updated = await RuntimeAssistantRecords(session).set_message_feedback(
+        message_id=parsed_message,
+        runtime_id=uuid.UUID(body.runtime_id),
+        user_id=current_user.id,
+        rating=body.rating,
+        reason=body.reason,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Assistant message not found")
+    await session.commit()
+    return {"status": "recorded", "rating": body.rating}
+
+
+@router.delete("/messages/{message_id}")
+async def delete_assistant_message(
+    message_id: str,
+    runtime_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, str]:
+    await _authorize_runtime(runtime_id, current_user, session)
+    try:
+        parsed_message = uuid.UUID(message_id)
+        parsed_runtime = uuid.UUID(runtime_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid message or runtime id") from None
+    deleted = await RuntimeAssistantRecords(session).delete_message(
+        message_id=parsed_message, runtime_id=parsed_runtime, user_id=current_user.id
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="User message not found")
+    await session.commit()
+    return {"status": "deleted", "message_id": message_id}
 
 
 @router.post("/actions/propose")

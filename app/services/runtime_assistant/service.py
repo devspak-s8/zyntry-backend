@@ -54,6 +54,7 @@ class RuntimeAssistantService:
         message: str,
         stream: bool = False,
         conversation_id: str | None = None,
+        client_request_id: str | None = None,
     ) -> AssistantResponse | AsyncGenerator[str]:
         started_at = time.perf_counter()
         assistant_request_id = str(uuid.uuid4())
@@ -66,6 +67,15 @@ class RuntimeAssistantService:
         )
         context = await context_builder.build()
         records = RuntimeAssistantRecords(self.session)
+        if client_request_id:
+            existing = await records.find_idempotent_response(
+                uuid.UUID(runtime_id), uuid.UUID(user_id), client_request_id
+            )
+            if existing is not None:
+                return AssistantResponse(
+                    message=existing.content,
+                    metadata=dict(existing.metadata_ or {}),
+                )
         conversation = await records.resolve_conversation(
             organization_id=uuid.UUID(context.organization_id),
             project_id=uuid.UUID(context.project_id),
@@ -84,7 +94,7 @@ class RuntimeAssistantService:
         )
         await memory.load()
 
-        await records.add_message(
+        user_record = await records.add_message(
             conversation, role="user", content=message, mode=_infer_mode(message)
         )
 
@@ -224,6 +234,7 @@ class RuntimeAssistantService:
                 "approval_required": action_proposal is not None,
                 "action_proposal": action_proposal,
                 "conversation_id": str(conversation.id),
+                "user_message_id": str(user_record.id),
                 "decision": decision,
                 "plan_reason": plan.reasoning,
                 "configuration_error": plan.configuration_error,
@@ -297,6 +308,17 @@ class RuntimeAssistantService:
             confidence=response.metadata["confidence"],
             metadata=response.metadata,
         )
+        if client_request_id:
+            response.metadata["client_request_id"] = client_request_id
+            assistant_record.metadata_ = {
+                **(assistant_record.metadata_ or {}),
+                "client_request_id": client_request_id,
+            }
+        response.metadata["message_id"] = str(assistant_record.id)
+        assistant_record.metadata_ = {
+            **(assistant_record.metadata_ or {}),
+            "message_id": str(assistant_record.id),
+        }
         evidence_records = await records.add_evidence(
             conversation, assistant_record, evidence
         )

@@ -29,6 +29,7 @@ class ApiKey(Base, UUIDMixin, TimestampMixin):
         ForeignKey("runtimes.id", ondelete="CASCADE"), nullable=True, index=True
     )
     environment: Mapped[str] = mapped_column(String(32), default="development", nullable=False)
+    allowed_origins: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     scopes: Mapped[list[str]] = mapped_column(JSON, default=lambda: ["read"], nullable=False)

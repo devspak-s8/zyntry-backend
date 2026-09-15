@@ -12,6 +12,7 @@ from app.models.webhook_subscriptions import WebhookSubscription
 from app.repositories import UnitOfWork
 from app.services.base import BaseService
 from app.services.security.outbound import validate_outbound_url
+from app.services.security.secrets import default_secret_manager
 
 
 class WebhookService(BaseService):
@@ -20,13 +21,14 @@ class WebhookService(BaseService):
         self.session = session
         self.uow = UnitOfWork(session)
 
-    async def create_subscription(self, project_id: uuid.UUID, url: str, events: list[str], secret: str | None = None) -> WebhookSubscription:
+    async def create_subscription(self, project_id: uuid.UUID, url: str, events: list[str], secret: str | None = None, environment: str = "development") -> WebhookSubscription:
         validate_outbound_url(url)
         sub = await self.uow.webhook_subscriptions.create(
             project_id=project_id,
+            environment=environment,
             url=url,
             events=events,
-            secret=secret,
+            secret=default_secret_manager.encrypt(secret) if secret else None,
         )
         await self.uow.commit()
         return sub

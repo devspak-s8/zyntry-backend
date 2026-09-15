@@ -36,6 +36,7 @@ class ApiKeyService:
             organization_id=organization_id,
             environment=data.environment or "development",
             scopes=data.scopes or ["read", "write"],
+            allowed_origins=data.allowed_origins or [],
             usage_count=0,
             usage_stats={},
         )
@@ -47,7 +48,9 @@ class ApiKeyService:
                 name=key.name,
                 prefix=key.prefix,
                 runtime_id=key.runtime_id,
+                project_id=key.project_id,
                 environment=key.environment,
+                allowed_origins=key.allowed_origins or [],
                 scopes=key.scopes,
                 revoked=key.revoked,
                 expires_at=key.expires_at,
@@ -88,6 +91,7 @@ class ApiKeyService:
             organization_id=old_key.organization_id,
             environment=getattr(old_key, "environment", "development"),
             scopes=old_key.scopes,
+            allowed_origins=getattr(old_key, "allowed_origins", []) or [],
             usage_count=0,
             usage_stats={},
         )
@@ -101,7 +105,9 @@ class ApiKeyService:
                 name=new_key.name,
                 prefix=new_key.prefix,
                 runtime_id=new_key.runtime_id,
+                project_id=new_key.project_id,
                 environment=new_key.environment,
+                allowed_origins=new_key.allowed_origins or [],
                 scopes=new_key.scopes,
                 revoked=new_key.revoked,
                 expires_at=new_key.expires_at,
@@ -135,7 +141,9 @@ class ApiKeyService:
             "name": key.name,
             "prefix": key.prefix,
             "runtime_id": getattr(key, "runtime_id", None),
+            "project_id": getattr(key, "project_id", None),
             "environment": getattr(key, "environment", "development"),
+            "allowed_origins": getattr(key, "allowed_origins", []) or [],
             "scopes": key.scopes,
             "revoked": key.revoked,
             "expires_at": key.expires_at,
@@ -151,6 +159,7 @@ class ApiKeyService:
         project_id: str | uuid.UUID | None = None,
         user_id: str | uuid.UUID | None = None,
         runtime_id: str | uuid.UUID | None = None,
+        environment: str | None = None,
     ) -> list[dict[str, Any]]:
         stmt = select(ApiKey)
         if project_id is not None:
@@ -162,6 +171,8 @@ class ApiKeyService:
         if runtime_id is not None:
             rid = uuid.UUID(str(runtime_id))
             stmt = stmt.where(ApiKey.runtime_id == rid)
+        if environment is not None:
+            stmt = stmt.where(ApiKey.environment == environment)
 
         result = await self.session.execute(stmt)
         keys = result.scalars().all()
@@ -172,7 +183,9 @@ class ApiKeyService:
                 "name": k.name,
                 "prefix": k.prefix,
                 "runtime_id": getattr(k, "runtime_id", None),
+                "project_id": getattr(k, "project_id", None),
                 "environment": getattr(k, "environment", "development"),
+                "allowed_origins": getattr(k, "allowed_origins", []) or [],
                 "scopes": k.scopes,
                 "revoked": k.revoked,
                 "expires_at": k.expires_at,
@@ -229,7 +242,9 @@ class ApiKeyService:
             "name": key.name,
             "prefix": key.prefix,
             "runtime_id": getattr(key, "runtime_id", None),
+            "project_id": getattr(key, "project_id", None),
             "environment": getattr(key, "environment", "development"),
+            "allowed_origins": getattr(key, "allowed_origins", []) or [],
             "scopes": key.scopes,
             "revoked": key.revoked,
             "expires_at": key.expires_at,

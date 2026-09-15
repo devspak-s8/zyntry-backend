@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -11,11 +12,13 @@ class WebhookSubscriptionCreate(ORMModel):
     url: str = Field(min_length=1, max_length=2048)
     events: list[str] = Field(default_factory=list)
     secret: str | None = Field(default=None, max_length=255)
+    environment: Literal["development", "staging", "production"] = "development"
 
 
 class WebhookSubscriptionRead(ORMModel):
     id: uuid.UUID
     project_id: uuid.UUID
+    environment: str = "development"
     url: str
     events: list[str]
     secret: str | None

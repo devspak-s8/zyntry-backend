@@ -15,6 +15,7 @@ from app.models.webhook_deliveries import WebhookDelivery
 from app.models.webhook_subscriptions import WebhookSubscription
 from app.repositories.processed_webhook_events import ProcessedWebhookEventRepository
 from app.services.security.outbound import validate_outbound_url
+from app.services.security.secrets import default_secret_manager
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +73,13 @@ def deliver_webhook_task(self, subscription_id: str, event_type: str, data: dict
             }
 
             if sub.secret:
-                signature = hmac.new(sub.secret.encode(), json.dumps(payload).encode(), hashlib.sha256).hexdigest()
+                try:
+                    signing_secret = default_secret_manager.decrypt(sub.secret)
+                except Exception:
+                    # Keep legacy plaintext subscriptions deliverable while
+                    # new subscriptions use the encrypted envelope.
+                    signing_secret = sub.secret
+                signature = hmac.new(signing_secret.encode(), json.dumps(payload).encode(), hashlib.sha256).hexdigest()
                 payload["signature"] = signature
 
             response_status = None

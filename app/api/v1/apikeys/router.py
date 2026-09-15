@@ -35,6 +35,7 @@ async def list_api_keys(
     current_user: Annotated[User, Depends(get_current_user)],
     project_id: Annotated[str | None, Query()] = None,
     runtime_id: Annotated[str | None, Query()] = None,
+    environment: Annotated[str | None, Query()] = None,
     db: AsyncSession = Depends(get_session),
 ) -> list[ApiKeyRead]:
     if project_id is not None:
@@ -47,6 +48,7 @@ async def list_api_keys(
         project_id=project_id,
         user_id=current_user.id,
         runtime_id=runtime_id,
+        environment=environment,
     )
     return [ApiKeyRead(**k) for k in keys]
 
@@ -71,7 +73,9 @@ async def get_api_key(
         name=key.name,
         prefix=key.prefix,
         runtime_id=getattr(key, "runtime_id", None),
+        project_id=getattr(key, "project_id", None),
         environment=getattr(key, "environment", "development"),
+        allowed_origins=getattr(key, "allowed_origins", []) or [],
         scopes=key.scopes,
         revoked=key.revoked,
         expires_at=key.expires_at,
@@ -219,7 +223,9 @@ async def expire_api_key(
         name=key.name,
         prefix=key.prefix,
         runtime_id=getattr(key, "runtime_id", None),
+        project_id=getattr(key, "project_id", None),
         environment=getattr(key, "environment", "development"),
+        allowed_origins=getattr(key, "allowed_origins", []) or [],
         scopes=key.scopes,
         revoked=key.revoked,
         expires_at=key.expires_at,

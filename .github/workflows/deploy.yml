@@ -124,7 +124,7 @@ jobs:
           # imported into Alembic's target metadata.  Verify the actual
           # migration result and head instead of treating that known metadata
           # drift as a failed deployment.
-          alembic current | grep -q 'e1f2a3b4c5d6'
+          alembic current | grep -q '(head)'
 
   build:
     name: Build and publish

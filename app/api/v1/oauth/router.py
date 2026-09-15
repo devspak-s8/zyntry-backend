@@ -212,6 +212,10 @@ async def provider_callback(
     error_description: Annotated[str, Query()] = "",
     db: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
+    # Return to the real console integrations screen. The frontend does not
+    # expose a standalone OAuth callback page, and callback payloads must never
+    # be rendered as raw JSON.
+    frontend_callback = f"{settings.FRONTEND_URL.rstrip('/')}/console/integrations"
     db_result = await db.execute(
         select(OAuthState).where(
             OAuthState.state == state,
@@ -221,14 +225,31 @@ async def provider_callback(
     )
     state_obj = db_result.scalar_one_or_none()
     if state_obj is None:
-        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
+        query = urlencode({
+            "connection_status": "error",
+            "integration_slug": provider.lower(),
+            "error_code": "oauth_callback_incomplete",
+            "error": "The authorization session expired. Please try again.",
+        })
+        return RedirectResponse(f"{frontend_callback}?{query}", status_code=302)
 
-    frontend_callback = f"{settings.FRONTEND_URL.rstrip('/')}/oauth/callback"
     if error:
-        query = urlencode({"status": "error", "provider": provider.lower(), "error": error_description or error})
+        callback_code = "redirect_uri_mismatch" if error in {"redirect_uri_mismatch", "invalid_redirect_uri"} else "oauth_provider_denied"
+        query = urlencode({
+            "connection_status": "error",
+            "integration_slug": provider.lower(),
+            "error_code": callback_code,
+            "error": "The provider authorization was not completed. Please try again.",
+        })
         return RedirectResponse(f"{frontend_callback}?{query}", status_code=302)
     if not code or state_obj.project_id is None or state_obj.user_id is None:
-        raise HTTPException(status_code=400, detail="Incomplete OAuth callback")
+        query = urlencode({
+            "connection_status": "error",
+            "integration_slug": provider.lower(),
+            "error_code": "oauth_callback_incomplete",
+            "error": "The provider authorization did not complete. Please try again.",
+        })
+        return RedirectResponse(f"{frontend_callback}?{query}", status_code=302)
 
     project_id = state_obj.project_id
     user_id = state_obj.user_id
@@ -249,9 +270,11 @@ async def provider_callback(
     except (OAuthError, ValueError) as exc:
         await db.rollback()
         logger.warning("OAuth callback rejected for provider %s: %s", provider, type(exc).__name__)
+        callback_code = "redirect_uri_mismatch" if "redirect_uri" in str(exc).lower() else "oauth_callback_failed"
         query = urlencode({
-            "status": "error",
-            "provider": provider.lower(),
+            "connection_status": "error",
+            "integration_slug": provider.lower(),
+            "error_code": callback_code,
             "error": "Unable to complete the connection. Please try again.",
         })
         return RedirectResponse(f"{frontend_callback}?{query}", status_code=302)
@@ -266,7 +289,7 @@ async def provider_callback(
         return RedirectResponse(f"{frontend_callback}?{query}", status_code=302)
 
     query = urlencode({
-        "status": "success", "provider": provider.lower(),
+        "connection_status": "success", "integration_slug": provider.lower(),
         "project_id": str(project_id),
         "purpose": integration["purpose"],
         "tool_id": integration.get("tool_id") or "",

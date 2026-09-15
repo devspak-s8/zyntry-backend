@@ -50,6 +50,14 @@ async def get_api_key_user(
     if api_key.organization_id is not None and api_key.organization_id != user.organization_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
 
+    # Browser clients send an Origin header; server-to-server SDK calls usually
+    # do not.  If origins were configured for this key, enforce them without
+    # weakening non-browser usage or exposing key metadata.
+    request_origin = request.headers.get("origin")
+    allowed_origins = {str(origin).rstrip("/") for origin in (getattr(api_key, "allowed_origins", None) or [])}
+    if request_origin and allowed_origins and request_origin.rstrip("/") not in allowed_origins:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="API key is not authorized for this application origin")
+
     api_key.usage_count = (api_key.usage_count or 0) + 1
     request.state.api_key_id = api_key.id
     request.state.api_key_project_id = api_key.project_id
@@ -58,6 +66,7 @@ async def get_api_key_user(
 
 
 async def get_action_auth(
+    request: Request,
     session_token: Annotated[str | None, Cookie(alias="zyntra_session")] = None,
     authorization: Annotated[str | None, Header()] = None,
     db: AsyncSession = Depends(get_session),
@@ -87,6 +96,19 @@ async def get_action_auth(
                         or api_key.organization_id == user.organization_id
                     )
                 ):
+                    # The action-auth path is used by invoke and connector
+                    # operations, so apply the same browser-origin policy as
+                    # the dedicated API-key dependency.
+                    request_origin = request.headers.get("origin")
+                    allowed_origins = {
+                        str(origin).rstrip("/")
+                        for origin in (getattr(api_key, "allowed_origins", None) or [])
+                    }
+                    if request_origin and allowed_origins and request_origin.rstrip("/") not in allowed_origins:
+                        raise HTTPException(
+                            status_code=status.HTTP_403_FORBIDDEN,
+                            detail="API key is not authorized for this application origin",
+                        )
                     api_key.usage_count = (api_key.usage_count or 0) + 1
                     await db.commit()
                     return ActionAuthContext(

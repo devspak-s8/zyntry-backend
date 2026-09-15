@@ -53,6 +53,19 @@ class CapabilityNotSupportedError(DomainError):
         super().__init__(message=message, code="capability_not_supported", status_code=422)
 
 
+class OAuthAuthorizationError(DomainError):
+    """A safe, actionable OAuth authorization failure."""
+
+    def __init__(
+        self,
+        message: str = "This integration cannot be authorized right now.",
+        *,
+        code: str = "oauth_authorization_failed",
+        status_code: int = 400,
+    ) -> None:
+        super().__init__(message=message, code=code, status_code=status_code)
+
+
 def safe_public_message(exc: Exception, fallback: str = "The operation could not be completed.") -> str:
     """Return only an intentionally safe message for an API/task response."""
     if isinstance(exc, DomainError):

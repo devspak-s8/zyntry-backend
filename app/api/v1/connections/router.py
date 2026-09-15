@@ -2,16 +2,18 @@ from __future__ import annotations
 
 import logging
 from typing import Annotated, Any
+from urllib.parse import urlencode
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.dependencies import get_current_user
+from app.api.v1.dependencies import _get_session_user, get_current_user
 from app.api.v1.dependencies_tenant import require_runtime_access
 from app.core.config import settings
 from app.core.database import get_session
+from app.core.errors import DomainError
 from app.core.ws_events import emit_integration_connection_updated
 from app.models.users import User
 from app.repositories import UnitOfWork
@@ -27,6 +29,14 @@ from app.services.security.secrets import default_secret_manager
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/connections", tags=["connections"])
+
+
+def _oauth_error_redirect(integration_slug: str, code: str) -> RedirectResponse:
+    query = urlencode({"connection_status": "error", "integration_slug": integration_slug, "error_code": code})
+    return RedirectResponse(
+        url=f"{settings.FRONTEND_URL.rstrip('/')}/console/integrations?{query}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 def _to_read_dto(conn: Any) -> IntegrationConnectionRead:
@@ -67,8 +77,14 @@ async def authorize_connection(
             user_id=current_user.id,
             data=body,
         )
+    except DomainError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.as_detail()) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        logger.warning("Invalid OAuth authorization request", extra={"integration_slug": integration_slug})
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "oauth_request_invalid", "message": "Review the integration settings and try again."},
+        ) from exc
 
 
 @router.get("/{integration_slug}/callback", response_model=None)
@@ -77,10 +93,29 @@ async def connection_callback(
     request: Request,
     code: Annotated[str, Query()] = "",
     state: Annotated[str, Query()] = "",
-    current_user: User = Depends(get_current_user),
+    error: Annotated[str, Query()] = "",
+    error_description: Annotated[str, Query()] = "",
+    # OAuth callbacks are provider redirects and may not include the browser
+    # session cookie. The signed, expiring OAuth state binds the callback to
+    # the initiating user; do not fail with a misleading "Not authenticated".
+    current_user: User | None = Depends(_get_session_user),
     db: AsyncSession = Depends(get_session),
 ) -> Any:
+    accepts_html = "text/html" in request.headers.get("accept", "")
+    if error:
+        # Providers report redirect mismatches and denials through the
+        # callback query instead of returning an authorization code. Never
+        # reflect provider details to the browser; expose a stable safe code.
+        callback_code = "redirect_uri_mismatch" if error in {"redirect_uri_mismatch", "invalid_redirect_uri"} else "oauth_provider_denied"
+        if accepts_html:
+            return _oauth_error_redirect(integration_slug, callback_code)
+        raise HTTPException(
+            status_code=400,
+            detail={"code": callback_code, "message": "The provider authorization was not completed. Try again."},
+        )
     if not code or not state:
+        if accepts_html:
+            return _oauth_error_redirect(integration_slug, "oauth_callback_incomplete")
         raise HTTPException(status_code=400, detail="Missing required code or state query parameters")
 
     uow = UnitOfWork(db)
@@ -124,8 +159,19 @@ async def connection_callback(
                 status_code=status.HTTP_303_SEE_OTHER,
             )
         return result
+    except DomainError as exc:
+        if accepts_html:
+            return _oauth_error_redirect(integration_slug, exc.code)
+        raise HTTPException(status_code=exc.status_code, detail=exc.as_detail()) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        logger.warning("OAuth callback failed", extra={"integration_slug": integration_slug})
+        callback_code = "redirect_uri_mismatch" if "redirect_uri" in str(exc).lower() else "oauth_callback_failed"
+        if accepts_html:
+            return _oauth_error_redirect(integration_slug, callback_code)
+        raise HTTPException(
+            status_code=400,
+            detail={"code": callback_code, "message": "The provider authorization could not be completed. Try again."},
+        ) from exc
 
 
 @router.post("", response_model=IntegrationConnectionRead, status_code=status.HTTP_201_CREATED)
