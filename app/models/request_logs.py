@@ -13,10 +13,12 @@ class RequestLog(Base, UUIDMixin, TimestampMixin):
     __tablename__ = "request_logs"
 
     project_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
-    request_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    runtime_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True, index=True)
+    request_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     method: Mapped[str] = mapped_column(String(16), nullable=False)
     endpoint: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[int] = mapped_column(Integer, nullable=False)
+    error_category: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     latency_ms: Mapped[int] = mapped_column(Integer, nullable=False)
     tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     provider: Mapped[str | None] = mapped_column(String(64), nullable=True)

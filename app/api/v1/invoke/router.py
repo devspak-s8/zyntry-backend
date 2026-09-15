@@ -62,6 +62,7 @@ from app.services.invoke_support import (
 from app.services.invoke_support import (
     tool_is_read_only as _tool_is_read_only,
 )
+from app.services.invoke_telemetry import record_invoke_outcome, update_invoke_telemetry
 from app.services.metered_billing import InsufficientBalanceError, MeteredBillingService
 from app.services.model_router import ModelRouter, RoutingGoal, RoutingPreference
 from app.services.oauth.service import OAuthService
@@ -150,6 +151,7 @@ async def invoke_stream(
 
 
 @router.post("/invoke", response_model=None)
+@record_invoke_outcome
 async def invoke(
     body: InvokeRequest,
     request: Request,
@@ -158,7 +160,8 @@ async def invoke(
 ) -> InvokeResponse | StreamingResponse:
     if body.stream:
         return await invoke_stream(body, request, current_user, db)
-    request_id = f"req_{uuid.uuid4().hex[:12]}"
+    telemetry_context = getattr(request.state, "invoke_telemetry", {})
+    request_id = telemetry_context.get("request_id") or f"req_{uuid.uuid4().hex[:12]}"
     start_time = time.perf_counter()
     events: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
@@ -173,6 +176,12 @@ async def invoke(
     api_key = await db.get(ApiKey, api_key_id) if api_key_id else None
     if api_key is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
+    update_invoke_telemetry(
+        request,
+        api_key_id=api_key.id,
+        user_id=current_user.id,
+        organization_id=current_user.organization_id,
+    )
 
     project_uuid: uuid.UUID | None = None
     if body.project:
@@ -207,6 +216,11 @@ async def invoke(
     project = await uow.projects.get(project_uuid)
     if project is None or project.organization_id != current_user.organization_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Project not found")
+    update_invoke_telemetry(
+        request,
+        project_id=project.id,
+        organization_id=project.organization_id,
+    )
 
     events.append({"timestamp": datetime.now(UTC).isoformat(), "event": "Project Loaded", "project_id": str(project.id)})
 
@@ -218,6 +232,13 @@ async def invoke(
 
     if runtime and runtime.project_id != project.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Runtime not found for this project")
+    if runtime is not None:
+        update_invoke_telemetry(
+            request,
+            runtime_id=runtime.id,
+            provider=runtime.provider,
+            model=runtime.model,
+        )
 
     key_scopes = set(api_key.scopes or [])
     if "read" not in key_scopes and "*" not in key_scopes:
@@ -608,6 +629,7 @@ async def invoke(
         )
     provider_name = invoked_provider or provider_name
     model_name = invoked_model or model_name
+    update_invoke_telemetry(request, provider=provider_name, model=model_name)
     events.append({"timestamp": datetime.now(UTC).isoformat(), "event": "Model Selected", "model": model_name, "provider": provider_name})
     if router_service.last_routing_reason:
         events.append({
@@ -983,27 +1005,16 @@ async def invoke(
     )
 
     try:
-        await uow.request_logs.create(
-            project_id=project.id,
-            request_id=request_id,
-            method="POST",
-            endpoint="/invoke",
-            status=200,
-            latency_ms=int(latency_ms),
-            tokens=input_tokens + output_tokens,
-            provider=provider_name,
-            model=model_name,
-            cost=int(actual_cost),
-            started_at=datetime.fromtimestamp(start_time, tz=UTC).isoformat(),
-            completed_at=datetime.now(UTC).isoformat(),
-            user_id=current_user.id,
-            ip="",
-        )
-        await uow.commit()
+        await db.commit()
     except Exception:
-        # Telemetry persistence must not turn a completed invocation into a
-        # client-visible failure, but it must remain visible to operators.
-        logger.exception("Unable to persist invocation event", extra={"request_id": request_id})
+        # The billing and usage records have already been committed. A trace
+        # event failure must remain observable without changing a successful
+        # provider response into a client-visible failure.
+        await db.rollback()
+        logger.exception(
+            "Unable to persist completed invocation event",
+            extra={"request_id": request_id},
+        )
 
     events.append({"timestamp": datetime.now(UTC).isoformat(), "event": "Response Generated", "model": model_name})
     events.append({"timestamp": datetime.now(UTC).isoformat(), "event": "Wallet Deducted", "amount": float(actual_cost)})

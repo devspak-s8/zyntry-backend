@@ -4,8 +4,10 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import Integer, func, select
+from sqlalchemy import Integer, and_, case, func, or_, select
 
+from app.models.request_logs import RequestLog
+from app.models.runtimes import Runtime
 from app.repositories import UnitOfWork
 
 
@@ -325,22 +327,60 @@ class ObservabilityService:
     async def get_errors_by_category(
         self, runtime_id: str, hours: int = 24
     ) -> dict[str, int]:
+        outcomes = await self.get_request_outcomes(runtime_id, hours)
+        return outcomes["errors_by_category"]
+
+    async def get_request_outcomes(
+        self, runtime_id: str, hours: int = 24
+    ) -> dict[str, Any]:
+        """Return terminal invoke outcomes for reliability reporting."""
         rid = uuid.UUID(runtime_id)
         since = datetime.now(UTC) - timedelta(hours=hours)
-        result = await self.uow.session.execute(
-            select(
-                self.uow.analytics.model.metadata_["category"].astext.label("category"),
-                func.sum(self.uow.analytics.model.quantity).label("count"),
+        runtime = await self.uow.session.get(Runtime, rid)
+        request_scope = RequestLog.runtime_id == rid
+        if runtime is not None and runtime.project_id is not None:
+            request_scope = or_(
+                request_scope,
+                and_(
+                    RequestLog.runtime_id.is_(None),
+                    RequestLog.project_id == runtime.project_id,
+                ),
             )
-            .where(self._runtime_filter(rid))
-            .where(self.uow.analytics.model.metric == "error")
-            .where(self.uow.analytics.model.created_at >= since)
-            .group_by(
-                self.uow.analytics.model.metadata_["category"].astext
+        rows = list(
+            (
+                await self.uow.session.execute(
+                    select(RequestLog).where(
+                        request_scope,
+                        RequestLog.endpoint == "/invoke",
+                        RequestLog.created_at >= since,
+                    )
+                )
             )
+            .scalars()
+            .all()
         )
-        rows = result.all()
-        return {category: int(count or 0) for category, count in rows}
+        request_count = len(rows)
+        success_count = sum(1 for row in rows if int(row.status or 0) < 400)
+        error_rows = [row for row in rows if int(row.status or 0) >= 400]
+        errors_by_category: dict[str, int] = {}
+        for row in error_rows:
+            category = row.error_category or "request_failed"
+            errors_by_category[category] = errors_by_category.get(category, 0) + 1
+        return {
+            "request_count": request_count,
+            "success_count": success_count,
+            "error_count": len(error_rows),
+            "rejected_request_count": sum(
+                1 for row in error_rows if 400 <= int(row.status or 0) < 500
+            ),
+            "server_error_count": sum(
+                1 for row in error_rows if int(row.status or 0) >= 500
+            ),
+            "error_rate": (
+                round(len(error_rows) / request_count, 6) if request_count else None
+            ),
+            "errors_by_category": errors_by_category,
+        }
 
     async def get_cache_hit_rate(self, runtime_id: str, hours: int = 24) -> float:
         rid = uuid.UUID(runtime_id)
@@ -348,13 +388,13 @@ class ObservabilityService:
         result = await self.uow.session.execute(
             select(
                 func.sum(
-                    func.case(
+                    case(
                         (self.uow.analytics.model.metric == "cache_hit", self.uow.analytics.model.quantity),
                         else_=0,
                     )
                 ).label("hits"),
                 func.sum(
-                    func.case(
+                    case(
                         (self.uow.analytics.model.metric == "cache_miss", self.uow.analytics.model.quantity),
                         else_=0,
                     )
@@ -394,6 +434,7 @@ class ObservabilityService:
         self, runtime_id: str, hours: int = 24
     ) -> dict[str, Any]:
         rid = uuid.UUID(runtime_id)
+        request_outcomes = await self.get_request_outcomes(str(rid), hours)
         return {
             "runtime_id": str(rid),
             "window_hours": hours,
@@ -404,7 +445,7 @@ class ObservabilityService:
             "provider_usage": await self.get_provider_usage(str(rid), hours),
             "token_usage": await self.get_token_usage(str(rid), hours),
             "latency_by_operation": await self.get_latency_by_operation(str(rid), hours),
-            "errors_by_category": await self.get_errors_by_category(str(rid), hours),
+            **request_outcomes,
             "cache_hit_rate": await self.get_cache_hit_rate(str(rid), hours),
             "retrieval_quality": await self.get_retrieval_quality(str(rid), hours),
         }

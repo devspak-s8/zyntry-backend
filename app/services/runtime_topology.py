@@ -11,7 +11,7 @@ from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.billing import UsageLog
@@ -42,22 +42,32 @@ async def build_runtime_topology(
         .scalars()
         .all()
     )
-    request_rows = []
-    usage_request_ids = [row.request_id for row in usage_rows if row.request_id]
-    if runtime.project_id and usage_request_ids:
-        request_rows = list(
-            (
-                await db.execute(
-                    select(RequestLog).where(
-                        RequestLog.project_id == runtime.project_id,
-                        RequestLog.request_id.in_(usage_request_ids),
-                        RequestLog.created_at >= since,
-                    )
+    # RequestLog is the reliability ledger. Unlike UsageLog it includes
+    # rejected and failed invocations, so error rate must be derived here.
+    # The project fallback keeps pre-migration success history visible while
+    # new records are attributed directly to their runtime.
+    request_scope = RequestLog.runtime_id == runtime.id
+    if runtime.project_id is not None:
+        request_scope = or_(
+            request_scope,
+            and_(
+                RequestLog.runtime_id.is_(None),
+                RequestLog.project_id == runtime.project_id,
+            ),
+        )
+    request_rows = list(
+        (
+            await db.execute(
+                select(RequestLog).where(
+                    request_scope,
+                    RequestLog.endpoint == "/invoke",
+                    RequestLog.created_at >= since,
                 )
             )
-            .scalars()
-            .all()
         )
+        .scalars()
+        .all()
+    )
 
     latencies = sorted(float(row.latency_ms) for row in usage_rows if row.latency_ms is not None)
     p95 = (
@@ -65,12 +75,25 @@ async def build_runtime_topology(
         if latencies
         else None
     )
-    total_requests = sum(int(row.requests or 1) for row in usage_rows)
+    total_requests = (
+        len(request_rows)
+        if request_rows
+        else sum(int(row.requests or 1) for row in usage_rows)
+    )
     total_tokens = sum(
         int(row.input_tokens or 0) + int(row.output_tokens or 0) for row in usage_rows
     )
     total_cost = sum(float(row.cost or 0) for row in usage_rows)
     errors = sum(1 for row in request_rows if int(row.status or 0) >= 400)
+    rejected_requests = sum(
+        1 for row in request_rows if 400 <= int(row.status or 0) < 500
+    )
+    server_errors = sum(1 for row in request_rows if int(row.status or 0) >= 500)
+    error_categories = Counter(
+        row.error_category
+        for row in request_rows
+        if int(row.status or 0) >= 400 and row.error_category
+    )
     provider_counts = Counter(row.provider for row in usage_rows if row.provider)
     model_counts = Counter(row.model for row in usage_rows if row.model)
     integrations = list(
@@ -88,7 +111,10 @@ async def build_runtime_topology(
         "tokens_24h": total_tokens,
         "cost_24h": round(total_cost, 8),
         "errors_24h": errors,
+        "rejected_requests_24h": rejected_requests,
+        "server_errors_24h": server_errors,
         "error_rate": round(errors / len(request_rows), 6) if request_rows else None,
+        "errors_by_category": dict(error_categories),
         "average_latency_ms": round(sum(latencies) / len(latencies), 2) if latencies else None,
         "p95_latency_ms": p95,
         "providers": dict(provider_counts),

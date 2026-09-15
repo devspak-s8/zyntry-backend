@@ -5,6 +5,7 @@ import uuid
 import pytest
 
 from app.api.v1.runtimes.router import _build_topology
+from app.models.request_logs import RequestLog
 from app.models.runtimes import Runtime
 from app.models.users import User
 
@@ -62,3 +63,71 @@ async def test_topology_simulation_is_explicit_and_does_not_change_runtime(db_se
     assert topology["routing"]["simulation_mode"] == "llm_failover"
     assert runtime.status == "active"
     assert any(node.metadata.get("fallback") for node in topology["nodes"])
+
+
+@pytest.mark.asyncio
+async def test_runtime_topology_counts_successes_and_failures_from_request_outcomes(
+    db_session,
+):
+    user = User(
+        email=f"outcomes-{uuid.uuid4().hex}@example.com",
+        name="Outcome Test",
+        is_active=True,
+        email_verified=True,
+    )
+    db_session.add(user)
+    await db_session.flush()
+    runtime = Runtime(
+        user_id=user.id,
+        name="Outcome Runtime",
+        provider="google",
+        model="gemini-2.5-flash",
+        vector_store="pgvector",
+        status="active",
+    )
+    db_session.add(runtime)
+    await db_session.flush()
+    db_session.add_all(
+        [
+            RequestLog(
+                runtime_id=runtime.id,
+                request_id=f"req_{uuid.uuid4().hex}",
+                method="POST",
+                endpoint="/invoke",
+                status=200,
+                latency_ms=410,
+            ),
+            RequestLog(
+                runtime_id=runtime.id,
+                request_id=f"req_{uuid.uuid4().hex}",
+                method="POST",
+                endpoint="/invoke",
+                status=403,
+                error_category="ip_blocked",
+                latency_ms=12,
+            ),
+            RequestLog(
+                runtime_id=runtime.id,
+                request_id=f"req_{uuid.uuid4().hex}",
+                method="POST",
+                endpoint="/invoke",
+                status=502,
+                error_category="provider_unavailable",
+                latency_ms=820,
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    topology = await _build_topology(runtime, db_session)
+
+    telemetry = topology["telemetry"]
+    assert telemetry["requests_24h"] == 3
+    assert telemetry["errors_24h"] == 2
+    assert telemetry["rejected_requests_24h"] == 1
+    assert telemetry["server_errors_24h"] == 1
+    assert telemetry["error_rate"] == pytest.approx(2 / 3, abs=0.000001)
+    assert telemetry["errors_by_category"] == {
+        "ip_blocked": 1,
+        "provider_unavailable": 1,
+    }
