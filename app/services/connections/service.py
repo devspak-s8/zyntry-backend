@@ -69,11 +69,12 @@ class ConnectionService:
             ) from None
 
         # Verify runtime has integration capability enabled if runtime_id is provided
+        runtime_integration = None
         if runtime_uuid:
-            runtime_int = await self.uow.runtime_integrations.get_by_runtime_and_slug(
+            runtime_integration = await self.uow.runtime_integrations.get_by_runtime_and_slug(
                 runtime_uuid, integration_slug
             )
-            if runtime_int is None or not runtime_int.is_enabled:
+            if runtime_integration is None or not runtime_integration.is_enabled:
                 raise OAuthAuthorizationError(
                     "Add this integration to the runtime before authorizing it.",
                     code="integration_not_enabled",
@@ -86,6 +87,20 @@ class ConnectionService:
                 user_id, integration_slug
             )
             if existing and existing.status == "active":
+                # A managed connection can be account-scoped (runtime_id is
+                # null) and reused by multiple runtimes.  The old early
+                # return reported that connection as authorized but left the
+                # runtime integration in ``connection_required`` state.  Link
+                # the existing connection to this runtime instead of forcing
+                # the user through OAuth again.
+                if runtime_integration is not None:
+                    await self.uow.runtime_integrations.update(
+                        runtime_integration,
+                        connection_id=existing.id,
+                        connection_required=False,
+                        connection_status="connected",
+                    )
+                    await self.uow.commit()
                 return ConnectionAuthorizeResponse(
                     requires_authorization=False,
                     integration_slug=integration_slug,

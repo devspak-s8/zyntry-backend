@@ -136,3 +136,65 @@ async def test_connection_oauth_authorize_and_callback(
             runtime_id=runtime.id,
             integration_slug="slack",
         )
+
+
+@pytest.mark.asyncio
+async def test_existing_managed_connection_is_linked_to_runtime(
+    db_session: AsyncSession,
+) -> None:
+    """Reusing an account-scoped OAuth connection must satisfy the runtime."""
+    uow = UnitOfWork(db_session)
+    connection_service = ConnectionService(uow)
+    integration_service = IntegrationService(uow)
+
+    user = await uow.users.create(email="managed_connection@zyntry.space", name="Managed User")
+    runtime = await uow.runtimes.create(
+        user_id=user.id,
+        name="Managed Connection Runtime",
+        provider="openai",
+        model="gpt-4o",
+    )
+    await uow.commit()
+
+    await integration_service.enable_runtime_integration(
+        runtime_id=runtime.id,
+        data=RuntimeIntegrationCreate(
+            integration_slug="github",
+            connection_mode="zyntry_managed",
+            enabled_capabilities=["repository_search"],
+        ),
+    )
+
+    existing = await uow.integration_connections.create(
+        user_id=user.id,
+        runtime_id=None,
+        integration_slug="github",
+        connection_mode="zyntry_managed",
+        display_name="Company GitHub",
+        auth_method="oauth2",
+        encrypted_credentials="ENCV1:existing-github-credentials",
+        scopes=["repo"],
+        status="active",
+        health_status="healthy",
+    )
+    await uow.commit()
+
+    result = await connection_service.authorize(
+        integration_slug="github",
+        user_id=user.id,
+        data=ConnectionAuthorizeRequest(
+            runtime_id=str(runtime.id),
+            connection_mode="zyntry_managed",
+        ),
+    )
+
+    assert result.requires_authorization is False
+    assert result.connection_id == str(existing.id)
+
+    runtime_integration = await uow.runtime_integrations.get_by_runtime_and_slug(
+        runtime.id, "github"
+    )
+    assert runtime_integration is not None
+    assert runtime_integration.connection_id == existing.id
+    assert runtime_integration.connection_status == "connected"
+    assert runtime_integration.connection_required is False
