@@ -116,7 +116,10 @@ async def get_chat_history(
             {
                 "role": msg.role,
                 "content": msg.content,
-                "id": str(msg.id),
+                # Service-layer history messages expose the persisted record
+                # identifier inside redacted metadata; do not leak an ORM
+                # implementation detail into the service schema.
+                "id": str(msg.metadata.get("message_id") or ""),
                 "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
                 "metadata": msg.metadata,
             }
