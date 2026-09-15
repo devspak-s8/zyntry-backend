@@ -8,6 +8,7 @@ services:
       - EMAIL_ASSET_BASE_URL=${EMAIL_ASSET_BASE_URL:-http://localhost:8000/static/email}
       - APP_URL=${APP_URL:?APP_URL must be configured}
       - FRONTEND_URL=${FRONTEND_URL:?FRONTEND_URL must be configured}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:?ENCRYPTION_KEY must be configured}
       - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
       - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET:-}
       - NOTION_CLIENT_ID=${NOTION_CLIENT_ID:-}
@@ -20,6 +21,7 @@ services:
     pull_policy: always
     environment:
       - EMAIL_ASSET_BASE_URL=${EMAIL_ASSET_BASE_URL:-http://localhost:8000/static/email}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:?ENCRYPTION_KEY must be configured}
 
   beat:
     image: ${API_IMAGE:?API_IMAGE must be a SHA-pinned GHCR image}
@@ -32,6 +34,7 @@ services:
     pull_policy: always
     environment:
       - EMAIL_ASSET_BASE_URL=${EMAIL_ASSET_BASE_URL:-http://localhost:8000/static/email}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:?ENCRYPTION_KEY must be configured}
 
   realtime:
     image: ${API_IMAGE:?API_IMAGE must be a SHA-pinned GHCR image}
