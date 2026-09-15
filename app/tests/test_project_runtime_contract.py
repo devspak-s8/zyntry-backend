@@ -10,11 +10,12 @@ from app.api.v1.projects.router import (
     build_project_runtime,
     configure_project,
     create_project_runtime,
+    switch_project_environment,
     update_project,
 )
 from app.repositories import UnitOfWork
 from app.schemas.integrations import RuntimeIntegrationCreate
-from app.schemas.projects import ProjectConfigUpdate, ProjectUpdate
+from app.schemas.projects import ProjectConfigUpdate, ProjectEnvironmentSwitch, ProjectUpdate
 from app.schemas.runtimes import RuntimeCreate
 from app.services.integrations.service import IntegrationService
 from app.services.runtimes import RuntimeService
@@ -246,3 +247,71 @@ async def test_project_runtime_binding_allows_atomic_org_rebind(
     assert previous.project_id is None
     assert replacement.project_id == project.id
     assert response.runtime_id == replacement_id
+
+
+@pytest.mark.asyncio
+async def test_environment_switch_updates_project_runtime_and_revokes_keys(
+    db_session, monkeypatch
+) -> None:
+    uow = UnitOfWork(db_session)
+    organization = await uow.organizations.create(name="Environment Org", slug="environment-org")
+    await uow.commit()
+    user = await uow.users.create(
+        email="environment@zyntry.space",
+        name="Environment Owner",
+        organization_id=organization.id,
+    )
+    project = await uow.projects.create(
+        name="Environment Project",
+        slug="environment-project",
+        organization_id=organization.id,
+        settings={"environment": "development"},
+        status="ready",
+    )
+    await uow.commit()
+    runtime_data = await RuntimeService(uow).get_or_create(
+        RuntimeCreate(
+            name="Environment Runtime",
+            project_id=project.id,
+            organization_id=organization.id,
+            environment="development",
+        ),
+        default_user_id=user.id,
+    )
+    runtime_id = uuid.UUID(runtime_data["id"])
+    api_key = await uow.api_keys.create(
+        name="Development key",
+        hashed_key=f"hash-{uuid.uuid4()}",
+        prefix="sk_test_example",
+        organization_id=organization.id,
+        user_id=user.id,
+        project_id=project.id,
+        runtime_id=runtime_id,
+        environment="development",
+        scopes=["invoke"],
+        revoked=False,
+        usage_count=0,
+        usage_stats={},
+    )
+    await uow.commit()
+    monkeypatch.setattr(
+        "app.api.v1.projects.router._invalidate_projects_cache",
+        AsyncMock(return_value=None),
+    )
+
+    response = await switch_project_environment(
+        str(project.id),
+        ProjectEnvironmentSwitch(environment="staging"),
+        user,
+        db_session,
+    )
+
+    await db_session.refresh(project)
+    runtime = await uow.runtimes.get(runtime_id)
+    await db_session.refresh(api_key)
+    assert project.settings["environment"] == "staging"
+    assert runtime.environment == "staging"
+    assert api_key.revoked is True
+    assert response.previous_environment == "development"
+    assert response.environment == "staging"
+    assert response.revoked_api_key_ids == [api_key.id]

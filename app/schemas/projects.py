@@ -38,6 +38,19 @@ class ProjectConfigUpdate(ORMModel):
     security_settings: dict = Field(default_factory=dict)
 
 
+class ProjectEnvironmentSwitch(ORMModel):
+    environment: Literal["development", "staging", "production"]
+
+
+class ProjectEnvironmentSwitchResult(ORMModel):
+    project_id: uuid.UUID
+    runtime_id: uuid.UUID
+    previous_environment: Literal["development", "staging", "production"]
+    environment: Literal["development", "staging", "production"]
+    revoked_api_key_ids: list[uuid.UUID] = Field(default_factory=list)
+    requires_new_api_key: bool = True
+
+
 class ProjectRead(ORMModel):
     id: uuid.UUID
     name: str

@@ -4,11 +4,13 @@ import logging
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
 from app.api.v1.dependencies_tenant import require_runtime_access
+from app.core.config import settings
 from app.core.database import get_session
 from app.core.ws_events import emit_integration_connection_updated
 from app.models.users import User
@@ -69,14 +71,15 @@ async def authorize_connection(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.get("/{integration_slug}/callback", response_model=IntegrationConnectionRead)
+@router.get("/{integration_slug}/callback", response_model=None)
 async def connection_callback(
     integration_slug: str,
+    request: Request,
     code: Annotated[str, Query()] = "",
     state: Annotated[str, Query()] = "",
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
-) -> IntegrationConnectionRead:
+) -> Any:
     if not code or not state:
         raise HTTPException(status_code=400, detail="Missing required code or state query parameters")
 
@@ -103,7 +106,24 @@ async def connection_callback(
                 )
             except Exception:
                 pass
-        return _to_read_dto(conn)
+        result = _to_read_dto(conn)
+        accepts_html = "text/html" in request.headers.get("accept", "")
+        if accepts_html:
+            project_id = str(runtime.project_id) if runtime and runtime.project_id else ""
+            callback_query = (
+                f"connection_status=success&integration_slug={conn.integration_slug}"
+                f"&runtime_id={conn.runtime_id or ''}&project_id={project_id}"
+            )
+            callback_path = (
+                f"/console/projects/{project_id}/integrations"
+                if project_id
+                else "/console/integrations"
+            )
+            return RedirectResponse(
+                url=f"{settings.FRONTEND_URL.rstrip('/')}{callback_path}?{callback_query}",
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

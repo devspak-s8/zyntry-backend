@@ -8,7 +8,7 @@ import uuid
 from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -18,12 +18,20 @@ from app.api.v1.features.dependencies import require_feature
 from app.core.database import get_session
 from app.core.redis import redis_client
 from app.events import NotificationEvent
+from app.models.apikeys import ApiKey
 from app.models.organizations import Organization
 from app.models.projects import Project
 from app.models.runtimes import Runtime
 from app.models.users import User
 from app.repositories import UnitOfWork
-from app.schemas.projects import ProjectConfigUpdate, ProjectCreate, ProjectRead, ProjectUpdate
+from app.schemas.projects import (
+    ProjectConfigUpdate,
+    ProjectCreate,
+    ProjectEnvironmentSwitch,
+    ProjectEnvironmentSwitchResult,
+    ProjectRead,
+    ProjectUpdate,
+)
 from app.schemas.runtimes import RuntimeCreate, RuntimeRead
 from app.services.notifications import publish_notification
 from app.services.runtimes import RuntimeService
@@ -482,6 +490,77 @@ async def update_project(
         select(Runtime.id).where(Runtime.project_id == updated_proj.id)
     )
     return _to_read(updated_proj, attached_runtime_id)
+
+
+@router.post("/{project_id}/switch-environment", response_model=ProjectEnvironmentSwitchResult)
+async def switch_project_environment(
+    project_id: str,
+    body: ProjectEnvironmentSwitch,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_session),
+) -> ProjectEnvironmentSwitchResult:
+    """Move one project and its attached runtime to a new isolated environment."""
+    try:
+        pid = uuid.UUID(project_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid project id") from None
+
+    proj = await db.get(Project, pid)
+    if proj is None or proj.organization_id != current_user.organization_id:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    uow = UnitOfWork(db)
+    runtime = await uow.runtimes.get_by_project(pid)
+    if runtime is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Attach a runtime before switching this project environment",
+        )
+
+    raw_previous = (proj.settings or {}).get("environment") or runtime.environment or "development"
+    previous_environment = (
+        raw_previous if raw_previous in {"development", "staging", "production"} else "development"
+    )
+    target_environment = body.environment
+
+    key_result = await db.execute(
+        select(ApiKey).where(
+            ApiKey.revoked.is_(False),
+            or_(ApiKey.project_id == pid, ApiKey.runtime_id == runtime.id),
+        )
+    )
+    keys_to_revoke = list(key_result.scalars().all())
+    project_settings = dict(proj.settings or {})
+    project_settings["environment"] = target_environment
+
+    try:
+        await uow.projects.update(proj, settings=project_settings)
+        await uow.runtimes.update(runtime, environment=target_environment)
+        for api_key in keys_to_revoke:
+            await uow.api_keys.update(api_key, revoked=True)
+        await uow.commit()
+    except Exception as exc:
+        await uow.rollback()
+        logger.exception(
+            "Project environment switch failed",
+            extra={"project_id": str(pid), "target_environment": target_environment},
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="The environment could not be switched. Please try again.",
+        ) from exc
+
+    await _invalidate_projects_cache(proj.organization_id)
+    return ProjectEnvironmentSwitchResult(
+        project_id=pid,
+        runtime_id=runtime.id,
+        previous_environment=cast(
+            Literal["development", "staging", "production"], previous_environment
+        ),
+        environment=target_environment,
+        revoked_api_key_ids=[api_key.id for api_key in keys_to_revoke],
+        requires_new_api_key=True,
+    )
 
 
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
