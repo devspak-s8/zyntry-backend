@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.integrations import IntegrationConnection, RuntimeIntegration
@@ -98,7 +98,20 @@ class IntegrationConnectionRepository:
         if user_id is not None:
             stmt = stmt.where(IntegrationConnection.user_id == user_id)
         if runtime_id is not None:
-            stmt = stmt.where(IntegrationConnection.runtime_id == runtime_id)
+            # Managed connections may be account-scoped (runtime_id is NULL)
+            # and linked to a runtime through RuntimeIntegration.connection_id.
+            # Include those links when callers ask for a runtime's connections
+            # so the API agrees with the runtime integration status.
+            linked_connection_ids = select(RuntimeIntegration.connection_id).where(
+                RuntimeIntegration.runtime_id == runtime_id,
+                RuntimeIntegration.connection_id.is_not(None),
+            )
+            stmt = stmt.where(
+                or_(
+                    IntegrationConnection.runtime_id == runtime_id,
+                    IntegrationConnection.id.in_(linked_connection_ids),
+                )
+            )
         if integration_slug is not None:
             stmt = stmt.where(IntegrationConnection.integration_slug == integration_slug)
         if end_user_id is not None:

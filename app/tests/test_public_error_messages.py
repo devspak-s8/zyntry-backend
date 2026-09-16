@@ -26,3 +26,21 @@ def test_safe_http_detail_keeps_safe_structured_policy_fields() -> None:
         "message": "This request was blocked by the runtime safety policy.",
         "guardrail_violations": ["prompt_injection"],
     }
+
+
+def test_safe_http_detail_preserves_safe_provider_contract_on_server_error() -> None:
+    result = safe_http_detail(
+        503,
+        {
+            "code": "onboarding_provider_rate_limited",
+            "message": "The onboarding assistant is temporarily busy. Please try again shortly.",
+            "retryable": True,
+            "action": "retry",
+        },
+    )
+    assert result == {
+        "code": "onboarding_provider_rate_limited",
+        "message": "The onboarding assistant is temporarily busy. Please try again shortly.",
+        "retryable": True,
+        "action": "retry",
+    }

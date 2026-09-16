@@ -21,12 +21,31 @@ from app.schemas.onboarding_chat import (
 )
 from app.services.onboarding import OnboardingService
 from app.services.onboarding.engine import OnboardingNameMismatchError
+from app.services.onboarding.intelligence import OnboardingRequirementsError
 
 router = APIRouter(prefix="/onboarding", tags=["onboarding"])
 
 
 def _to_legacy_state_read(state: dict[str, Any]) -> OnboardingStateRead:
     return OnboardingStateRead(**state)
+
+
+def _safe_onboarding_error(exc: OnboardingRequirementsError) -> HTTPException:
+    """Return a stable public error without exposing provider internals."""
+
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail={
+            "code": getattr(exc, "code", "onboarding_model_unavailable"),
+            "message": getattr(
+                exc,
+                "public_message",
+                "The onboarding assistant is temporarily unavailable. Please try again shortly.",
+            ),
+            "retryable": bool(getattr(exc, "retryable", True)),
+            "action": "retry",
+        },
+    )
 
 
 # =========================================================
@@ -47,8 +66,18 @@ async def create_or_resume_session(
             initial_prompt=body.initial_prompt,
             reset=body.reset,
         )
-    except RuntimeError as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except OnboardingRequirementsError as exc:
+        raise _safe_onboarding_error(exc) from exc
+    except RuntimeError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "onboarding_unavailable",
+                "message": "The onboarding assistant is temporarily unavailable. Please try again shortly.",
+                "retryable": True,
+                "action": "retry",
+            },
+        ) from None
     return OnboardingSessionRead(**session_data)
 
 
@@ -65,8 +94,18 @@ async def reset_onboarding_session(
             initial_prompt=None,
             reset=True,
         )
-    except RuntimeError as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except OnboardingRequirementsError as exc:
+        raise _safe_onboarding_error(exc) from exc
+    except RuntimeError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "onboarding_unavailable",
+                "message": "The onboarding assistant is temporarily unavailable. Please try again shortly.",
+                "retryable": True,
+                "action": "retry",
+            },
+        ) from None
     return OnboardingSessionRead(**session_data)
 
 
@@ -80,10 +119,27 @@ async def send_onboarding_message(
     service = OnboardingService(uow)
     try:
         return await service.send_chat_message(user_id=current_user.id, req=body)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "invalid_onboarding_request",
+                "message": "We couldn't process that onboarding message.",
+                "retryable": False,
+            },
+        ) from None
+    except OnboardingRequirementsError as exc:
+        raise _safe_onboarding_error(exc) from exc
+    except RuntimeError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "onboarding_unavailable",
+                "message": "The onboarding assistant is temporarily unavailable. Please try again shortly.",
+                "retryable": True,
+                "action": "retry",
+            },
+        ) from None
 
 
 @router.get("/session/{session_id}", response_model=OnboardingSessionRead)
@@ -119,8 +175,15 @@ async def complete_onboarding(
         return await service.complete_chat_onboarding(user_id=current_user.id, req=body)
     except OnboardingNameMismatchError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.as_detail()) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "invalid_onboarding_request",
+                "message": "We couldn't save this runtime setup. Please review the required fields and try again.",
+                "retryable": False,
+            },
+        ) from None
 
 
 # =========================================================
@@ -175,8 +238,8 @@ async def update_onboarding_state(
         state = await service.update(state_id, body, current_user.id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid onboarding state id") from exc
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Onboarding state not found") from None
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="You do not have access to this onboarding state") from None
     return _to_legacy_state_read(state)

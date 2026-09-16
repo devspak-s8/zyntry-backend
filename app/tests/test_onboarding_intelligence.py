@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import httpx
 import pytest
 
 from app.schemas.onboarding_intelligence import ApplicationRequirements
@@ -7,9 +8,17 @@ from app.services.onboarding.engine import OnboardingEngine
 from app.services.onboarding.intelligence import (
     AdaptiveClarificationService,
     ModelBackedRequirementsExtractor,
+    OnboardingModelRateLimitedError,
     RuntimePlanGenerator,
 )
-from app.services.onboarding.models import OnboardingModelResponse
+from app.services.onboarding.models import (
+    ConfiguredOnboardingModelProvider,
+    OnboardingModelResponse,
+)
+from app.services.onboarding.provider_router import (
+    OnboardingProviderCandidate,
+    RoutedOnboardingLLMProvider,
+)
 
 
 class FakeLLM:
@@ -36,6 +45,85 @@ async def test_model_extraction_is_validated_and_merged() -> None:
     assert requirements.document_formats == ["pdf", "docx"]
     assert requirements.confidence == 0.94
     assert requirements.extraction_source == "model"
+
+
+class RateLimitedLLM:
+    async def generate(self, messages, model, max_tokens=2048, temperature=0.7):
+        request = httpx.Request("POST", "https://example.test/generate")
+        response = httpx.Response(429, request=request)
+        raise httpx.HTTPStatusError("provider quota exceeded", request=request, response=response)
+
+
+@pytest.mark.asyncio
+async def test_model_extraction_maps_provider_429_to_safe_retryable_error() -> None:
+    extractor = ModelBackedRequirementsExtractor(provider=RateLimitedLLM())
+
+    with pytest.raises(OnboardingModelRateLimitedError) as raised:
+        await extractor.extract("Build a customer support assistant")
+
+    assert raised.value.code == "onboarding_provider_rate_limited"
+    assert raised.value.retryable is True
+    assert raised.value.public_message == (
+        "The onboarding assistant is temporarily busy. Please try again shortly."
+    )
+
+
+@pytest.mark.asyncio
+async def test_conversational_provider_maps_provider_429_to_safe_retryable_error(monkeypatch) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "ONBOARDING_ALLOW_FALLBACK", False)
+    monkeypatch.setattr(
+        ConfiguredOnboardingModelProvider,
+        "_provider",
+        staticmethod(lambda: (RateLimitedLLM(), "gemini-2.5-flash")),
+    )
+    provider = ConfiguredOnboardingModelProvider()
+
+    with pytest.raises(OnboardingModelRateLimitedError) as raised:
+        await provider.generate_step_response(
+            user_message="Build a customer support assistant",
+            current_state="onboarding_started",
+            current_config={},
+            history=[],
+        )
+
+    assert raised.value.public_message == (
+        "The onboarding assistant is temporarily busy. Please try again shortly."
+    )
+
+
+@pytest.mark.asyncio
+async def test_onboarding_provider_router_fails_over_to_configured_provider(monkeypatch) -> None:
+    from app.services.onboarding import provider_router
+    from app.services.provider_health import ProviderHealth
+
+    class BusyAdapter:
+        async def generate(self, **kwargs):
+            request = httpx.Request("POST", "https://example.test/generate")
+            response = httpx.Response(429, request=request)
+            raise httpx.HTTPStatusError("busy", request=request, response=response)
+
+    class WorkingAdapter:
+        async def generate(self, **kwargs):
+            return '{"ok": true}', 4
+
+    adapters = {"google": BusyAdapter(), "openai": WorkingAdapter()}
+    monkeypatch.setattr(provider_router, "_adapter_for", lambda provider, key: adapters[provider])
+    router = RoutedOnboardingLLMProvider(
+        [
+            OnboardingProviderCandidate("google", "gemini-2.5-flash", "google-key"),
+            OnboardingProviderCandidate("openai", "gpt-4o-mini", "openai-key"),
+        ],
+        health=ProviderHealth(redis=None, failure_threshold=10),
+    )
+
+    content, usage = await router.generate([], "automatic")
+
+    assert content == '{"ok": true}'
+    assert usage == 4
+    assert router.last_provider == "openai"
+    assert [item["status"] for item in router.last_attempts] == ["failed", "completed"]
 
 
 @pytest.mark.asyncio
@@ -77,6 +165,76 @@ def test_runtime_plan_is_versioned_and_contains_inferred_components() -> None:
     assert first.status == "validated"
     assert any(item.key == "document_processing" for item in first.components)
     assert any(item["integration_slug"] == "document_storage" for item in first.integration_policies)
+
+
+def test_plan_does_not_invent_provider_or_connection_ownership() -> None:
+    requirements = ApplicationRequirements(
+        application_type="developer_ai_assistant",
+        primary_function="Analyze supplied code context",
+        target_users=["developers"],
+        inputs=["code context"],
+        outputs=["architecture findings"],
+        requires_documents=False,
+        requires_external_data=False,
+        requires_tools=True,
+        requires_memory=False,
+        integrations=[{"slug": "github", "purpose": "Repository context"}],
+    )
+
+    plan = RuntimePlanGenerator().generate(requirements, {})
+
+    assert plan.model_routing["provider"] == "automatic"
+    assert plan.model_routing["model"] == "automatic"
+    assert plan.integration_policies[0]["connection_mode"] is None
+    assert "connection_ownership" in plan.unresolved_requirements
+
+
+def test_complete_requirements_still_receive_contextual_checkpoint() -> None:
+    requirements = ApplicationRequirements(
+        application_type="ai_customer_support",
+        primary_function="Answer customer questions and assist support workflows",
+        target_users=["support agents", "customers"],
+        inputs=["customer question"],
+        outputs=["grounded support answer"],
+        requires_documents=True,
+        document_formats=["pdf"],
+        requires_external_data=False,
+        requires_tools=True,
+        requires_memory=True,
+        memory_scope="session",
+        connection_ownership="company",
+        integrations=[{"slug": "github", "purpose": "Support context"}],
+    )
+
+    service = AdaptiveClarificationService()
+    question = service.next_conversation_question(requirements, set())
+
+    assert question is not None
+    assert question.requirement == "access_and_actions"
+    assert "read-only" in question.question
+
+
+def test_contextual_checkpoint_is_not_repeated_after_answer() -> None:
+    requirements = ApplicationRequirements(
+        application_type="developer_ai_assistant",
+        primary_function="Analyze repository architecture",
+        target_users=["developers"],
+        inputs=["engineering question"],
+        outputs=["architecture findings"],
+        requires_documents=False,
+        requires_external_data=False,
+        requires_tools=False,
+        requires_memory=False,
+    )
+
+    service = AdaptiveClarificationService()
+    first = service.next_conversation_question(requirements, set())
+    second = service.next_conversation_question(requirements, {"tool_permissions"})
+
+    assert first is not None
+    assert first.requirement == "tool_permissions"
+    assert second is not None
+    assert second.requirement == "external_retrieval_policy"
 
 
 def test_unavailable_integrations_are_explained_without_entering_the_draft() -> None:

@@ -39,6 +39,7 @@ class OnboardingSessionRead(BaseModel):
 class OnboardingMessageRequest(BaseModel):
     session_id: str
     message: str
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
 
 
 class OnboardingMessageResponse(BaseModel):

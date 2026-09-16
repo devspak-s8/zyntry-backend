@@ -29,7 +29,19 @@ class OnboardingService:
             requirements = ApplicationRequirements.model_validate(requirements_data)
         except Exception:
             return None
-        return self.engine.clarification_service.next_question(requirements)
+        config = configuration or {}
+        asked = {
+            str(item)
+            for item in config.get("onboarding_questions_asked", [])
+            if item
+        }
+        pending = config.get("onboarding_pending_question")
+        if pending and pending not in requirements.missing_requirements():
+            asked.add(str(pending))
+        return self.engine.clarification_service.next_conversation_question(
+            requirements,
+            asked_requirements=asked,
+        )
 
     # Chat-Based Onboarding Methods (Primary flow)
     async def create_chat_session(

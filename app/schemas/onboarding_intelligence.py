@@ -84,6 +84,10 @@ class ApplicationRequirements(BaseModel):
 
     assumptions: list[str] = Field(default_factory=list)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    # This is calculated from validated requirements, not guessed by the
+    # model. It measures whether the fields that affect a runtime plan are
+    # known; contextual confirmation questions may still be shown at 1.0.
+    completeness_score: float = Field(default=0.0, ge=0.0, le=1.0)
     extraction_source: Literal["model", "fallback", "hybrid"] = "fallback"
 
     @field_validator(
@@ -136,6 +140,45 @@ class ApplicationRequirements(BaseModel):
             missing.append("memory_scope")
         return missing
 
+    def calculate_completeness_score(self) -> float:
+        """Return a stable score for the plan-affecting fields."""
+
+        checks = 5  # application, purpose, users, inputs, outputs
+        satisfied = sum(
+            bool(value)
+            for value in (
+                self.application_type,
+                self.primary_function,
+                self.target_users,
+                self.inputs,
+                self.outputs,
+            )
+        )
+        checks += 1
+        satisfied += self.requires_documents is not None
+        if self.requires_documents:
+            checks += 1
+            satisfied += bool(self.document_formats)
+        checks += 1
+        satisfied += self.requires_external_data is not None
+        if self.requires_external_data:
+            checks += 1
+            satisfied += bool(self.external_source_types)
+        checks += 1
+        satisfied += self.requires_tools is not None
+        if self.requires_tools:
+            checks += 1
+            satisfied += bool(self.integrations)
+        if self.integrations:
+            checks += 1
+            satisfied += bool(self.connection_ownership)
+        checks += 1
+        satisfied += self.requires_memory is not None
+        if self.requires_memory:
+            checks += 1
+            satisfied += bool(self.memory_scope)
+        return round(min(1.0, max(0.0, satisfied / checks)), 3)
+
     def fingerprint(self) -> str:
         payload = self.model_dump(mode="json", exclude={"confidence", "extraction_source"})
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -169,6 +212,7 @@ class RuntimePlan(BaseModel):
     deployment: dict[str, Any] = Field(default_factory=dict)
     assumptions: list[str] = Field(default_factory=list)
     unresolved_requirements: list[str] = Field(default_factory=list)
+    completeness_score: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 class ClarificationQuestion(BaseModel):

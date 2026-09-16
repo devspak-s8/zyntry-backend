@@ -198,3 +198,10 @@ async def test_existing_managed_connection_is_linked_to_runtime(
     assert runtime_integration.connection_id == existing.id
     assert runtime_integration.connection_status == "connected"
     assert runtime_integration.connection_required is False
+
+    listed = await connection_service.list_connections(
+        user_id=user.id,
+        runtime_id=str(runtime.id),
+        integration_slug="github",
+    )
+    assert [connection.id for connection in listed] == [existing.id]

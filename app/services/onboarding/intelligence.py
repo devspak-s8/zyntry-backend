@@ -484,19 +484,45 @@ class GeminiLLMProvider(BaseLLMProvider):
 
 
 class OnboardingRequirementsError(RuntimeError):
-    """Base error for model-backed onboarding extraction."""
+    """Base error for model-backed onboarding extraction.
+
+    ``str(exc)`` is reserved for server-side diagnostics. API responses use
+    the stable public fields below so provider details and credentials never
+    become user-facing content.
+    """
+
+    code = "onboarding_model_unavailable"
+    retryable = True
+    public_message = "The onboarding assistant is temporarily unavailable. Please try again shortly."
+
+    def __init__(self, message: str | None = None) -> None:
+        self.internal_message = message or self.public_message
+        super().__init__(self.internal_message)
 
 
 class OnboardingModelUnavailableError(OnboardingRequirementsError):
     """Raised when the configured onboarding model cannot be used."""
 
+    code = "onboarding_model_unavailable"
+    public_message = "The onboarding assistant is temporarily unavailable. Please try again shortly."
+
 
 class OnboardingModelResponseError(OnboardingRequirementsError):
     """Raised when the onboarding model returns an invalid response."""
 
+    code = "onboarding_response_invalid"
+    public_message = "We couldn't process that setup request. Please try again."
+
+
+class OnboardingModelRateLimitedError(OnboardingRequirementsError):
+    """Raised when the configured provider rejects a request with HTTP 429."""
+
+    code = "onboarding_provider_rate_limited"
+    public_message = "The onboarding assistant is temporarily busy. Please try again shortly."
+
 
 class ModelBackedRequirementsExtractor:
-    """Gemini-first, model-led requirements extraction.
+    """Provider-neutral, model-led requirements extraction.
 
     The rule-based extractor remains available for isolated tests and local
     experiments, but production never silently falls back to it. If the model
@@ -560,6 +586,7 @@ class ModelBackedRequirementsExtractor:
             extracted = ApplicationRequirements.model_validate(model_payload)
             merged = self._merge(current, extracted)
             merged = self._normalize_integration_decisions(merged, message)
+            merged.completeness_score = merged.calculate_completeness_score()
             merged.extraction_source = "model"
             return merged
         except (ValidationError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
@@ -568,6 +595,25 @@ class ModelBackedRequirementsExtractor:
                 return await self.fallback.extract(message, current, pending_requirement)
             raise OnboardingModelResponseError(
                 "The onboarding model returned an invalid requirements response. Try again."
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            logger.warning("Onboarding provider returned HTTP %s", status_code)
+            if self.allow_fallback and self.fallback is not None:
+                return await self.fallback.extract(message, current, pending_requirement)
+            if status_code == 429:
+                raise OnboardingModelRateLimitedError(
+                    "The configured onboarding provider is rate limited."
+                ) from exc
+            raise OnboardingModelUnavailableError(
+                "The configured onboarding provider rejected the request."
+            ) from exc
+        except httpx.RequestError as exc:
+            logger.warning("Onboarding provider request failed: %s", type(exc).__name__)
+            if self.allow_fallback and self.fallback is not None:
+                return await self.fallback.extract(message, current, pending_requirement)
+            raise OnboardingModelUnavailableError(
+                "The configured onboarding provider could not be reached."
             ) from exc
         except OnboardingRequirementsError:
             raise
@@ -581,13 +627,14 @@ class ModelBackedRequirementsExtractor:
 
     @staticmethod
     def _configured_provider() -> BaseLLMProvider | None:
-        # Requirements extraction is deliberately a Gemini boundary. The
-        # conversational onboarding provider may have its own provider
-        # setting, but extraction must not silently switch to another model or
-        # provider when the Gemini credential is absent.
-        if settings.GOOGLE_API_KEY:
-            return GeminiLLMProvider(settings.GOOGLE_API_KEY)
-        return None
+        # Both conversational replies and structured extraction use the same
+        # provider-neutral router. Provider credentials remain server-side;
+        # no scripted extractor is selected unless the caller explicitly opts
+        # into ``allow_fallback`` for tests/local development.
+        from app.services.onboarding.provider_router import build_onboarding_provider
+
+        provider, _ = build_onboarding_provider()
+        return provider
 
     @staticmethod
     def _validated_current(data: dict[str, Any] | None) -> ApplicationRequirements | None:
@@ -677,6 +724,7 @@ class ModelBackedRequirementsExtractor:
             elif value is not None and value != "":
                 result[key] = value
         result["confidence"] = extracted.confidence
+        result["completeness_score"] = extracted.completeness_score
         return ApplicationRequirements.model_validate(result)
 
     @staticmethod
@@ -894,12 +942,100 @@ class AdaptiveClarificationService:
         ),
     }
 
+    _CONTEXTUAL_QUESTIONS: tuple[tuple[tuple[str, ...], ClarificationQuestion], ...] = (
+        (
+            ("support", "customer", "service"),
+            ClarificationQuestion(
+                requirement="access_and_actions",
+                question="I understand this is a customer-support assistant. Who should be allowed to see customer data, and should it remain read-only or perform confirmed actions?",
+                suggested_answers=[
+                    "Read-only answers for support agents",
+                    "Different access by user role",
+                    "Read data and perform confirmed actions",
+                    "I am not sure yet",
+                ],
+            ),
+        ),
+        (
+            ("developer", "code", "architecture", "repository"),
+            ClarificationQuestion(
+                requirement="tool_permissions",
+                question="Should this developer assistant only analyze the supplied context, or may it create issues, pull requests, or other changes after confirmation?",
+                suggested_answers=[
+                    "Analyze only",
+                    "Read repositories and discussions",
+                    "Allow confirmed write actions",
+                    "I am not sure yet",
+                ],
+            ),
+        ),
+        (
+            ("student", "education", "course", "learning"),
+            ClarificationQuestion(
+                requirement="role_privacy",
+                question="Which roles will use this education assistant, and should each person only see the records allowed for their role?",
+                suggested_answers=[
+                    "Students only see their own records",
+                    "Students and instructors have different access",
+                    "Administrators can see everything allowed by policy",
+                    "I am not sure yet",
+                ],
+            ),
+        ),
+        (
+            ("document", "knowledge", "rag", "search"),
+            ClarificationQuestion(
+                requirement="external_retrieval_policy",
+                question="When private knowledge cannot answer a question, should the runtime stay private or use approved external sources with citations?",
+                suggested_answers=[
+                    "Stay limited to private data",
+                    "Use approved official sources with citations",
+                    "Allow external retrieval only when I enable it",
+                    "I am not sure yet",
+                ],
+            ),
+        ),
+    )
+
     def next_question(self, requirements: ApplicationRequirements) -> ClarificationQuestion | None:
         for missing in requirements.missing_requirements():
             question = self._QUESTIONS.get(missing)
             if question:
                 return question
         return None
+
+    def next_conversation_question(
+        self,
+        requirements: ApplicationRequirements,
+        asked_requirements: set[str] | None = None,
+    ) -> ClarificationQuestion | None:
+        """Return a missing requirement or a contextual checkpoint.
+
+        A complete extraction still receives one conversational checkpoint so
+        a long first prompt cannot silently become a plan without discussing
+        access, actions, privacy, or external retrieval.
+        """
+        missing = self.next_question(requirements)
+        if missing:
+            return missing
+
+        asked = asked_requirements or set()
+        context = f"{requirements.application_type or ''} {requirements.primary_function or ''}".lower()
+        for terms, question in self._CONTEXTUAL_QUESTIONS:
+            if question.requirement not in asked and any(term in context for term in terms):
+                return question
+
+        generic = ClarificationQuestion(
+            requirement="external_retrieval_policy",
+            question="When the runtime cannot find an answer in its connected data, should it ask for clarification, use approved external sources, or return that the information is unavailable?",
+            suggested_answers=[
+                "Ask for clarification",
+                "Use approved external sources with citations",
+                "Return that the information is unavailable",
+                "I am not sure yet",
+            ],
+        )
+        return generic if generic.requirement not in asked else None
 
 
 class RuntimePlanGenerator:
@@ -914,9 +1050,9 @@ class RuntimePlanGenerator:
         fingerprint = requirements.fingerprint()
         previous_version = int((previous_plan or {}).get("plan_version", 0) or 0)
         model_routing = {
-            "provider": configuration.get("provider", "openai"),
-            "model": configuration.get("model", "gpt-4o"),
-            "strategy": configuration.get("routing_strategy", "balanced"),
+            "provider": configuration.get("provider") or "automatic",
+            "model": configuration.get("model") or "automatic",
+            "strategy": configuration.get("routing_strategy") or "balanced",
             "fallback_models": configuration.get("fallback_models", []),
         }
         deployment = {
@@ -931,6 +1067,13 @@ class RuntimePlanGenerator:
         )
         version = max(previous_version, 1) if same_plan else previous_version + 1
         unresolved = requirements.missing_requirements()
+        pending_question = configuration.get("onboarding_pending_question")
+        if pending_question and pending_question not in unresolved:
+            # A complete field extraction still requires one contextual
+            # checkpoint before the plan is considered ready. This keeps the
+            # draft reviewable without silently treating access/privacy
+            # choices as settled.
+            unresolved.append(str(pending_question))
 
         components = [
             RuntimePlanComponent(
@@ -976,11 +1119,12 @@ class RuntimePlanGenerator:
             )
 
         integration_policies: list[dict[str, Any]] = []
-        default_mode = {
+        ownership_modes = {
             "company": "zyntry_managed",
             "end_user": "end_user_oauth",
             "hybrid": "hybrid",
-        }.get(requirements.connection_ownership or "company", "zyntry_managed")
+        }
+        default_mode = ownership_modes.get(requirements.connection_ownership) if requirements.connection_ownership else None
         non_integration_slugs = {"pdf", "docx", "txt", "csv", "markdown", "html", "json", "document_storage"}
         planned_integrations = [
             item for item in requirements.integrations
@@ -1003,17 +1147,13 @@ class RuntimePlanGenerator:
             if not defn:
                 continue
             integration_mode = integration.ownership or requirements.connection_ownership
-            mode = {
-                "company": "zyntry_managed",
-                "end_user": "end_user_oauth",
-                "hybrid": "hybrid",
-            }.get(integration_mode or "company", default_mode)
+            mode = ownership_modes.get(integration_mode) if integration_mode else default_mode
             supports_hybrid = {"zyntry_managed", "end_user_oauth"}.issubset(
                 defn.supported_connection_modes
             )
             if mode == "hybrid" and not supports_hybrid:
                 mode = "zyntry_managed"
-            elif mode not in defn.supported_connection_modes and mode != "hybrid":
+            elif mode is not None and mode not in defn.supported_connection_modes and mode != "hybrid":
                 mode = defn.supported_connection_modes[0]
             default_read_capabilities = [
                 capability.slug for capability in defn.capabilities if not capability.is_write
@@ -1096,4 +1236,5 @@ class RuntimePlanGenerator:
             deployment=deployment,
             assumptions=requirements.assumptions,
             unresolved_requirements=unresolved,
+            completeness_score=requirements.calculate_completeness_score(),
         )

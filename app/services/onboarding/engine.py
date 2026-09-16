@@ -312,21 +312,80 @@ class OnboardingEngine:
 
         # Append user message
         messages = list(session.messages or [])
+        if req.idempotency_key:
+            # A successful retry with the same key returns the existing turn.
+            # A persisted retryable error removes only that failed turn before
+            # processing again, so the conversation never accumulates copies.
+            for index in range(len(messages) - 1, -1, -1):
+                item = messages[index]
+                if item.get("role") != "user" or item.get("idempotency_key") != req.idempotency_key:
+                    continue
+                following = messages[index + 1] if index + 1 < len(messages) else None
+                if isinstance(following, dict) and following.get("role") == "assistant" and following.get("error"):
+                    messages = messages[:index]
+                elif isinstance(following, dict) and following.get("role") == "assistant":
+                    return OnboardingMessageResponse(
+                        session_id=str(session.id),
+                        response=str(following.get("content") or ""),
+                        state=session.state,
+                        configuration=dict(session.configuration or {}),
+                        is_complete=session.state == "completed",
+                        application_requirements=(session.configuration or {}).get("application_requirements"),
+                        runtime_plan=(session.configuration or {}).get("runtime_plan"),
+                    )
+                break
         messages.append({
             "role": "user",
             "content": req.message,
             "timestamp": datetime.now(UTC).isoformat(),
+            "idempotency_key": req.idempotency_key,
         })
 
         current_config = dict(session.configuration or {})
 
         # Step 1: LLM interprets user message and proposes actions
-        ai_resp = await self.model_provider.generate_step_response(
-            user_message=req.message,
-            current_state=session.state,
-            current_config=current_config,
-            history=messages,
-        )
+        try:
+            ai_resp = await self.model_provider.generate_step_response(
+                user_message=req.message,
+                current_state=session.state,
+                current_config=current_config,
+                history=messages,
+            )
+        except OnboardingRequirementsError as exc:
+            # Keep the user's turn and a safe retry marker durable even when
+            # the conversational provider fails before extraction begins.
+            # This lets the UI resume the same conversation instead of losing
+            # the prompt or creating a second onboarding session.
+            safe_message = getattr(
+                exc,
+                "public_message",
+                "The onboarding assistant is temporarily unavailable. Please try again shortly.",
+            )
+            messages.append({
+                "role": "assistant",
+                "content": safe_message,
+                "timestamp": datetime.now(UTC).isoformat(),
+                "error": {
+                    "code": getattr(exc, "code", "onboarding_model_unavailable"),
+                    "retryable": bool(getattr(exc, "retryable", True)),
+                },
+            })
+            try:
+                await self.uow.onboarding_sessions.update(
+                    session,
+                    messages=messages,
+                    configuration={
+                        **current_config,
+                        "onboarding_model_error": {
+                            "code": getattr(exc, "code", "onboarding_model_unavailable"),
+                            "retryable": bool(getattr(exc, "retryable", True)),
+                        },
+                    },
+                )
+                await self.uow.commit()
+            except Exception:
+                logger.exception("Could not persist failed onboarding turn")
+            raise
         ai_resp, _ = await self._apply_requirements_intelligence(
             ai_resp=ai_resp,
             message=req.message,
@@ -398,6 +457,7 @@ class OnboardingEngine:
             proposed_intent=ai_resp.proposed_intent,
             proposed_data=ai_resp.proposed_data,
         )
+        validated_config.pop("onboarding_model_error", None)
         self._append_integration_availability_notice(ai_resp)
         validated_config = self._attach_runtime_plan(
             validated_config,
@@ -405,12 +465,15 @@ class OnboardingEngine:
         )
 
         # Append assistant response
-        messages.append({
+        assistant_message: dict[str, Any] = {
             "role": "assistant",
             "content": ai_resp.text,
             "timestamp": datetime.now(UTC).isoformat(),
             "proposed_intent": ai_resp.proposed_intent,
-        })
+        }
+        if ai_resp.proposed_data.get("onboarding_model_error"):
+            assistant_message["error"] = ai_resp.proposed_data["onboarding_model_error"]
+        messages.append(assistant_message)
 
         await self.uow.onboarding_sessions.update(
             session,
@@ -471,7 +534,10 @@ class OnboardingEngine:
                 message=message,
                 current_data=stored_requirements,
                 history=history,
-                pending_requirement=current_config.get("pending_requirement"),
+                pending_requirement=(
+                    current_config.get("pending_requirement")
+                    or current_config.get("onboarding_pending_question")
+                ),
             )
         except OnboardingRequirementsError as exc:
             # Never silently infer a plan when the production model is
@@ -484,9 +550,13 @@ class OnboardingEngine:
             ai_resp.proposed_data = {
                 "application_requirements": requirements.model_dump(mode="json"),
                 "onboarding_model_error": {
-                    "code": type(exc).__name__,
-                    "message": str(exc),
-                    "retryable": True,
+                    "code": getattr(exc, "code", "onboarding_model_unavailable"),
+                    "message": getattr(
+                        exc,
+                        "public_message",
+                        "The onboarding assistant is temporarily unavailable. Please try again shortly.",
+                    ),
+                    "retryable": bool(getattr(exc, "retryable", True)),
                 },
             }
             ai_resp.proposed_intent = "clarify_requirements"
@@ -494,10 +564,19 @@ class OnboardingEngine:
                 "I can’t safely continue because the onboarding model is unavailable. "
                 "Nothing was configured. Please try again in a moment."
             )
+            ai_resp.text = getattr(
+                exc,
+                "public_message",
+                "The onboarding assistant is temporarily unavailable. Please try again shortly.",
+            )
             ai_resp.suggested_actions = ["Try again"]
             return ai_resp, requirements
 
         requirement_configuration = self._requirements_configuration(requirements)
+        # Completeness is a backend validation result. It is never supplied
+        # by the model and never used as a substitute for the clarification
+        # checkpoint below.
+        requirements.completeness_score = requirements.calculate_completeness_score()
         ai_resp.proposed_data = {
             **ai_resp.proposed_data,
             "application_requirements": requirements.model_dump(mode="json"),
@@ -513,8 +592,24 @@ class OnboardingEngine:
             if value is not None:
                 ai_resp.proposed_data[key] = value
 
-        question = self.clarification_service.next_question(requirements)
-        if self._should_prioritize_clarification(current_state, requirements, question):
+        asked_requirements = {
+            str(item)
+            for item in current_config.get("onboarding_questions_asked", [])
+            if item
+        }
+        pending_question = current_config.get("onboarding_pending_question")
+        if pending_question and pending_question not in requirements.missing_requirements():
+            asked_requirements.add(str(pending_question))
+        question = self.clarification_service.next_conversation_question(
+            requirements,
+            asked_requirements=asked_requirements,
+        )
+        should_ask_context = (
+            current_state == "onboarding_started"
+            and not requirements.missing_requirements()
+            and not current_config.get("onboarding_exploration_complete")
+        )
+        if self._should_prioritize_clarification(current_state, requirements, question) or should_ask_context:
             if question:
                 ai_resp.text = (
                     "I’ve captured the requirements you provided. "
@@ -522,6 +617,8 @@ class OnboardingEngine:
                 )
                 ai_resp.proposed_intent = "clarify_requirements"
                 ai_resp.proposed_data["pending_requirement"] = question.requirement
+                ai_resp.proposed_data["onboarding_pending_question"] = question.requirement
+                ai_resp.proposed_data["onboarding_questions_asked"] = sorted(asked_requirements)
                 ai_resp.suggested_actions = question.suggested_answers
             else:
                 ready_data = self._requirements_configuration(requirements)
@@ -534,6 +631,8 @@ class OnboardingEngine:
                     **ai_resp.proposed_data,
                     **ready_data,
                     "pending_requirement": None,
+                    "onboarding_pending_question": None,
+                    "onboarding_exploration_complete": True,
                 }
                 ai_resp.suggested_actions = ["Low latency", "Balanced", "Maximum quality"]
         return ai_resp, requirements
@@ -560,11 +659,12 @@ class OnboardingEngine:
     def _requirements_configuration(
         requirements: ApplicationRequirements,
     ) -> dict[str, Any]:
-        ownership_mode = {
+        ownership_modes = {
             "company": "zyntry_managed",
             "end_user": "end_user_oauth",
             "hybrid": "hybrid",
-        }.get(requirements.connection_ownership or "company", "zyntry_managed")
+        }
+        ownership_mode = ownership_modes.get(requirements.connection_ownership) if requirements.connection_ownership else None
         document_resource_slugs = {
             "pdf", "docx", "txt", "csv", "markdown", "html", "json", "document_storage"
         }
@@ -583,13 +683,15 @@ class OnboardingEngine:
                 item.slug for item in defn.capabilities
                 if requested.write_access or not item.is_write
             ]
-        return {
+        result: dict[str, Any] = {
             "use_case": requirements.application_type or "general_ai_application",
             "application_type": requirements.application_type or "general_ai_application",
-            "integration_mode": ownership_mode,
             "integrations": integrations,
             "capabilities": capabilities,
         }
+        if ownership_mode:
+            result["integration_mode"] = ownership_mode
+        return result
 
     def _attach_runtime_plan(
         self,
@@ -814,6 +916,20 @@ class OnboardingEngine:
                 config["pending_requirement"] = proposed_data["pending_requirement"]
             else:
                 config.pop("pending_requirement", None)
+        if "onboarding_pending_question" in proposed_data:
+            pending = proposed_data["onboarding_pending_question"]
+            if pending:
+                config["onboarding_pending_question"] = str(pending)
+            else:
+                config.pop("onboarding_pending_question", None)
+        if "onboarding_questions_asked" in proposed_data:
+            config["onboarding_questions_asked"] = list(dict.fromkeys(
+                str(item) for item in proposed_data["onboarding_questions_asked"] if item
+            ))
+        if "onboarding_exploration_complete" in proposed_data:
+            config["onboarding_exploration_complete"] = bool(
+                proposed_data["onboarding_exploration_complete"]
+            )
 
         if proposed_intent == "clarify_requirements":
             return config, "clarifying_requirements"
@@ -843,7 +959,8 @@ class OnboardingEngine:
         if proposed_intent == "set_use_case_and_mode":
             config["use_case"] = proposed_data.get("use_case", "general_ai_application")
             config["application_type"] = proposed_data.get("application_type", "customer_facing_ai_app")
-            config["integration_mode"] = proposed_data.get("integration_mode", "end_user_oauth")
+            if proposed_data.get("integration_mode"):
+                config["integration_mode"] = proposed_data["integration_mode"]
             if proposed_data.get("runtime_name"):
                 config["runtime_name"] = proposed_data["runtime_name"]
             if "integrations" in proposed_data and proposed_data["integrations"]:
@@ -853,11 +970,10 @@ class OnboardingEngine:
             return config, "selecting_integrations"
 
         if proposed_intent == "set_application_type":
-            mode = proposed_data.get("integration_mode", "zyntry_managed")
-            if mode not in ("zyntry_managed", "end_user_oauth", "hybrid"):
-                mode = "zyntry_managed"
             config["application_type"] = proposed_data.get("application_type", "customer_facing_ai_app")
-            config["integration_mode"] = mode
+            mode = proposed_data.get("integration_mode")
+            if mode in ("zyntry_managed", "end_user_oauth", "hybrid"):
+                config["integration_mode"] = mode
             if proposed_data.get("runtime_name"):
                 config["runtime_name"] = proposed_data["runtime_name"]
             if "integrations" in proposed_data and proposed_data["integrations"]:
@@ -880,8 +996,8 @@ class OnboardingEngine:
         if proposed_intent == "confirm_configuration":
             if proposed_data.get("runtime_name"):
                 config["runtime_name"] = proposed_data["runtime_name"]
-            config["model"] = proposed_data.get("model", "gpt-4o")
-            config["provider"] = proposed_data.get("provider", "openai")
+            config["model"] = proposed_data.get("model", "automatic")
+            config["provider"] = proposed_data.get("provider", "automatic")
             config["routing_strategy"] = proposed_data.get("routing_strategy", "balanced")
             config["environment"] = proposed_data.get("environment", "development")
             return config, "confirming_configuration"
@@ -959,8 +1075,10 @@ class OnboardingEngine:
         return slug.replace("_", " ").strip().title()
 
     @staticmethod
-    def _resolve_connection_mode(slug: str, requested_mode: str) -> tuple[str, str]:
+    def _resolve_connection_mode(slug: str, requested_mode: str | None) -> tuple[str | None, str]:
         """Return the effective mode and explain any safe fallback."""
+        if not requested_mode:
+            return None, "not_selected"
         defn = integration_registry.get(slug)
         if defn is None:
             return requested_mode, "requested"
@@ -1024,7 +1142,7 @@ class OnboardingEngine:
                     continue
                 requested = policy.get(
                     "requested_connection_mode",
-                    policy.get("connection_mode", config.get("integration_mode", "zyntry_managed")),
+                    policy.get("connection_mode", config.get("integration_mode")),
                 )
                 mode, resolution = self._resolve_connection_mode(slug, requested)
                 normalized_policies.append({
@@ -1097,7 +1215,7 @@ class OnboardingEngine:
             if slug not in document_resource_slugs
         ]
         capabilities_map = config.get("capabilities", {})
-        integration_mode = config.get("integration_mode", "zyntry_managed")
+        integration_mode = config.get("integration_mode")
         integration_modes = {
             **config.get("integration_modes", {}),
             **req.integration_modes,
@@ -1110,6 +1228,10 @@ class OnboardingEngine:
 
             caps = capabilities_map.get(slug, [c.slug for c in defn.capabilities if not c.is_write])
             requested_mode = integration_modes.get(slug, integration_mode)
+            if not requested_mode:
+                raise ValueError(
+                    f"Choose who owns the {defn.name} connection before creating the runtime."
+                )
             mode, mode_resolution = self._resolve_connection_mode(slug, requested_mode)
 
             enabled_integrations_list.append({

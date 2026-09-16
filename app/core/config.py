@@ -69,9 +69,13 @@ class AppSettings(BaseSettings):
     DEEPSEEK_API_KEY: str = ""
     OPENROUTER_API_KEY: str = ""
     GROQ_API_KEY: str = ""
+    MISTRAL_API_KEY: str = ""
     FIREWORKS_API_KEY: str = ""
-    ONBOARDING_PROVIDER: str = "google"
-    ONBOARDING_MODEL: str = "gemini-2.5-flash"
+    # Onboarding is provider-neutral by default. An explicit provider/model
+    # remains a preference, while other configured providers may be used for
+    # health-aware failover.
+    ONBOARDING_PROVIDER: str = "auto"
+    ONBOARDING_MODEL: str = "auto"
     # Disabled by default so production never guesses requirements when the
     # model is unavailable. Local tests may opt in explicitly.
     ONBOARDING_ALLOW_FALLBACK: bool = False

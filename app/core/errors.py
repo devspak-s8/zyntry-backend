@@ -17,6 +17,9 @@ _TECHNICAL_ERROR_PATTERNS = (
     re.compile(r"\b(?:sqlalchemy|asyncpg|psycopg|redis|uvicorn|fastapi|pydantic)\b", re.I),
     re.compile(r"(?:file\s+\"|line\s+\d+|errno\s*[:=]|connection refused|connection reset)", re.I),
     re.compile(r"\b(?:nullpointer|attributeerror|keyerror|typeerror|valueerror|operationalerror)\b", re.I),
+    re.compile(r"(?:backend|internal)\s+(?:error|service|failure|failed|could not)", re.I),
+    re.compile(r"(?:could not|failed to)\s+(?:generate|fetch|exchange)\s+.*(?:url|token|authorization)", re.I),
+    re.compile(r"\b(?:integrityerror|duplicate key|constraint violation|no such table|connection pool)\b", re.I),
 )
 
 
@@ -84,9 +87,6 @@ def safe_http_detail(status_code: int, detail: object) -> object:
     traceback, driver error, file path, or server-side exception is replaced by
     a stable public message; the full exception is still logged by the handler.
     """
-    if status_code >= 500:
-        return "A temporary service issue occurred. Please try again shortly."
-
     if isinstance(detail, dict):
         raw_message = detail.get("message") or detail.get("detail")
         if isinstance(raw_message, str) and not _contains_technical_detail(raw_message):
@@ -96,7 +96,7 @@ def safe_http_detail(status_code: int, detail: object) -> object:
             }
             # These fields are intentionally user-facing policy information,
             # not implementation diagnostics.
-            for key in ("guardrail_violations", "policy", "status_code"):
+            for key in ("guardrail_violations", "policy", "status_code", "retryable", "action"):
                 if key in detail:
                     safe[key] = detail[key]
             return safe
@@ -104,6 +104,12 @@ def safe_http_detail(status_code: int, detail: object) -> object:
             "code": detail.get("code", "request_error"),
             "message": "Please review the request and try again.",
         }
+
+    # Structured domain errors may intentionally use a 5xx status (for
+    # example, a provider rate-limit or onboarding outage). Preserve their
+    # safe public contract while still replacing plain infrastructure text.
+    if status_code >= 500:
+        return "A temporary service issue occurred. Please try again shortly."
 
     if isinstance(detail, list):
         messages: list[str] = []

@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+import httpx
+
 from app.services.integrations.definitions import integration_registry
 
 logger = logging.getLogger(__name__)
@@ -659,9 +661,9 @@ class ConfiguredOnboardingModelProvider:
 
     The model interprets the conversation and proposes a typed onboarding
     action. The engine still validates that action against the integration
-    registry and the user's permissions before changing state. The fast
-    provider is retained only as an availability fallback when no provider
-    credential is configured or a model response cannot be validated.
+    registry and the user's permissions before changing state. Provider
+    selection is routed across configured model providers; the fast provider
+    is retained only as an explicitly enabled development fallback.
     """
 
     _ALLOWED_INTENTS = {
@@ -683,26 +685,10 @@ class ConfiguredOnboardingModelProvider:
 
     @staticmethod
     def _provider() -> tuple[Any | None, str]:
-        """Build the configured provider lazily to avoid import cycles."""
-        from app.core.config import settings
-        from app.services.rag import AnthropicLLMProvider, OpenAILLMProvider
+        """Build the provider router lazily to avoid import cycles."""
+        from app.services.onboarding.provider_router import build_onboarding_provider
 
-        preferred = getattr(settings, "ONBOARDING_PROVIDER", "google").lower()
-        model = getattr(settings, "ONBOARDING_MODEL", "gemini-2.5-flash")
-        if preferred in {"google", "gemini"} and settings.GOOGLE_API_KEY:
-            # GeminiLLMProvider lives with the shared LLM adapters used by
-            # requirements extraction. Import it lazily because that module
-            # also imports onboarding schemas during application startup.
-            from app.services.onboarding.intelligence import GeminiLLMProvider
-
-            return GeminiLLMProvider(settings.GOOGLE_API_KEY), model
-        if preferred == "openai" and settings.OPENAI_API_KEY:
-            return OpenAILLMProvider(settings.OPENAI_API_KEY), model
-        if preferred == "anthropic" and settings.ANTHROPIC_API_KEY:
-            return AnthropicLLMProvider(settings.ANTHROPIC_API_KEY), model
-        # Respect the preferred provider. Do not silently switch providers
-        # for onboarding when the user has not configured one.
-        return None, model
+        return build_onboarding_provider()
 
     @staticmethod
     def _capability_manifest() -> list[dict[str, Any]]:
@@ -820,8 +806,10 @@ class ConfiguredOnboardingModelProvider:
                 return await self.fallback.generate_step_response(
                     user_message, current_state, current_config, history
                 )
-            raise RuntimeError(
-                "The configured onboarding model is unavailable. Configure GOOGLE_API_KEY and try again."
+            from app.services.onboarding.intelligence import OnboardingModelUnavailableError
+
+            raise OnboardingModelUnavailableError(
+                "The configured onboarding model is unavailable."
             )
 
         system = """You are Zyntry's conversational runtime architect.
@@ -869,13 +857,52 @@ stores a draft; project attachment and connector authorization happen later.
                 temperature=0.25,
             )
             return self._parse_response(content)
-        except Exception:
-            logger.exception("Onboarding conversational model failed")
+        except httpx.HTTPStatusError as exc:
+            logger.warning(
+                "Onboarding conversational provider returned HTTP %s",
+                exc.response.status_code,
+            )
+            from app.services.onboarding.intelligence import (
+                OnboardingModelRateLimitedError,
+                OnboardingModelUnavailableError,
+            )
+
             if bool(getattr(settings, "ONBOARDING_ALLOW_FALLBACK", False)):
                 return await self.fallback.generate_step_response(
                     user_message, current_state, current_config, history
                 )
-            raise
+            if exc.response.status_code == 429:
+                raise OnboardingModelRateLimitedError(
+                    "The configured onboarding provider is rate limited."
+                ) from exc
+            raise OnboardingModelUnavailableError(
+                "The configured onboarding provider rejected the request."
+            ) from exc
+        except httpx.RequestError as exc:
+            logger.warning(
+                "Onboarding conversational provider request failed: %s",
+                type(exc).__name__,
+            )
+            from app.services.onboarding.intelligence import OnboardingModelUnavailableError
+
+            if bool(getattr(settings, "ONBOARDING_ALLOW_FALLBACK", False)):
+                return await self.fallback.generate_step_response(
+                    user_message, current_state, current_config, history
+                )
+            raise OnboardingModelUnavailableError(
+                "The configured onboarding provider could not be reached."
+            ) from exc
+        except Exception as exc:
+            logger.exception("Onboarding conversational model failed")
+            from app.services.onboarding.intelligence import OnboardingModelResponseError
+
+            if bool(getattr(settings, "ONBOARDING_ALLOW_FALLBACK", False)):
+                return await self.fallback.generate_step_response(
+                    user_message, current_state, current_config, history
+                )
+            raise OnboardingModelResponseError(
+                "The onboarding model returned an invalid response."
+            ) from exc
 
     def _extract_runtime_name(self, message: str) -> str | None:
         """Keep the engine's name extraction compatible with the fallback."""
