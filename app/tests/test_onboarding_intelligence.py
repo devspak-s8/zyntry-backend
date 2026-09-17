@@ -33,6 +33,28 @@ class FakeLLM:
         )
 
 
+class NaturalLanguageThenJsonLLM:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def generate(self, messages, model, max_tokens=2048, temperature=0.7):
+        self.calls += 1
+        if self.calls == 1:
+            return ("I captured the requirements and will continue.", 12)
+        return (
+            '{"schema_version":"1.0","application_type":"ai_customer_support",'
+            '"primary_function":"Answer customer questions",'
+            '"target_users":["customers","support teams"],'
+            '"inputs":["customer questions"],"outputs":["support answers"],'
+            '"requires_documents":true,"document_formats":["pdf"],'
+            '"requires_external_data":false,"requires_tools":true,'
+            '"requires_memory":true,"memory_scope":"session",'
+            '"connection_ownership":"company","integrations":["postgresql"],'
+            '"integration_decisions":["postgresql"],"confidence":0.9}',
+            42,
+        )
+
+
 @pytest.mark.asyncio
 async def test_model_extraction_is_validated_and_merged() -> None:
     extractor = ModelBackedRequirementsExtractor(provider=FakeLLM())
@@ -44,6 +66,22 @@ async def test_model_extraction_is_validated_and_merged() -> None:
     assert requirements.application_type == "resume_analyzer"
     assert requirements.document_formats == ["pdf", "docx"]
     assert requirements.confidence == 0.94
+    assert requirements.extraction_source == "model"
+
+
+@pytest.mark.asyncio
+async def test_model_extraction_repairs_non_json_provider_response() -> None:
+    provider = NaturalLanguageThenJsonLLM()
+    extractor = ModelBackedRequirementsExtractor(provider=provider)
+
+    requirements = await extractor.extract(
+        "Use company-managed PostgreSQL and private project documents.",
+        current_data={"application_type": "ai_customer_support"},
+    )
+
+    assert provider.calls == 2
+    assert requirements.integration_slugs() == ["postgresql"]
+    assert requirements.requires_documents is True
     assert requirements.extraction_source == "model"
 
 

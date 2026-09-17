@@ -643,6 +643,39 @@ class ModelBackedRequirementsExtractor:
                 )
             return merged
         except (ValidationError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            # A provider can occasionally ignore the JSON-only instruction and
+            # return a normal conversational sentence. Give the same model one
+            # bounded repair attempt rather than failing a valid onboarding
+            # turn. This remains model-backed; it never invokes the scripted
+            # extractor or invents requirements locally.
+            try:
+                repaired_content, repaired_usage = await self._repair_invalid_response(
+                    content=content,
+                    message=message,
+                    current=current,
+                )
+                repaired_payload = self._prepare_model_payload(self._parse_json(repaired_content))
+                repaired = ApplicationRequirements.model_validate(repaired_payload)
+                merged = self._merge(current, repaired)
+                merged = self._normalize_integration_decisions(merged, message)
+                merged.completeness_score = merged.calculate_completeness_score()
+                merged.extraction_source = "model"
+                if trace and call_id:
+                    trace.finish_call(
+                        call_id,
+                        status="repaired",
+                        provider=getattr(self.provider, "last_provider", None),
+                        model=getattr(self.provider, "last_model", None) or self.model,
+                        usage=usage,
+                        output_text=repaired_content,
+                        attempts=len(getattr(self.provider, "last_attempts", []) or []) or 1,
+                    )
+                return merged
+            except Exception as repair_exc:
+                logger.warning(
+                    "Onboarding model response repair failed: %s",
+                    type(repair_exc).__name__,
+                )
             logger.warning("Onboarding model returned invalid requirements: %s", exc)
             if trace and call_id:
                 trace.finish_call(
@@ -711,6 +744,69 @@ class ModelBackedRequirementsExtractor:
             raise OnboardingModelResponseError(
                 "The onboarding model could not interpret this request. Try again."
             ) from exc
+
+    async def _repair_invalid_response(
+        self,
+        *,
+        content: str,
+        message: str,
+        current: ApplicationRequirements | None,
+    ) -> tuple[str, int]:
+        """Ask the configured model to repair one malformed extraction response."""
+
+        if self.provider is None:
+            raise OnboardingModelUnavailableError()
+
+        repair_messages = [
+            {
+                "role": "system",
+                "content": (
+                    self._system_prompt()
+                    + "\nThe previous response was malformed. Convert it into the required JSON object. "
+                    "Return JSON only; do not explain the repair."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "current_requirements": current.model_dump(mode="json") if current else None,
+                        "latest_message": message,
+                        "previous_response": content[:12000],
+                    },
+                    default=str,
+                ),
+            },
+        ]
+        trace = current_trace()
+        repair_call_id = trace.start_call(
+            operation="requirements_repair",
+            model=self.model,
+            messages=repair_messages,
+        ) if trace else None
+        try:
+            with use_call(repair_call_id) if repair_call_id else nullcontext():
+                repaired_content, repaired_usage = await self.provider.generate(
+                    messages=repair_messages,
+                    model=self.model,
+                    max_tokens=1800,
+                    temperature=0.0,
+                )
+        except Exception as exc:
+            if trace and repair_call_id:
+                trace.finish_call(repair_call_id, status="failed", error=exc)
+            raise
+        if trace and repair_call_id:
+            trace.finish_call(
+                repair_call_id,
+                status="completed",
+                provider=getattr(self.provider, "last_provider", None),
+                model=getattr(self.provider, "last_model", None) or self.model,
+                usage=repaired_usage,
+                output_text=repaired_content,
+                attempts=len(getattr(self.provider, "last_attempts", []) or []) or 1,
+            )
+        return repaired_content, repaired_usage
 
     @staticmethod
     def _configured_provider() -> BaseLLMProvider | None:
