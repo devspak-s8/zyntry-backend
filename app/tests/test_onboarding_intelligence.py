@@ -93,6 +93,27 @@ async def test_conversational_provider_maps_provider_429_to_safe_retryable_error
     )
 
 
+def test_model_payload_normalizes_string_integration_decisions() -> None:
+    payload = {
+        "application_type": "customer_support",
+        "primary_function": "Answer support questions",
+        "integrations": [
+            {"slug": "document_storage", "purpose": "Private documents"},
+            {"slug": "postgresql", "purpose": "Customer records"},
+        ],
+        "integration_decisions": ["document_storage", "postgresql"],
+    }
+
+    normalized = ModelBackedRequirementsExtractor._prepare_model_payload(payload)
+    requirements = ApplicationRequirements.model_validate(normalized)
+
+    assert [item.slug for item in requirements.integration_decisions] == [
+        "document_storage",
+        "postgresql",
+    ]
+    assert all(item.decision == "direct" for item in requirements.integration_decisions)
+
+
 @pytest.mark.asyncio
 async def test_onboarding_provider_router_fails_over_to_configured_provider(monkeypatch) -> None:
     from app.services.onboarding import provider_router

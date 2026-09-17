@@ -25,7 +25,8 @@ class GoogleProvider(BaseModelProvider):
         models: list[ModelInfo] = []
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.get(
-                f"{self.BASE_URL}/models?key={api_key}",
+                f"{self.BASE_URL}/models",
+                headers={"x-goog-api-key": api_key},
             )
             if resp.status_code != 200:
                 return models
@@ -50,7 +51,8 @@ class GoogleProvider(BaseModelProvider):
     async def test_connection(self, api_key: str) -> bool:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(
-                f"{self.BASE_URL}/models?key={api_key}",
+                f"{self.BASE_URL}/models",
+                headers={"x-goog-api-key": api_key},
             )
             return resp.status_code == 200
 
@@ -61,8 +63,8 @@ class GoogleProvider(BaseModelProvider):
             contents.append({"role": role, "parts": [{"text": msg["content"]}]})
         async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(
-                f"{self.BASE_URL}/models/{model}:generateContent?key={api_key}",
-                headers={"Content-Type": "application/json"},
+                f"{self.BASE_URL}/models/{model}:generateContent",
+                headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
                 json={"contents": contents, "generationConfig": {"maxOutputTokens": max_tokens, "temperature": temperature}},
             )
             resp.raise_for_status()
@@ -88,8 +90,8 @@ class GoogleProvider(BaseModelProvider):
         async with httpx.AsyncClient(timeout=120) as client:
             async with client.stream(
                 "POST",
-                f"{self.BASE_URL}/models/{model}:streamGenerateContent?alt=sse&key={api_key}",
-                headers={"Content-Type": "application/json"},
+                f"{self.BASE_URL}/models/{model}:streamGenerateContent?alt=sse",
+                headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
                 json={
                     "contents": contents,
                     "generationConfig": {

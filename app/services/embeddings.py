@@ -199,8 +199,8 @@ class GoogleEmbeddingProvider(BaseEmbeddingProvider):
 
     async def embed(self, texts: list[str], metadata: list[EmbeddingMetadata], use_cache: bool = True) -> list[list[float]]:
         response = await self._http_client.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{self._model}:batchEmbedContents?key={self._api_key}",
-            headers={"Content-Type": "application/json"},
+            f"https://generativelanguage.googleapis.com/v1beta/models/{self._model}:batchEmbedContents",
+            headers={"Content-Type": "application/json", "x-goog-api-key": self._api_key},
             json={
                 "requests": [
                     {"model": f"models/{self._model}", "content": {"parts": [{"text": text}]}}

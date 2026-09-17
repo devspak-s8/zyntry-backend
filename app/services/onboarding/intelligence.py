@@ -366,14 +366,18 @@ class GeminiLLMProvider(BaseLLMProvider):
         ]
         payload: dict[str, Any] = {
             "contents": contents,
-            "generationConfig": {"maxOutputTokens": max_tokens, "temperature": temperature},
+            "generationConfig": {
+                "maxOutputTokens": max_tokens,
+                "temperature": temperature,
+                "responseMimeType": "application/json",
+            },
         }
         if system:
             payload["systemInstruction"] = {"parts": [{"text": system}]}
         async with httpx.AsyncClient(timeout=120) as client:
             response = await client.post(
                 f"{self._base_url}/models/{model}:generateContent",
-                params={"key": self._api_key},
+                headers={"x-goog-api-key": self._api_key},
                 json=payload,
             )
             response.raise_for_status()
@@ -760,7 +764,19 @@ class ModelBackedRequirementsExtractor:
         decision records before Pydantic validation.
         """
         normalized = dict(payload)
-        decisions = list(normalized.get("integration_decisions") or [])
+        decisions: list[dict[str, Any]] = []
+        for raw_decision in normalized.get("integration_decisions") or []:
+            if isinstance(raw_decision, str) and raw_decision.strip():
+                decisions.append({
+                    "slug": raw_decision.strip().lower(),
+                    "decision": "direct",
+                    "reason": "The model selected this as a direct runtime integration.",
+                })
+            elif isinstance(raw_decision, dict):
+                decision = dict(raw_decision)
+                if decision.get("slug") and not decision.get("decision"):
+                    decision["decision"] = "direct"
+                decisions.append(decision)
         direct_integrations: list[dict[str, Any]] = []
         for raw_item in normalized.get("integrations") or []:
             if not isinstance(raw_item, dict):
@@ -778,8 +794,7 @@ class ModelBackedRequirementsExtractor:
                 continue
             direct_integrations.append(item)
         normalized["integrations"] = direct_integrations
-        if decisions:
-            normalized["integration_decisions"] = decisions
+        normalized["integration_decisions"] = decisions
         return normalized
 
     @staticmethod
