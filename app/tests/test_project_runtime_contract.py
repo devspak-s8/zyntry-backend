@@ -5,7 +5,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import HTTPException
 
+from app.api.v1.dependencies_tenant import require_runtime_access
 from app.api.v1.projects.router import (
     build_project_runtime,
     configure_project,
@@ -247,6 +249,54 @@ async def test_project_runtime_binding_allows_atomic_org_rebind(
     assert previous.project_id is None
     assert replacement.project_id == project.id
     assert response.runtime_id == replacement_id
+
+
+@pytest.mark.asyncio
+async def test_runtime_access_rejects_wrong_project_and_environment(
+    db_session,
+) -> None:
+    uow = UnitOfWork(db_session)
+    organization = await uow.organizations.create(name="Runtime Context Org", slug="runtime-context-org")
+    await uow.commit()
+    user = await uow.users.create(
+        email="runtime-context@zyntry.space",
+        name="Runtime Context Owner",
+        organization_id=organization.id,
+    )
+    project = await uow.projects.create(
+        name="Context Project",
+        slug="context-project",
+        organization_id=organization.id,
+        settings={"environment": "production"},
+        status="ready",
+    )
+    other_project = await uow.projects.create(
+        name="Other Context Project",
+        slug="other-context-project",
+        organization_id=organization.id,
+        settings={"environment": "production"},
+        status="ready",
+    )
+    runtime = await uow.runtimes.create(
+        user_id=user.id,
+        organization_id=organization.id,
+        project_id=project.id,
+        environment="staging",
+        name="Mismatched Runtime",
+        provider="openai",
+        model="gpt-4o",
+    )
+    await uow.commit()
+
+    with pytest.raises(HTTPException) as wrong_project:
+        await require_runtime_access(runtime.id, user, db_session, project_id=other_project.id)
+    assert wrong_project.value.status_code == 409
+    assert wrong_project.value.detail["code"] == "runtime_project_mismatch"
+
+    with pytest.raises(HTTPException) as wrong_environment:
+        await require_runtime_access(runtime.id, user, db_session, project_id=project.id)
+    assert wrong_environment.value.status_code == 409
+    assert wrong_environment.value.detail["code"] == "runtime_environment_mismatch"
 
 
 @pytest.mark.asyncio

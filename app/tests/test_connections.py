@@ -205,3 +205,62 @@ async def test_existing_managed_connection_is_linked_to_runtime(
         integration_slug="github",
     )
     assert [connection.id for connection in listed] == [existing.id]
+
+
+@pytest.mark.asyncio
+async def test_stale_runtime_connection_link_is_cleared_when_policy_is_reenabled(
+    db_session: AsyncSession,
+) -> None:
+    """A revoked or mismatched connection must never remain reported as connected."""
+    uow = UnitOfWork(db_session)
+    integration_service = IntegrationService(uow)
+
+    user = await uow.users.create(email="stale_link@zyntry.space", name="Stale Link User")
+    runtime = await uow.runtimes.create(
+        user_id=user.id,
+        name="Stale Link Runtime",
+        provider="openai",
+        model="gpt-4o",
+    )
+    stale_connection = await uow.integration_connections.create(
+        user_id=user.id,
+        runtime_id=runtime.id,
+        integration_slug="github",
+        connection_mode="zyntry_managed",
+        display_name="Revoked GitHub",
+        auth_method="oauth2",
+        encrypted_credentials="ENCV1:revoked-github-credentials",
+        scopes=["repo"],
+        status="revoked",
+        health_status="unhealthy",
+    )
+    await uow.commit()
+
+    policy = await integration_service.enable_runtime_integration(
+        runtime_id=runtime.id,
+        data=RuntimeIntegrationCreate(
+            integration_slug="github",
+            connection_mode="zyntry_managed",
+            enabled_capabilities=["repository_search"],
+        ),
+    )
+    await uow.runtime_integrations.update(
+        policy,
+        connection_id=stale_connection.id,
+        connection_required=False,
+        connection_status="connected",
+    )
+    await uow.commit()
+
+    refreshed = await integration_service.enable_runtime_integration(
+        runtime_id=runtime.id,
+        data=RuntimeIntegrationCreate(
+            integration_slug="github",
+            connection_mode="zyntry_managed",
+            enabled_capabilities=["repository_search"],
+        ),
+    )
+
+    assert refreshed.connection_id is None
+    assert refreshed.connection_required is True
+    assert refreshed.connection_status == "connection_required"

@@ -68,7 +68,7 @@ async def authorize_connection(
     db: AsyncSession = Depends(get_session),
 ) -> ConnectionAuthorizeResponse:
     if body.runtime_id:
-        await require_runtime_access(body.runtime_id, current_user, db)
+        await require_runtime_access(body.runtime_id, current_user, db, project_id=body.project_id)
     uow = UnitOfWork(db)
     service = ConnectionService(uow)
     try:
@@ -181,7 +181,7 @@ async def create_direct_connection(
     db: AsyncSession = Depends(get_session),
 ) -> IntegrationConnectionRead:
     if body.runtime_id:
-        await require_runtime_access(body.runtime_id, current_user, db)
+        await require_runtime_access(body.runtime_id, current_user, db, project_id=body.project_id)
         body = body.model_copy(update={"end_user_id": body.end_user_id})
     uow = UnitOfWork(db)
     service = ConnectionService(uow)
@@ -199,13 +199,14 @@ async def create_direct_connection(
 async def list_connections(
     current_user: User = Depends(get_current_user),
     runtime_id: Annotated[str | None, Query()] = None,
+    project_id: Annotated[str | None, Query()] = None,
     end_user_id: Annotated[str | None, Query()] = None,
     integration_slug: Annotated[str | None, Query()] = None,
     connection_mode: Annotated[str | None, Query()] = None,
     db: AsyncSession = Depends(get_session),
 ) -> list[IntegrationConnectionRead]:
     if runtime_id:
-        await require_runtime_access(runtime_id, current_user, db)
+        await require_runtime_access(runtime_id, current_user, db, project_id=project_id)
     uow = UnitOfWork(db)
     service = ConnectionService(uow)
     conns = await service.list_connections(

@@ -83,6 +83,7 @@ class RuntimeIntegrationRead(BaseModel):
 
 class ConnectionAuthorizeRequest(BaseModel):
     runtime_id: str | None = None
+    project_id: str | None = None
     connection_mode: str = "zyntry_managed"  # "zyntry_managed" or "end_user_oauth"
     end_user_id: str | None = None           # for Mode B (BYO-User connection)
     display_name: str | None = None
@@ -104,6 +105,7 @@ class ConnectionDirectCreate(BaseModel):
     integration_slug: str
     connection_mode: str = "zyntry_managed"
     runtime_id: str | None = None
+    project_id: str | None = None
     end_user_id: str | None = None
     display_name: str
     auth_method: str = "connection_string"  # "api_key", "connection_string", "credentials", "storage_credentials"

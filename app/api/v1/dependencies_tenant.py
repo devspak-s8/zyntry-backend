@@ -83,6 +83,7 @@ async def require_runtime_access(
     runtime_id: str | uuid.UUID,
     current_user: User,
     db: AsyncSession,
+    project_id: str | uuid.UUID | None = None,
 ) -> Runtime:
     """Load a runtime only when it belongs to the caller's tenant/project.
 
@@ -98,12 +99,56 @@ async def require_runtime_access(
     if runtime is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Runtime not found")
 
+    expected_project_id: uuid.UUID | None = None
+    if project_id is not None:
+        try:
+            expected_project_id = (
+                project_id
+                if isinstance(project_id, uuid.UUID)
+                else uuid.UUID(str(project_id))
+            )
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid project id",
+            ) from exc
+
     if runtime.project_id is not None:
         project = await db.get(Project, runtime.project_id)
         if project is None or project.organization_id != current_user.organization_id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Runtime not found")
+        if expected_project_id is not None and runtime.project_id != expected_project_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "runtime_project_mismatch",
+                    "message": "The selected runtime is not attached to this project.",
+                },
+            )
+
+        # A project stores its environment in settings while a runtime has a
+        # dedicated column.  When the project explicitly reports an
+        # environment, reject inconsistent records instead of allowing
+        # integrations to be mounted into the wrong environment.
+        project_environment = (project.settings or {}).get("environment")
+        if project_environment and runtime.environment != project_environment:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "runtime_environment_mismatch",
+                    "message": "The runtime and project environments do not match.",
+                },
+            )
     elif runtime.user_id != current_user.id and not current_user.is_superuser:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Runtime not found")
+    elif expected_project_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "runtime_project_mismatch",
+                "message": "The selected runtime is not attached to this project.",
+            },
+        )
     return runtime
 
 

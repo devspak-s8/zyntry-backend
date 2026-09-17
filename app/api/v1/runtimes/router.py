@@ -324,6 +324,7 @@ async def create_runtime_api_key(
 async def list_runtime_integrations(
     runtime_id: str,
     current_user: Annotated[User, Depends(get_current_user)],
+    project_id: Annotated[str | None, Query()] = None,
     db: AsyncSession = Depends(get_session),
 ) -> list[RuntimeIntegrationRead]:
     try:
@@ -333,7 +334,7 @@ async def list_runtime_integrations(
 
     uow = UnitOfWork(db)
     service = IntegrationService(uow)
-    await require_runtime_access(rid, current_user, db)
+    await require_runtime_access(rid, current_user, db, project_id=project_id)
     items = await service.list_runtime_integrations(rid)
     return [
         RuntimeIntegrationRead(
@@ -359,6 +360,7 @@ async def enable_runtime_integration(
     runtime_id: str,
     body: RuntimeIntegrationCreate,
     current_user: Annotated[User, Depends(get_current_user)],
+    project_id: Annotated[str | None, Query()] = None,
     db: AsyncSession = Depends(get_session),
 ) -> RuntimeIntegrationRead:
     try:
@@ -366,7 +368,7 @@ async def enable_runtime_integration(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid runtime_id format") from None
 
-    await require_runtime_access(rid, current_user, db)
+    await require_runtime_access(rid, current_user, db, project_id=project_id)
 
     service = IntegrationService(UnitOfWork(db))
     try:
@@ -395,6 +397,7 @@ async def update_runtime_integration(
     integration_slug: str,
     body: RuntimeIntegrationUpdate,
     current_user: Annotated[User, Depends(get_current_user)],
+    project_id: Annotated[str | None, Query()] = None,
     db: AsyncSession = Depends(get_session),
 ) -> RuntimeIntegrationRead:
     try:
@@ -404,7 +407,7 @@ async def update_runtime_integration(
 
     uow = UnitOfWork(db)
     service = IntegrationService(uow)
-    await require_runtime_access(rid, current_user, db)
+    await require_runtime_access(rid, current_user, db, project_id=project_id)
     try:
         item = await service.update_runtime_integration(rid, integration_slug, body)
         return RuntimeIntegrationRead(
@@ -430,6 +433,7 @@ async def disable_runtime_integration(
     runtime_id: str,
     integration_slug: str,
     current_user: Annotated[User, Depends(get_current_user)],
+    project_id: Annotated[str | None, Query()] = None,
     db: AsyncSession = Depends(get_session),
 ) -> None:
     try:
@@ -439,7 +443,7 @@ async def disable_runtime_integration(
 
     uow = UnitOfWork(db)
     service = IntegrationService(uow)
-    await require_runtime_access(rid, current_user, db)
+    await require_runtime_access(rid, current_user, db, project_id=project_id)
     await service.disable_runtime_integration(rid, integration_slug)
 
 

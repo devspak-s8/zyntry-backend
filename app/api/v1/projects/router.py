@@ -458,6 +458,18 @@ async def update_project(
                     status_code=409,
                     detail="Runtime is attached to another project",
                 )
+            effective_project_settings = dict(proj.settings or {})
+            if isinstance(update_data.get("settings"), dict):
+                effective_project_settings.update(update_data["settings"])
+            project_environment = effective_project_settings.get("environment")
+            if project_environment and runtime.environment != project_environment:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "runtime_environment_mismatch",
+                        "message": "The selected runtime belongs to a different environment.",
+                    },
+                )
             attached = await uow.runtimes.get_by_project(pid)
             if attached is not None and attached.id != runtime.id:
                 await uow.runtimes.update(attached, project_id=None)

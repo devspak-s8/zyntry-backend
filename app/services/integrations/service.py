@@ -144,13 +144,34 @@ class IntegrationService:
             rid, data.integration_slug
         )
         if existing:
+            # A policy update must not leave a stale connection link behind.
+            # Preserve only an active connection that still belongs to this
+            # integration and uses the requested connection mode; otherwise
+            # force the runtime back into an explicit connection-required
+            # state so the UI cannot report a different runtime as connected.
+            linked_connection = None
+            if existing.connection_id:
+                linked_connection = await self.uow.integration_connections.get(
+                    existing.connection_id
+                )
+            connection_is_valid = bool(
+                linked_connection
+                and linked_connection.status == "active"
+                and linked_connection.integration_slug == data.integration_slug
+                and linked_connection.connection_mode == effective_mode
+            )
             updated = await self.uow.runtime_integrations.update(
                 existing,
                 connection_mode=effective_mode,
                 enabled_capabilities=enabled_caps,
                 is_enabled=True,
-                connection_required=connection_required,
-                connection_status=connection_status,
+                connection_id=(
+                    linked_connection.id
+                    if connection_is_valid and linked_connection is not None
+                    else None
+                ),
+                connection_required=False if connection_is_valid else connection_required,
+                connection_status="connected" if connection_is_valid else connection_status,
                 config=policy_config,
             )
             await self.uow.commit()
