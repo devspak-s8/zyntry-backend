@@ -459,10 +459,24 @@ class OnboardingEngine:
         )
         validated_config.pop("onboarding_model_error", None)
         self._append_integration_availability_notice(ai_resp)
-        validated_config = self._attach_runtime_plan(
-            validated_config,
-            previous_plan=current_config.get("runtime_plan"),
-        )
+        # Keep planning behind the final conversational checkpoint. During
+        # discovery and clarification we persist requirements only; a plan is
+        # generated once the user confirms the completed configuration.
+        if next_state in ("provisioning", "completed"):
+            validated_config = self._attach_runtime_plan(
+                validated_config,
+                previous_plan=current_config.get("runtime_plan"),
+            )
+        else:
+            # Use the planner's registry validation to normalize integration
+            # policies, but do not persist or return the plan snapshot while
+            # the conversation is still collecting requirements.
+            normalized_config = self._attach_runtime_plan(
+                validated_config,
+                previous_plan=current_config.get("runtime_plan"),
+            )
+            normalized_config.pop("runtime_plan", None)
+            validated_config = normalized_config
 
         # Append assistant response
         assistant_message: dict[str, Any] = {

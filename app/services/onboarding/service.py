@@ -51,6 +51,7 @@ class OnboardingService:
         suggested = self.engine.get_suggested_actions_for_state(
             session.state, session.configuration
         )
+        plan_available = session.state in {"provisioning", "completed"}
         return {
             "id": str(session.id),
             "user_id": str(session.user_id),
@@ -65,7 +66,7 @@ class OnboardingService:
             "created_at": session.created_at.isoformat() if session.created_at else None,
             "updated_at": session.updated_at.isoformat() if session.updated_at else None,
             "application_requirements": (session.configuration or {}).get("application_requirements"),
-            "runtime_plan": (session.configuration or {}).get("runtime_plan"),
+            "runtime_plan": (session.configuration or {}).get("runtime_plan") if plan_available else None,
             "clarification_question": None if session.state == "completed" else self._clarification_question(session.configuration),
         }
 
@@ -82,6 +83,7 @@ class OnboardingService:
         suggested = self.engine.get_suggested_actions_for_state(
             session.state, session.configuration
         )
+        plan_available = session.state in {"provisioning", "completed"}
         return {
             "id": str(session.id),
             "user_id": str(session.user_id),
@@ -96,7 +98,7 @@ class OnboardingService:
             "created_at": session.created_at.isoformat() if session.created_at else None,
             "updated_at": session.updated_at.isoformat() if session.updated_at else None,
             "application_requirements": (session.configuration or {}).get("application_requirements"),
-            "runtime_plan": (session.configuration or {}).get("runtime_plan"),
+            "runtime_plan": (session.configuration or {}).get("runtime_plan") if plan_available else None,
             "clarification_question": None if session.state == "completed" else self._clarification_question(session.configuration),
         }
 
