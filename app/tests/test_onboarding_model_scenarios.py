@@ -596,6 +596,60 @@ async def test_architecture_conversation_uses_full_history_and_host_managed_sour
     assert "GitLab" not in response.text
 
 
+@pytest.mark.asyncio
+async def test_validated_requirements_override_model_connector_question_for_documents() -> None:
+    class FixedExtractor:
+        async def extract(self, **kwargs: Any) -> ApplicationRequirements:
+            return ApplicationRequirements(
+                application_type="ai_customer_support",
+                primary_function="Answer customer questions",
+                target_users=["customers", "support agents"],
+                inputs=["customer questions"],
+                outputs=["grounded support answers"],
+                requires_documents=True,
+                document_formats=[],
+                requires_external_data=False,
+                requires_tools=True,
+                requires_memory=True,
+                memory_scope="session",
+                connection_ownership="company",
+                integrations=[
+                    {"slug": "postgresql", "purpose": "Customer records"},
+                ],
+                extraction_source="model",
+            )
+
+    engine = OnboardingEngine.__new__(OnboardingEngine)
+    engine.requirements_extractor = FixedExtractor()
+    engine.clarification_service = AdaptiveClarificationService()
+    response = OnboardingModelResponse(
+        text=(
+            "Would you like to use a specific document storage integration "
+            "for the private documents?"
+        ),
+        proposed_intent="select_integrations",
+        proposed_data={
+            "integrations": ["document_storage", "postgresql"],
+            "capabilities": {},
+        },
+    )
+
+    response, requirements = await engine._apply_requirements_intelligence(
+        ai_resp=response,
+        message="Use private documents and PostgreSQL.",
+        current_state="onboarding_started",
+        current_config={},
+        history=[],
+    )
+
+    assert requirements.requires_documents is True
+    assert response.proposed_intent == "clarify_requirements"
+    assert response.proposed_data["pending_requirement"] == "document_formats"
+    assert "Which document formats" in response.text
+    assert "document storage integration" not in response.text
+    assert response.proposed_data["integrations"] == ["postgresql"]
+
+
 def test_plan_never_grants_non_direct_integration_decisions() -> None:
     payload = _SCENARIOS[2][2]
     requirements = ApplicationRequirements.model_validate(payload)
