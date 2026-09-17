@@ -152,6 +152,25 @@ def test_model_payload_normalizes_string_integration_decisions() -> None:
     assert all(item.decision == "direct" for item in requirements.integration_decisions)
 
 
+def test_model_json_parser_repairs_missing_commas_without_changing_values() -> None:
+    parsed = ModelBackedRequirementsExtractor._parse_json(
+        """```json
+        {
+          "application_type": "ai_customer_support"
+          "primary_function": "Answer customer questions",
+          "integrations": [
+            {"slug": "postgresql"}
+            {"slug": "slack"}
+          ],
+        }
+        ```"""
+    )
+
+    assert parsed["application_type"] == "ai_customer_support"
+    assert parsed["primary_function"] == "Answer customer questions"
+    assert parsed["integrations"] == [{"slug": "postgresql"}, {"slug": "slack"}]
+
+
 def test_document_storage_is_a_resource_not_an_unsupported_connector() -> None:
     proposed_data = {
         "integrations": ["document_storage"],
