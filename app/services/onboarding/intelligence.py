@@ -780,6 +780,10 @@ class ModelBackedRequirementsExtractor:
         # Models sometimes emit a scalar for a field that is represented as a
         # list in the contract. Normalize that harmless shorthand before
         # Pydantic validation instead of failing the entire onboarding turn.
+        def normalize_list(value: str) -> list[str]:
+            parts = re.split(r"\s*(?:,|\band\b)\s*", value.strip(), flags=re.IGNORECASE)
+            return [part.strip() for part in parts if part.strip()]
+
         for field in (
             "target_users",
             "inputs",
@@ -792,14 +796,91 @@ class ModelBackedRequirementsExtractor:
         ):
             value = normalized.get(field)
             if isinstance(value, str) and value.strip():
-                normalized[field] = [value.strip()]
+                normalized[field] = normalize_list(value)
+
+        boolean_fields = (
+            "requires_ai",
+            "requires_documents",
+            "requires_external_data",
+            "requires_tools",
+            "requires_memory",
+        )
+        for field in boolean_fields:
+            value = normalized.get(field)
+            if not isinstance(value, str):
+                continue
+            key = value.strip().lower().replace("-", "_").replace(" ", "_")
+            if key in {"true", "yes", "enabled", "on", "required"}:
+                normalized[field] = True
+            elif key in {
+                "false",
+                "no",
+                "disabled",
+                "off",
+                "none",
+                "not_needed",
+                "internal_only",
+                "no_documents",
+                "no_external_systems",
+                "no_persistent_memory",
+            }:
+                normalized[field] = False
+            elif field in {"requires_tools", "requires_memory"} and key in {"read_only", "read", "session"}:
+                normalized[field] = True
+
+        memory_scope = normalized.get("memory_scope")
+        if isinstance(memory_scope, str):
+            normalized["memory_scope"] = {
+                "current": "session",
+                "current_session": "session",
+                "per_session": "session",
+                "per_user": "user",
+                "user_account": "user",
+                "team": "organization",
+                "org": "organization",
+                "organization_wide": "organization",
+                "per_request": "request",
+                "stateless": "request",
+            }.get(memory_scope.strip().lower().replace("-", "_").replace(" ", "_"), memory_scope)
+
+        sensitivity = normalized.get("data_sensitivity")
+        if isinstance(sensitivity, str):
+            sensitivity_key = sensitivity.strip().lower()
+            if "regulated" in sensitivity_key or any(term in sensitivity_key for term in ("health", "payment", "financial")):
+                normalized["data_sensitivity"] = "regulated"
+            elif "confidential" in sensitivity_key or "private" in sensitivity_key or "customer" in sensitivity_key:
+                normalized["data_sensitivity"] = "confidential"
+            elif "internal" in sensitivity_key:
+                normalized["data_sensitivity"] = "internal"
+            elif "public" in sensitivity_key:
+                normalized["data_sensitivity"] = "public"
+            else:
+                normalized.pop("data_sensitivity", None)
+
+        expected_scale = normalized.get("expected_scale")
+        if isinstance(expected_scale, str):
+            scale_key = expected_scale.strip().lower().replace("-", "_").replace(" ", "_")
+            normalized["expected_scale"] = {
+                "small_startup": "small",
+                "small_team": "small",
+                "large_team": "large",
+                "large_company": "enterprise",
+            }.get(scale_key, scale_key)
+            if normalized["expected_scale"] not in {"prototype", "small", "medium", "large", "enterprise"}:
+                normalized.pop("expected_scale", None)
 
         decision_aliases = {
             "company_managed": "host_managed",
+            "company": "host_managed",
             "zyntry_managed": "host_managed",
             "internal": "host_managed",
+            "internal_data": "host_managed",
             "user_managed": "direct",
             "end_user_oauth": "direct",
+            "not_supported": "unsupported",
+            "coming_soon": "unsupported",
+            "none": "excluded",
+            "not_needed": "excluded",
         }
 
         def normalize_decision(value: Any) -> str:
@@ -1000,6 +1081,11 @@ class ModelBackedRequirementsExtractor:
         return """You are Zyntry's production onboarding requirements extractor.
 
 Return exactly one JSON object matching ApplicationRequirements schema version 1.0.
+Use ``integrations`` as objects such as {"slug":"postgresql","purpose":"structured data"}
+and ``integration_decisions`` as objects such as {"slug":"postgresql","decision":"direct",
+"reason":"the runtime must query it"}. ``connection_ownership`` must be exactly one of
+``company``, ``end_user``, or ``hybrid``. List fields must be JSON arrays, and unknown scalar
+requirements must be null rather than explanatory prose.
 Interpret the entire conversation semantically; do not use keyword matching or assume that
 merely mentioning a service means the runtime should connect to it. The latest explicit user
 instruction overrides earlier assumptions, while facts not revisited should be preserved from

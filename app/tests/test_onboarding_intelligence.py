@@ -168,7 +168,7 @@ def test_model_payload_normalizes_follow_up_requirements() -> None:
 
     assert requirements.connection_ownership == "company"
     assert requirements.integration_slugs() == ["postgresql"]
-    assert requirements.document_formats == ["PDF, DOCX, TXT, Markdown, CSV, and JSON"]
+    assert requirements.document_formats == ["PDF", "DOCX", "TXT", "Markdown", "CSV", "JSON"]
 
 
 @pytest.mark.asyncio
