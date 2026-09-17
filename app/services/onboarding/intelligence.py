@@ -560,13 +560,13 @@ class ModelBackedRequirementsExtractor:
                 requirements = await self.fallback.extract(message, current, pending_requirement)
                 trace = current_trace()
                 if trace:
-                    call_id = trace.start_call(
+                    fallback_call_id = trace.start_call(
                         operation="requirements_extraction",
                         model=self.model,
                         messages=[],
                     )
                     trace.finish_call(
-                        call_id,
+                        fallback_call_id,
                         status="fallback",
                         provider="local",
                         model="rule_based",
@@ -575,13 +575,13 @@ class ModelBackedRequirementsExtractor:
                 return requirements
             trace = current_trace()
             if trace:
-                call_id = trace.start_call(
+                unavailable_call_id = trace.start_call(
                     operation="requirements_extraction",
                     model=self.model,
                     messages=[],
                 )
                 trace.finish_call(
-                    call_id,
+                    unavailable_call_id,
                     status="failed",
                     provider="unconfigured",
                     model=self.model,

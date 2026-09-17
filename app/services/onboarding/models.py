@@ -810,13 +810,13 @@ class ConfiguredOnboardingModelProvider:
                 )
                 trace = current_trace()
                 if trace:
-                    call_id = trace.start_call(
+                    fallback_call_id = trace.start_call(
                         operation="conversation_response",
                         model=model,
                         messages=[],
                     )
                     trace.finish_call(
-                        call_id,
+                        fallback_call_id,
                         status="fallback",
                         provider="local",
                         model="rule_based",
@@ -828,9 +828,9 @@ class ConfiguredOnboardingModelProvider:
 
             trace = current_trace()
             if trace:
-                call_id = trace.start_call(operation="conversation_response", model=model, messages=[])
+                unavailable_call_id = trace.start_call(operation="conversation_response", model=model, messages=[])
                 trace.finish_call(
-                    call_id,
+                    unavailable_call_id,
                     status="failed",
                     provider="unconfigured",
                     model=model,

@@ -112,7 +112,7 @@ class RoutedOnboardingLLMProvider(BaseLLMProvider):
                 "status": "started",
             })
             trace = current_trace()
-            attempt_id = (
+            active_attempt_id = (
                 trace.start_attempt(
                     operation="provider_routing",
                     provider=candidate.provider,
@@ -134,15 +134,15 @@ class RoutedOnboardingLLMProvider(BaseLLMProvider):
                 self.last_provider = candidate.provider
                 self.last_model = selected_model
                 self.last_attempts[-1]["status"] = "completed"
-                if trace and attempt_id:
-                    trace.finish_attempt(attempt_id, status="completed")
+                if trace and active_attempt_id:
+                    trace.finish_attempt(active_attempt_id, status="completed")
                 return content, usage
             except Exception as exc:  # adapters expose provider-specific failures
                 errors.append(exc)
                 await self.health.record_failure_async(candidate.provider, type(exc).__name__)
                 self.last_attempts[-1].update({"status": "failed", "error": type(exc).__name__})
-                if trace and attempt_id:
-                    trace.finish_attempt(attempt_id, status="failed", error=exc)
+                if trace and active_attempt_id:
+                    trace.finish_attempt(active_attempt_id, status="failed", error=exc)
 
         if errors:
             # Preserve a rate-limit signal when every candidate was rejected;
