@@ -4,6 +4,7 @@ import json
 import logging
 import re
 from collections.abc import AsyncGenerator
+from contextlib import nullcontext
 from typing import Any
 
 import httpx
@@ -19,6 +20,7 @@ from app.schemas.onboarding_intelligence import (
     RuntimePlanComponent,
 )
 from app.services.integrations.definitions import integration_registry
+from app.services.onboarding.telemetry import current_trace, use_call
 from app.services.rag import BaseLLMProvider
 
 logger = logging.getLogger(__name__)
@@ -555,42 +557,96 @@ class ModelBackedRequirementsExtractor:
                 # Development/tests may explicitly opt into the legacy
                 # extractor when no model credential is available. Production
                 # leaves this flag disabled and receives a retryable error.
-                return await self.fallback.extract(message, current, pending_requirement)
+                requirements = await self.fallback.extract(message, current, pending_requirement)
+                trace = current_trace()
+                if trace:
+                    call_id = trace.start_call(
+                        operation="requirements_extraction",
+                        model=self.model,
+                        messages=[],
+                    )
+                    trace.finish_call(
+                        call_id,
+                        status="fallback",
+                        provider="local",
+                        model="rule_based",
+                        fallback_used=True,
+                    )
+                return requirements
+            trace = current_trace()
+            if trace:
+                call_id = trace.start_call(
+                    operation="requirements_extraction",
+                    model=self.model,
+                    messages=[],
+                )
+                trace.finish_call(
+                    call_id,
+                    status="failed",
+                    provider="unconfigured",
+                    model=self.model,
+                    error=RuntimeError("onboarding provider is not configured"),
+                )
             raise OnboardingModelUnavailableError(
                 "The onboarding model is unavailable. Configure GOOGLE_API_KEY and try again."
             )
 
-        try:
-            content, _ = await self.provider.generate(
-                messages=[
-                    {"role": "system", "content": self._system_prompt()},
+        request_messages = [
+            {"role": "system", "content": self._system_prompt()},
+            {
+                "role": "user",
+                "content": json.dumps(
                     {
-                        "role": "user",
-                        "content": json.dumps(
-                            {
-                                "current_requirements": current.model_dump(mode="json") if current else None,
-                                "pending_requirement": pending_requirement,
-                                "conversation_history": history or [],
-                                "latest_message": message,
-                                "integration_registry": self._registry_payload(),
-                            },
-                            default=str,
-                        ),
+                        "current_requirements": current.model_dump(mode="json") if current else None,
+                        "pending_requirement": pending_requirement,
+                        "conversation_history": history or [],
+                        "latest_message": message,
+                        "integration_registry": self._registry_payload(),
                     },
-                ],
-                model=self.model,
-                max_tokens=1800,
-                temperature=0.2,
-            )
+                    default=str,
+                ),
+            },
+        ]
+        trace = current_trace()
+        call_id = trace.start_call(
+            operation="requirements_extraction",
+            model=self.model,
+            messages=request_messages,
+        ) if trace else None
+        try:
+            with use_call(call_id) if call_id else nullcontext():
+                content, usage = await self.provider.generate(
+                    messages=request_messages,
+                    model=self.model,
+                    max_tokens=1800,
+                    temperature=0.2,
+                )
             model_payload = self._prepare_model_payload(self._parse_json(content))
             extracted = ApplicationRequirements.model_validate(model_payload)
             merged = self._merge(current, extracted)
             merged = self._normalize_integration_decisions(merged, message)
             merged.completeness_score = merged.calculate_completeness_score()
             merged.extraction_source = "model"
+            if trace and call_id:
+                trace.finish_call(
+                    call_id,
+                    status="completed",
+                    provider=getattr(self.provider, "last_provider", None),
+                    model=getattr(self.provider, "last_model", None) or self.model,
+                    usage=usage,
+                    output_text=content,
+                    attempts=len(getattr(self.provider, "last_attempts", []) or []) or 1,
+                )
             return merged
         except (ValidationError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
             logger.warning("Onboarding model returned invalid requirements: %s", exc)
+            if trace and call_id:
+                trace.finish_call(
+                    call_id,
+                    status="failed",
+                    error=exc,
+                    attempts=len(getattr(self.provider, "last_attempts", []) or []) or 1,
+                )
             if self.allow_fallback and self.fallback is not None:
                 return await self.fallback.extract(message, current, pending_requirement)
             raise OnboardingModelResponseError(
@@ -599,6 +655,13 @@ class ModelBackedRequirementsExtractor:
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code
             logger.warning("Onboarding provider returned HTTP %s", status_code)
+            if trace and call_id:
+                trace.finish_call(
+                    call_id,
+                    status="failed",
+                    error=exc,
+                    attempts=len(getattr(self.provider, "last_attempts", []) or []) or 1,
+                )
             if self.allow_fallback and self.fallback is not None:
                 return await self.fallback.extract(message, current, pending_requirement)
             if status_code == 429:
@@ -610,15 +673,35 @@ class ModelBackedRequirementsExtractor:
             ) from exc
         except httpx.RequestError as exc:
             logger.warning("Onboarding provider request failed: %s", type(exc).__name__)
+            if trace and call_id:
+                trace.finish_call(
+                    call_id,
+                    status="failed",
+                    error=exc,
+                    attempts=len(getattr(self.provider, "last_attempts", []) or []) or 1,
+                )
             if self.allow_fallback and self.fallback is not None:
                 return await self.fallback.extract(message, current, pending_requirement)
             raise OnboardingModelUnavailableError(
                 "The configured onboarding provider could not be reached."
             ) from exc
         except OnboardingRequirementsError:
+            if trace and call_id:
+                trace.finish_call(
+                    call_id,
+                    status="failed",
+                    attempts=len(getattr(self.provider, "last_attempts", []) or []) or 1,
+                )
             raise
         except Exception as exc:
             logger.exception("Onboarding model extraction failed")
+            if trace and call_id:
+                trace.finish_call(
+                    call_id,
+                    status="failed",
+                    error=exc,
+                    attempts=len(getattr(self.provider, "last_attempts", []) or []) or 1,
+                )
             if self.allow_fallback and self.fallback is not None:
                 return await self.fallback.extract(message, current, pending_requirement)
             raise OnboardingModelResponseError(

@@ -27,6 +27,7 @@ from app.models.notifications import Notification
 from app.models.oauth import OAuthConnection, OAuthProvider, OAuthState
 from app.models.onboarding import OnboardingState, ProviderConnection
 from app.models.onboarding_session import OnboardingSession
+from app.models.onboarding_trace import OnboardingTraceEvent
 from app.models.organizations import Organization
 from app.models.projects import Project
 from app.models.provider_funding import ProviderFundingAccount, ProviderFundingEvent
@@ -93,6 +94,7 @@ __all__ = [
     "ProviderConnection",
     "OnboardingState",
     "OnboardingSession",
+    "OnboardingTraceEvent",
     "ActionExecution",
     "ActionConfirmation",
     "ActionAuditLog",

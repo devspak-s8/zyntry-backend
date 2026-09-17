@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import logging
 import re
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 import httpx
 
 from app.services.integrations.definitions import integration_registry
+from app.services.onboarding.telemetry import current_trace, use_call
 
 logger = logging.getLogger(__name__)
 
@@ -803,11 +805,37 @@ class ConfiguredOnboardingModelProvider:
         provider, model = self._provider()
         if provider is None:
             if bool(getattr(settings, "ONBOARDING_ALLOW_FALLBACK", False)):
-                return await self.fallback.generate_step_response(
+                response = await self.fallback.generate_step_response(
                     user_message, current_state, current_config, history
                 )
+                trace = current_trace()
+                if trace:
+                    call_id = trace.start_call(
+                        operation="conversation_response",
+                        model=model,
+                        messages=[],
+                    )
+                    trace.finish_call(
+                        call_id,
+                        status="fallback",
+                        provider="local",
+                        model="rule_based",
+                        output_text=response.text,
+                        fallback_used=True,
+                    )
+                return response
             from app.services.onboarding.intelligence import OnboardingModelUnavailableError
 
+            trace = current_trace()
+            if trace:
+                call_id = trace.start_call(operation="conversation_response", model=model, messages=[])
+                trace.finish_call(
+                    call_id,
+                    status="failed",
+                    provider="unconfigured",
+                    model=model,
+                    error=RuntimeError("onboarding provider is not configured"),
+                )
             raise OnboardingModelUnavailableError(
                 "The configured onboarding model is unavailable."
             )
@@ -846,17 +874,40 @@ stores a draft; project attachment and connector authorization happen later.
             "capability_manifest": self._capability_manifest(),
             "allowed_intents": sorted(self._ALLOWED_INTENTS),
         }
+        trace = current_trace()
+        call_id = trace.start_call(
+            operation="conversation_response",
+            model=model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": json.dumps(payload, default=str)},
+            ],
+        ) if trace else None
         try:
-            content, _ = await provider.generate(
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": json.dumps(payload, default=str)},
-                ],
-                model=model,
-                max_tokens=1400,
-                temperature=0.25,
-            )
-            return self._parse_response(content)
+            with use_call(call_id) if call_id else nullcontext():
+                content, usage = await provider.generate(
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": json.dumps(payload, default=str)},
+                    ],
+                    model=model,
+                    max_tokens=1400,
+                    temperature=0.25,
+                )
+            response = self._parse_response(content)
+            if trace and call_id:
+                attempts = len(getattr(provider, "last_attempts", []) or []) or 1
+                trace.finish_call(
+                    call_id,
+                    status="completed",
+                    provider=getattr(provider, "last_provider", None),
+                    model=getattr(provider, "last_model", None) or model,
+                    usage=usage,
+                    output_text=content,
+                    attempts=attempts,
+                    fallback_used=False,
+                )
+            return response
         except httpx.HTTPStatusError as exc:
             logger.warning(
                 "Onboarding conversational provider returned HTTP %s",
@@ -868,13 +919,32 @@ stores a draft; project attachment and connector authorization happen later.
             )
 
             if bool(getattr(settings, "ONBOARDING_ALLOW_FALLBACK", False)):
+                if trace and call_id:
+                    trace.finish_call(
+                        call_id,
+                        status="fallback",
+                        provider=getattr(provider, "last_provider", None),
+                        model=getattr(provider, "last_model", None) or model,
+                        error=exc,
+                        attempts=len(getattr(provider, "last_attempts", []) or []) or 1,
+                        fallback_used=True,
+                    )
                 return await self.fallback.generate_step_response(
                     user_message, current_state, current_config, history
                 )
             if exc.response.status_code == 429:
+                if trace and call_id:
+                    trace.finish_call(call_id, status="failed", error=exc, attempts=len(getattr(provider, "last_attempts", []) or []) or 1)
                 raise OnboardingModelRateLimitedError(
                     "The configured onboarding provider is rate limited."
                 ) from exc
+            if trace and call_id:
+                trace.finish_call(
+                    call_id,
+                    status="failed",
+                    error=exc,
+                    attempts=len(getattr(provider, "last_attempts", []) or []) or 1,
+                )
             raise OnboardingModelUnavailableError(
                 "The configured onboarding provider rejected the request."
             ) from exc
@@ -886,9 +956,13 @@ stores a draft; project attachment and connector authorization happen later.
             from app.services.onboarding.intelligence import OnboardingModelUnavailableError
 
             if bool(getattr(settings, "ONBOARDING_ALLOW_FALLBACK", False)):
+                if trace and call_id:
+                    trace.finish_call(call_id, status="fallback", error=exc, attempts=len(getattr(provider, "last_attempts", []) or []) or 1, fallback_used=True)
                 return await self.fallback.generate_step_response(
                     user_message, current_state, current_config, history
                 )
+            if trace and call_id:
+                trace.finish_call(call_id, status="failed", error=exc, attempts=len(getattr(provider, "last_attempts", []) or []) or 1)
             raise OnboardingModelUnavailableError(
                 "The configured onboarding provider could not be reached."
             ) from exc
@@ -897,9 +971,13 @@ stores a draft; project attachment and connector authorization happen later.
             from app.services.onboarding.intelligence import OnboardingModelResponseError
 
             if bool(getattr(settings, "ONBOARDING_ALLOW_FALLBACK", False)):
+                if trace and call_id:
+                    trace.finish_call(call_id, status="fallback", error=exc, attempts=len(getattr(provider, "last_attempts", []) or []) or 1, fallback_used=True)
                 return await self.fallback.generate_step_response(
                     user_message, current_state, current_config, history
                 )
+            if trace and call_id:
+                trace.finish_call(call_id, status="failed", error=exc, attempts=len(getattr(provider, "last_attempts", []) or []) or 1)
             raise OnboardingModelResponseError(
                 "The onboarding model returned an invalid response."
             ) from exc

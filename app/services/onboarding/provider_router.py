@@ -16,6 +16,7 @@ import httpx
 from app.core.config import settings
 from app.services.model_providers import PROVIDER_REGISTRY
 from app.services.model_registry import get_registered_model, list_registered_models
+from app.services.onboarding.telemetry import current_trace
 from app.services.provider_health import ProviderHealth, provider_health
 from app.services.rag import BaseLLMProvider
 
@@ -90,9 +91,19 @@ class RoutedOnboardingLLMProvider(BaseLLMProvider):
     ) -> tuple[str, int]:
         self.last_attempts = []
         errors: list[Exception] = []
-        for candidate in self.candidates:
+        for attempt_number, candidate in enumerate(self.candidates, start=1):
             if not await self.health.is_available_async(candidate.provider):
                 self.last_attempts.append({"provider": candidate.provider, "status": "cooldown"})
+                trace = current_trace()
+                if trace:
+                    attempt_id = trace.start_attempt(
+                        operation="provider_routing",
+                        provider=candidate.provider,
+                        model=candidate.model or model,
+                        attempt_number=attempt_number,
+                        status="cooldown",
+                    )
+                    trace.finish_attempt(attempt_id, status="skipped")
                 continue
             selected_model = candidate.model or model
             self.last_attempts.append({
@@ -100,6 +111,17 @@ class RoutedOnboardingLLMProvider(BaseLLMProvider):
                 "model": selected_model,
                 "status": "started",
             })
+            trace = current_trace()
+            attempt_id = (
+                trace.start_attempt(
+                    operation="provider_routing",
+                    provider=candidate.provider,
+                    model=selected_model,
+                    attempt_number=attempt_number,
+                )
+                if trace
+                else None
+            )
             try:
                 adapter = _adapter_for(candidate.provider, candidate.api_key)
                 content, usage = await adapter.generate(
@@ -112,11 +134,15 @@ class RoutedOnboardingLLMProvider(BaseLLMProvider):
                 self.last_provider = candidate.provider
                 self.last_model = selected_model
                 self.last_attempts[-1]["status"] = "completed"
+                if trace and attempt_id:
+                    trace.finish_attempt(attempt_id, status="completed")
                 return content, usage
             except Exception as exc:  # adapters expose provider-specific failures
                 errors.append(exc)
                 await self.health.record_failure_async(candidate.provider, type(exc).__name__)
                 self.last_attempts[-1].update({"status": "failed", "error": type(exc).__name__})
+                if trace and attempt_id:
+                    trace.finish_attempt(attempt_id, status="failed", error=exc)
 
         if errors:
             # Preserve a rate-limit signal when every candidate was rejected;

@@ -4,7 +4,7 @@ import logging
 import re
 from datetime import UTC, datetime
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from app.core.config import settings
 from app.models.onboarding_session import OnboardingSession
@@ -30,6 +30,7 @@ from app.services.onboarding.models import (
     OnboardingModelResponse,
     default_onboarding_model_provider,
 )
+from app.services.onboarding.telemetry import OnboardingTraceSink, use_trace
 
 logger = logging.getLogger(__name__)
 
@@ -188,25 +189,34 @@ class OnboardingEngine:
         }
         messages: list[dict[str, Any]] = [welcome_msg]
 
+        trace_sink: OnboardingTraceSink | None = None
         if initial_prompt:
             messages.append({
                 "role": "user",
                 "content": initial_prompt,
                 "timestamp": datetime.now(UTC).isoformat(),
             })
-            ai_resp = await self.model_provider.generate_step_response(
-                user_message=initial_prompt,
-                current_state="onboarding_started",
-                current_config={},
-                history=messages,
+            trace_sink = OnboardingTraceSink(
+                session=self.uow.session,
+                user_id=user_id,
+                session_id=None,
+                turn_id=uuid4(),
             )
-            ai_resp, _ = await self._apply_requirements_intelligence(
-                ai_resp=ai_resp,
-                message=initial_prompt,
-                current_state="onboarding_started",
-                current_config={},
-                history=messages,
-            )
+            with use_trace(trace_sink):
+                ai_resp = await self.model_provider.generate_step_response(
+                    user_message=initial_prompt,
+                    current_state="onboarding_started",
+                    current_config={},
+                    history=messages,
+                )
+            with use_trace(trace_sink):
+                ai_resp, _ = await self._apply_requirements_intelligence(
+                    ai_resp=ai_resp,
+                    message=initial_prompt,
+                    current_state="onboarding_started",
+                    current_config={},
+                    history=messages,
+                )
             # Preserve an explicit name from the initial prompt. The initial
             # prompt follows a different path from later messages; without
             # this merge, "Create a runtime named ..." falls back to a
@@ -245,6 +255,8 @@ class OnboardingEngine:
             messages=messages,
             configuration=config,
         )
+        if trace_sink:
+            trace_sink.bind_session_id(session.id)
         await self.uow.commit()
         return session
 
@@ -342,57 +354,65 @@ class OnboardingEngine:
         })
 
         current_config = dict(session.configuration or {})
+        trace_sink = OnboardingTraceSink(
+            session=self.uow.session,
+            user_id=user_id,
+            session_id=session.id,
+            turn_id=uuid4(),
+        )
 
         # Step 1: LLM interprets user message and proposes actions
-        try:
-            ai_resp = await self.model_provider.generate_step_response(
-                user_message=req.message,
-                current_state=session.state,
-                current_config=current_config,
-                history=messages,
-            )
-        except OnboardingRequirementsError as exc:
+        with use_trace(trace_sink):
+            try:
+                ai_resp = await self.model_provider.generate_step_response(
+                    user_message=req.message,
+                    current_state=session.state,
+                    current_config=current_config,
+                    history=messages,
+                )
+            except OnboardingRequirementsError as exc:
             # Keep the user's turn and a safe retry marker durable even when
             # the conversational provider fails before extraction begins.
             # This lets the UI resume the same conversation instead of losing
             # the prompt or creating a second onboarding session.
-            safe_message = getattr(
-                exc,
-                "public_message",
-                "The onboarding assistant is temporarily unavailable. Please try again shortly.",
-            )
-            messages.append({
-                "role": "assistant",
-                "content": safe_message,
-                "timestamp": datetime.now(UTC).isoformat(),
-                "error": {
-                    "code": getattr(exc, "code", "onboarding_model_unavailable"),
-                    "retryable": bool(getattr(exc, "retryable", True)),
-                },
-            })
-            try:
-                await self.uow.onboarding_sessions.update(
-                    session,
-                    messages=messages,
-                    configuration={
-                        **current_config,
-                        "onboarding_model_error": {
-                            "code": getattr(exc, "code", "onboarding_model_unavailable"),
-                            "retryable": bool(getattr(exc, "retryable", True)),
-                        },
-                    },
+                safe_message = getattr(
+                    exc,
+                    "public_message",
+                    "The onboarding assistant is temporarily unavailable. Please try again shortly.",
                 )
-                await self.uow.commit()
-            except Exception:
-                logger.exception("Could not persist failed onboarding turn")
-            raise
-        ai_resp, _ = await self._apply_requirements_intelligence(
-            ai_resp=ai_resp,
-            message=req.message,
-            current_state=session.state,
-            current_config=current_config,
-            history=messages,
-        )
+                messages.append({
+                    "role": "assistant",
+                    "content": safe_message,
+                    "timestamp": datetime.now(UTC).isoformat(),
+                    "error": {
+                        "code": getattr(exc, "code", "onboarding_model_unavailable"),
+                        "retryable": bool(getattr(exc, "retryable", True)),
+                    },
+                })
+                try:
+                    await self.uow.onboarding_sessions.update(
+                        session,
+                        messages=messages,
+                        configuration={
+                            **current_config,
+                            "onboarding_model_error": {
+                                "code": getattr(exc, "code", "onboarding_model_unavailable"),
+                                "retryable": bool(getattr(exc, "retryable", True)),
+                            },
+                        },
+                    )
+                    await self.uow.commit()
+                except Exception:
+                    logger.exception("Could not persist failed onboarding turn")
+                raise
+        with use_trace(trace_sink):
+            ai_resp, _ = await self._apply_requirements_intelligence(
+                ai_resp=ai_resp,
+                message=req.message,
+                current_state=session.state,
+                current_config=current_config,
+                history=messages,
+            )
         # Preserve an explicit name embedded in a natural-language onboarding
         # message even when the message also contains a long capability list.
         extractor = getattr(self.model_provider, "_extract_runtime_name", None)
