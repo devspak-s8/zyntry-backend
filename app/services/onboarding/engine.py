@@ -661,19 +661,13 @@ class OnboardingEngine:
         )
         # The conversational model can produce a plausible but incorrect
         # connector question (for example, treating private uploaded files as
-        # a ``document_storage`` integration). Once the requirements
-        # extractor has validated the state, the backend owns the next
-        # clarification checkpoint so the model cannot contradict the
-        # resource/integration boundary or skip a required field.
-        onboarding_states = {
-            "onboarding_started",
-            "discovering_use_case",
-            "discovering_application_type",
-            "selecting_integrations",
-            "selecting_capabilities",
-            "clarifying_requirements",
-        }
-        if (question and current_state in onboarding_states) or should_ask_context:
+        # a ``document_storage`` integration). Once the requirements extractor
+        # has validated that document formats are the next missing field, the
+        # backend owns that checkpoint so the model cannot contradict the
+        # resource/integration boundary. Other onboarding transitions retain
+        # their existing state behavior while requirements are gathered.
+        document_question = question and question.requirement == "document_formats"
+        if self._should_prioritize_clarification(current_state, requirements, question) or document_question or should_ask_context:
             if question:
                 ai_resp.text = (
                     "I’ve captured the requirements you provided. "
