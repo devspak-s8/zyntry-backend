@@ -143,6 +143,34 @@ def test_document_storage_is_a_resource_not_an_unsupported_connector() -> None:
     assert response.proposed_data["requires_documents"] is True
 
 
+def test_model_payload_normalizes_follow_up_requirements() -> None:
+    payload = {
+        "application_type": "ai_customer_support",
+        "primary_function": "Answer customer and support-team questions",
+        "target_users": "customers and support teams",
+        "inputs": "private documents and PostgreSQL records",
+        "outputs": "support answers",
+        "requires_documents": True,
+        "document_formats": "PDF, DOCX, TXT, Markdown, CSV, and JSON",
+        "requires_external_data": False,
+        "requires_tools": True,
+        "requires_memory": True,
+        "memory_scope": "session",
+        "connection_ownership": "company-managed",
+        "integrations": ["postgresql"],
+        "integration_decisions": ["postgresql"],
+        "data_sensitivity": "confidential",
+        "confidence": 0.9,
+    }
+
+    normalized = ModelBackedRequirementsExtractor._prepare_model_payload(payload)
+    requirements = ApplicationRequirements.model_validate(normalized)
+
+    assert requirements.connection_ownership == "company"
+    assert requirements.integration_slugs() == ["postgresql"]
+    assert requirements.document_formats == ["PDF, DOCX, TXT, Markdown, CSV, and JSON"]
+
+
 @pytest.mark.asyncio
 async def test_onboarding_provider_router_fails_over_to_configured_provider(monkeypatch) -> None:
     from app.services.onboarding import provider_router

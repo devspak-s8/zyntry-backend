@@ -764,6 +764,50 @@ class ModelBackedRequirementsExtractor:
         decision records before Pydantic validation.
         """
         normalized = dict(payload)
+        ownership = normalized.get("connection_ownership")
+        if isinstance(ownership, str):
+            ownership_key = ownership.strip().lower().replace("-", "_").replace(" ", "_")
+            normalized["connection_ownership"] = {
+                "company_managed": "company",
+                "zyntry_managed": "company",
+                "internal": "company",
+                "organization": "company",
+                "end_user_oauth": "end_user",
+                "user_managed": "end_user",
+                "user_accounts": "end_user",
+            }.get(ownership_key, ownership_key)
+
+        # Models sometimes emit a scalar for a field that is represented as a
+        # list in the contract. Normalize that harmless shorthand before
+        # Pydantic validation instead of failing the entire onboarding turn.
+        for field in (
+            "target_users",
+            "inputs",
+            "outputs",
+            "document_formats",
+            "external_source_types",
+            "requested_actions",
+            "constraints",
+            "assumptions",
+        ):
+            value = normalized.get(field)
+            if isinstance(value, str) and value.strip():
+                normalized[field] = [value.strip()]
+
+        decision_aliases = {
+            "company_managed": "host_managed",
+            "zyntry_managed": "host_managed",
+            "internal": "host_managed",
+            "user_managed": "direct",
+            "end_user_oauth": "direct",
+        }
+
+        def normalize_decision(value: Any) -> str:
+            if not isinstance(value, str) or not value.strip():
+                return "direct"
+            key = value.strip().lower().replace("-", "_").replace(" ", "_")
+            return decision_aliases.get(key, key)
+
         decisions: list[dict[str, Any]] = []
         for raw_decision in normalized.get("integration_decisions") or []:
             if isinstance(raw_decision, str) and raw_decision.strip():
@@ -774,21 +818,33 @@ class ModelBackedRequirementsExtractor:
                 })
             elif isinstance(raw_decision, dict):
                 decision = dict(raw_decision)
-                if decision.get("slug") and not decision.get("decision"):
-                    decision["decision"] = "direct"
+                slug = decision.get("slug")
+                if not isinstance(slug, str) or not slug.strip():
+                    continue
+                decision["slug"] = slug.strip().lower().replace(" ", "_")
+                decision["decision"] = normalize_decision(decision.get("decision"))
                 decisions.append(decision)
         direct_integrations: list[dict[str, Any]] = []
         for raw_item in normalized.get("integrations") or []:
+            if isinstance(raw_item, str) and raw_item.strip():
+                direct_integrations.append({
+                    "slug": raw_item.strip().lower().replace(" ", "_"),
+                    "purpose": "Provide application data or actions",
+                })
+                continue
             if not isinstance(raw_item, dict):
-                direct_integrations.append(raw_item)
                 continue
             item = dict(raw_item)
+            slug = item.get("slug")
+            if not isinstance(slug, str) or not slug.strip():
+                continue
+            item["slug"] = slug.strip().lower().replace(" ", "_")
             decision = item.pop("decision", None)
             reason = item.pop("decision_reason", item.pop("reason", ""))
-            if decision is not None and decision != "direct":
+            if decision is not None and normalize_decision(decision) != "direct":
                 decisions.append({
-                    "slug": item.get("slug", ""),
-                    "decision": decision,
+                    "slug": item["slug"],
+                    "decision": normalize_decision(decision),
                     "reason": reason,
                 })
                 continue
