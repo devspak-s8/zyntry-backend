@@ -114,6 +114,35 @@ def test_model_payload_normalizes_string_integration_decisions() -> None:
     assert all(item.decision == "direct" for item in requirements.integration_decisions)
 
 
+def test_document_storage_is_a_resource_not_an_unsupported_connector() -> None:
+    proposed_data = {
+        "integrations": ["document_storage"],
+        "unsupported_integrations": ["document_storage"],
+        "coming_soon_integrations": ["Uploaded Documents"],
+    }
+
+    OnboardingEngine._filter_unavailable_integrations(proposed_data)
+
+    assert proposed_data["integrations"] == []
+    assert proposed_data["requires_documents"] is True
+    assert "unsupported_integrations" not in proposed_data
+    assert "coming_soon_integrations" not in proposed_data
+
+    response = OnboardingModelResponse(
+        text="I captured the document requirements.",
+        proposed_intent="clarify_requirements",
+        proposed_data={
+            "unsupported_integrations": ["document_storage"],
+            "coming_soon_integrations": ["Uploaded Documents"],
+        },
+        suggested_actions=[],
+    )
+    OnboardingEngine._append_integration_availability_notice(response)
+
+    assert response.text == "I captured the document requirements."
+    assert response.proposed_data["requires_documents"] is True
+
+
 @pytest.mark.asyncio
 async def test_onboarding_provider_router_fails_over_to_configured_provider(monkeypatch) -> None:
     from app.services.onboarding import provider_router

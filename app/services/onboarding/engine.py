@@ -34,6 +34,22 @@ from app.services.onboarding.telemetry import OnboardingTraceSink, use_trace
 
 logger = logging.getLogger(__name__)
 
+# These are project knowledge resources, not external connector integrations.
+# They must never be reported as unsupported/coming-soon connectors when the
+# model mentions uploaded documents or their file formats.
+_DOCUMENT_RESOURCE_SLUGS = frozenset({
+    "pdf",
+    "docx",
+    "txt",
+    "csv",
+    "markdown",
+    "html",
+    "json",
+    "document_storage",
+    "uploaded_documents",
+    "uploaded_document",
+})
+
 VALID_STATES = [
     "onboarding_started",
     "discovering_use_case",
@@ -830,19 +846,30 @@ class OnboardingEngine:
             return
 
         available: list[str] = []
+        requires_documents = bool(proposed_data.get("requires_documents"))
+
+        def is_document_resource(value: str) -> bool:
+            normalized = value.strip().lower().replace(" ", "_")
+            definition = integration_registry.get(normalized)
+            canonical = definition.slug if definition else normalized
+            return canonical in _DOCUMENT_RESOURCE_SLUGS
+
         unsupported = [
             item for item in proposed_data.get("unsupported_integrations", [])
-            if isinstance(item, str) and item.strip()
+            if isinstance(item, str) and item.strip() and not is_document_resource(item)
         ]
         coming_soon = [
             item for item in proposed_data.get("coming_soon_integrations", [])
-            if isinstance(item, str) and item.strip()
+            if isinstance(item, str) and item.strip() and not is_document_resource(item)
         ]
         for item in raw_integrations:
             slug = item.get("slug") if isinstance(item, dict) else item
             if not isinstance(slug, str):
                 continue
             slug = slug.strip().lower()
+            if is_document_resource(slug):
+                requires_documents = True
+                continue
             definition = integration_registry.get(slug)
             if definition is None:
                 if slug and slug not in unsupported:
@@ -859,17 +886,57 @@ class OnboardingEngine:
                 available.append(definition.slug)
 
         proposed_data["integrations"] = available
+        if requires_documents:
+            proposed_data["requires_documents"] = True
+            requirements = proposed_data.get("application_requirements")
+            if isinstance(requirements, dict):
+                requirements["requires_documents"] = True
         if unsupported:
             proposed_data["unsupported_integrations"] = unsupported
+        else:
+            proposed_data.pop("unsupported_integrations", None)
         if coming_soon:
             proposed_data["coming_soon_integrations"] = coming_soon
+        else:
+            proposed_data.pop("coming_soon_integrations", None)
 
     @staticmethod
     def _append_integration_availability_notice(ai_resp: OnboardingModelResponse) -> None:
-        unsupported = ai_resp.proposed_data.get("unsupported_integrations", [])
-        coming_soon = ai_resp.proposed_data.get("coming_soon_integrations", [])
-        unsupported_names = [item for item in unsupported if isinstance(item, str) and item.strip()]
-        coming_soon_names = [item for item in coming_soon if isinstance(item, str) and item.strip()]
+        proposed_data = ai_resp.proposed_data
+
+        def is_document_resource(value: str) -> bool:
+            normalized = value.strip().lower().replace(" ", "_")
+            definition = integration_registry.get(normalized)
+            canonical = definition.slug if definition else normalized
+            return canonical in _DOCUMENT_RESOURCE_SLUGS
+
+        unsupported_names = [
+            item for item in proposed_data.get("unsupported_integrations", [])
+            if isinstance(item, str) and item.strip() and not is_document_resource(item)
+        ]
+        coming_soon_names = [
+            item for item in proposed_data.get("coming_soon_integrations", [])
+            if isinstance(item, str) and item.strip() and not is_document_resource(item)
+        ]
+        # Keep the response state clean even when a conversational model leaves
+        # stale document-resource labels in its proposed metadata.
+        proposed_data["requires_documents"] = bool(
+            proposed_data.get("requires_documents")
+            or any(is_document_resource(item) for item in proposed_data.get("unsupported_integrations", []) if isinstance(item, str))
+            or any(is_document_resource(item) for item in proposed_data.get("coming_soon_integrations", []) if isinstance(item, str))
+        )
+        if proposed_data["requires_documents"]:
+            requirements = proposed_data.get("application_requirements")
+            if isinstance(requirements, dict):
+                requirements["requires_documents"] = True
+        if unsupported_names:
+            proposed_data["unsupported_integrations"] = unsupported_names
+        else:
+            proposed_data.pop("unsupported_integrations", None)
+        if coming_soon_names:
+            proposed_data["coming_soon_integrations"] = coming_soon_names
+        else:
+            proposed_data.pop("coming_soon_integrations", None)
         notices: list[str] = []
         if unsupported_names:
             notices.append(
