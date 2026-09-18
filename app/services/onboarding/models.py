@@ -810,11 +810,13 @@ class ConfiguredOnboardingModelProvider:
         if embedded_requirements is None:
             embedded_requirements = {}
         if not isinstance(embedded_requirements, dict):
-            raise ValueError("Onboarding model application_requirements must be an object")
+            embedded_requirements = {}
+        # JSON mode does not enforce the nested requirements schema. Preserve
+        # valid fields when possible, but never turn one malformed nested field
+        # into a failed conversational turn. An incomplete typed snapshot is
+        # safe: the engine will ask for the missing requirement before any
+        # runtime or integration can be created.
         try:
-            # Validate the combined response before it reaches the engine. A
-            # malformed requirements object gets one bounded repair attempt;
-            # it no longer triggers a second full extraction request.
             from app.services.onboarding.intelligence import ModelBackedRequirementsExtractor
 
             normalized_requirements = ModelBackedRequirementsExtractor._prepare_model_payload(
@@ -822,8 +824,8 @@ class ConfiguredOnboardingModelProvider:
             )
             validated_requirements = ApplicationRequirements.model_validate(normalized_requirements)
             normalized_requirements = validated_requirements.model_dump(mode="json")
-        except ValidationError as exc:
-            raise ValueError("Onboarding model application_requirements is invalid") from exc
+        except (ValidationError, TypeError, ValueError):
+            normalized_requirements = ApplicationRequirements().model_dump(mode="json")
         suggested_actions = [item for item in suggested_actions if isinstance(item, str)]
 
         # The model may return a display object instead of a slug despite the

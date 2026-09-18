@@ -361,6 +361,20 @@ def test_conversational_parser_keeps_incomplete_json_as_clarification() -> None:
     assert response.application_requirements["schema_version"] == "1.0"
 
 
+def test_conversational_parser_discards_invalid_nested_requirements_safely() -> None:
+    response = ConfiguredOnboardingModelProvider._parse_response(
+        '{"text":"I need one more detail.",'
+        '"proposed_intent":"clarify_requirements",'
+        '"proposed_data":{},"suggested_actions":[],'
+        '"application_requirements":{"requires_ai":null,'
+        '"memory_scope":"not-a-supported-scope"}}'
+    )
+
+    assert response.application_requirements is not None
+    assert response.application_requirements["requires_ai"] is True
+    assert response.application_requirements["memory_scope"] is None
+
+
 def test_document_storage_is_a_resource_not_an_unsupported_connector() -> None:
     proposed_data = {
         "integrations": ["document_storage"],
