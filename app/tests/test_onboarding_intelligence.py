@@ -386,6 +386,17 @@ def test_embedded_requirements_apply_explicit_application_type_answer() -> None:
     assert requirements.application_type == "ai_customer_support"
 
 
+def test_embedded_requirements_apply_explicit_target_users_answer() -> None:
+    extractor = ModelBackedRequirementsExtractor(provider=None)
+    requirements = extractor.validate_embedded_requirements(
+        {},
+        message="Customers and support agents",
+        pending_requirement="target_users",
+    )
+
+    assert requirements.target_users == ["customers", "support agents"]
+
+
 def test_document_storage_is_a_resource_not_an_unsupported_connector() -> None:
     proposed_data = {
         "integrations": ["document_storage"],

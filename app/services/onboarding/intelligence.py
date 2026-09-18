@@ -1105,8 +1105,24 @@ class ModelBackedRequirementsExtractor:
         """
 
         if pending_requirement != "application_type":
-            return requirements
+            if pending_requirement != "target_users":
+                return requirements
         text = message.lower().replace("-", " ")
+        if pending_requirement == "target_users":
+            users = list(requirements.target_users)
+            if "customer" in text or "support agent" in text or "support team" in text:
+                users.extend(["customers", "support agents"])
+            if "internal team" in text or "employees" in text or "staff" in text:
+                users.append("internal team")
+            if "developer" in text:
+                users.append("developers")
+            if "student" in text:
+                users.append("students")
+            if "end user" in text or "application user" in text:
+                users.append("application users")
+            if users != requirements.target_users:
+                return requirements.model_copy(update={"target_users": list(dict.fromkeys(users))})
+            return requirements
         if any(term in text for term in ("customer support", "customer service", "support assistant")):
             return requirements.model_copy(update={"application_type": "ai_customer_support"})
         if any(term in text for term in ("knowledge assistant", "knowledge base", "rag assistant")):
