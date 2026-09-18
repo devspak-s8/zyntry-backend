@@ -9,6 +9,7 @@ return the normal retryable onboarding response.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -27,6 +28,41 @@ class OnboardingProviderCandidate:
     provider: str
     model: str
     api_key: str
+
+
+_SESSION_PROVIDER_COOLDOWNS: dict[tuple[str, str], float] = {}
+
+
+def _session_provider_key(provider: str) -> tuple[str, str] | None:
+    trace = current_trace()
+    if trace is None or trace.session_id is None:
+        return None
+    return str(trace.session_id), provider
+
+
+def _provider_is_session_cooled_down(provider: str) -> bool:
+    key = _session_provider_key(provider)
+    if key is None:
+        return False
+    now = time.monotonic()
+    expiry = _SESSION_PROVIDER_COOLDOWNS.get(key)
+    if expiry is None:
+        return False
+    if expiry <= now:
+        _SESSION_PROVIDER_COOLDOWNS.pop(key, None)
+        return False
+    return True
+
+
+def _cool_down_provider_for_session(provider: str) -> None:
+    key = _session_provider_key(provider)
+    if key is None:
+        return
+    try:
+        seconds = max(1, int(getattr(settings, "ONBOARDING_PROVIDER_COOLDOWN_SECONDS", 30)))
+    except (TypeError, ValueError):
+        seconds = 30
+    _SESSION_PROVIDER_COOLDOWNS[key] = time.monotonic() + seconds
 
 
 class _GenericLLMAdapter(BaseLLMProvider):
@@ -131,6 +167,8 @@ class RoutedOnboardingLLMProvider(BaseLLMProvider):
         errors: list[Exception] = []
         attempts_started = 0
         for candidate in self.candidates:
+            if _provider_is_session_cooled_down(candidate.provider):
+                continue
             if not await self.health.is_available_async(candidate.provider):
                 trace = current_trace()
                 if trace:
@@ -214,6 +252,8 @@ class RoutedOnboardingLLMProvider(BaseLLMProvider):
                 return content, usage
             except Exception as exc:  # adapters expose provider-specific failures
                 errors.append(exc)
+                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
+                    _cool_down_provider_for_session(candidate.provider)
                 self.last_status_code = getattr(adapter, "last_status_code", None)
                 self.last_finish_reason = getattr(adapter, "last_finish_reason", None)
                 self.last_response_schema_applied = bool(
@@ -226,11 +266,19 @@ class RoutedOnboardingLLMProvider(BaseLLMProvider):
                     trace.finish_attempt(active_attempt_id, status="failed", error=exc)
 
         if errors:
-            # Preserve a rate-limit signal when every candidate was rejected;
-            # the caller maps it to the stable "temporarily busy" message.
-            for error in errors:
-                if isinstance(error, httpx.HTTPStatusError) and error.response.status_code == 429:
-                    raise error
+            # Only report rate limiting when every attempted provider was
+            # rate-limited. If a fallback was attempted and failed for another
+            # reason, report that final failure instead of blaming Gemini.
+            non_rate_limit_errors = [
+                error
+                for error in errors
+                if not (
+                    isinstance(error, httpx.HTTPStatusError)
+                    and error.response.status_code == 429
+                )
+            ]
+            if non_rate_limit_errors:
+                raise non_rate_limit_errors[-1]
             raise errors[-1]
         raise RuntimeError("No configured onboarding model provider is available")
 

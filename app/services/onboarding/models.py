@@ -954,7 +954,7 @@ stores a draft; project attachment and connector authorization happen later.
         payload = {
             "current_state": current_state,
             "current_config": self._safe_config(current_config),
-            "recent_conversation": history[-12:],
+            "recent_conversation": history[-max(1, int(getattr(settings, "ONBOARDING_HISTORY_TURNS", 6))):],
             "latest_message": user_message,
             "capability_manifest": self._capability_manifest(),
             "allowed_intents": sorted(self._ALLOWED_INTENTS),
@@ -982,7 +982,7 @@ stores a draft; project attachment and connector authorization happen later.
                     provider,
                     messages=model_messages,
                     model=model,
-                    max_tokens=4096,
+                    max_tokens=int(getattr(settings, "ONBOARDING_MAX_OUTPUT_TOKENS", 2048)),
                     temperature=0.25,
                 )
             response = self._parse_response(content)
@@ -1121,7 +1121,7 @@ stores a draft; project attachment and connector authorization happen later.
                         provider,
                         messages=repair_messages,
                         model=model,
-                        max_tokens=4096,
+                        max_tokens=int(getattr(settings, "ONBOARDING_MAX_OUTPUT_TOKENS", 2048)),
                         temperature=0.1,
                     )
                 repaired_response = self._parse_response(repaired_content)

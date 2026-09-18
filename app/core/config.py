@@ -84,6 +84,9 @@ class AppSettings(BaseSettings):
     ONBOARDING_ALLOW_FALLBACK: bool = False
     # Bound provider fan-out to one preferred attempt plus one failover.
     ONBOARDING_MAX_PROVIDER_ATTEMPTS: int = 2
+    ONBOARDING_PROVIDER_COOLDOWN_SECONDS: int = 30
+    ONBOARDING_HISTORY_TURNS: int = 6
+    ONBOARDING_MAX_OUTPUT_TOKENS: int = 2048
     RUNTIME_ASSISTANT_PROVIDER: str = "google"
     RUNTIME_ASSISTANT_MODEL: str = "gemini-2.5-flash"
     AZURE_OPENAI_ENDPOINT: str = ""

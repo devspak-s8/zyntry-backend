@@ -420,6 +420,92 @@ async def test_onboarding_provider_router_fails_over_to_configured_provider(monk
     assert [item["status"] for item in router.last_attempts] == ["failed", "completed"]
 
 
+@pytest.mark.asyncio
+async def test_router_reports_fallback_failure_instead_of_earlier_rate_limit(monkeypatch) -> None:
+    from app.services.onboarding import provider_router
+    from app.services.provider_health import ProviderHealth
+
+    class FailingAdapter:
+        def __init__(self, status: int) -> None:
+            self.status = status
+
+        async def generate(self, **kwargs):
+            request = httpx.Request("POST", "https://example.test/generate")
+            response = httpx.Response(self.status, request=request)
+            raise httpx.HTTPStatusError("provider failed", request=request, response=response)
+
+    adapters = {"google": FailingAdapter(429), "openai": FailingAdapter(400)}
+    monkeypatch.setattr(provider_router, "_adapter_for", lambda provider, key: adapters[provider])
+    monkeypatch.setattr(provider_router.settings, "ONBOARDING_MAX_PROVIDER_ATTEMPTS", 2)
+    router = RoutedOnboardingLLMProvider(
+        [
+            OnboardingProviderCandidate("google", "gemini-2.5-flash", "google-key"),
+            OnboardingProviderCandidate("openai", "gpt-4o-mini", "openai-key"),
+        ],
+        health=ProviderHealth(redis=None, failure_threshold=10),
+    )
+
+    with pytest.raises(httpx.HTTPStatusError) as raised:
+        await router.generate([], "automatic")
+
+    assert raised.value.response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_provider_429_is_cooled_down_for_the_current_session(monkeypatch) -> None:
+    from app.services.onboarding import provider_router
+    from app.services.provider_health import ProviderHealth
+
+    class Trace:
+        session_id = "session-429"
+
+        def start_attempt(self, **kwargs):
+            return "attempt"
+
+        def finish_attempt(self, *args, **kwargs):
+            return None
+
+    class BusyAdapter:
+        calls = 0
+
+        async def generate(self, **kwargs):
+            self.calls += 1
+            request = httpx.Request("POST", "https://example.test/generate")
+            response = httpx.Response(429, request=request)
+            raise httpx.HTTPStatusError("busy", request=request, response=response)
+
+    class WorkingAdapter:
+        calls = 0
+
+        async def generate(self, **kwargs):
+            self.calls += 1
+            return '{"ok": true}', 1
+
+    busy = BusyAdapter()
+    working = WorkingAdapter()
+    adapters = {"google": busy, "openai": working}
+    monkeypatch.setattr(provider_router, "current_trace", lambda: Trace())
+    monkeypatch.setattr(provider_router, "_adapter_for", lambda provider, key: adapters[provider])
+    monkeypatch.setattr(provider_router.settings, "ONBOARDING_MAX_PROVIDER_ATTEMPTS", 2)
+    monkeypatch.setattr(provider_router.settings, "ONBOARDING_PROVIDER_COOLDOWN_SECONDS", 30)
+    provider_router._SESSION_PROVIDER_COOLDOWNS.clear()
+
+    candidates = [
+        OnboardingProviderCandidate("google", "gemini-2.5-flash", "google-key"),
+        OnboardingProviderCandidate("openai", "gpt-4o-mini", "openai-key"),
+    ]
+    health = ProviderHealth(redis=None, failure_threshold=10)
+    first = RoutedOnboardingLLMProvider(candidates, health=health)
+    second = RoutedOnboardingLLMProvider(candidates, health=health)
+
+    await first.generate([], "automatic")
+    await second.generate([], "automatic")
+
+    assert busy.calls == 1
+    assert working.calls == 2
+    provider_router._SESSION_PROVIDER_COOLDOWNS.clear()
+
+
 def test_openrouter_onboarding_model_is_pinned(monkeypatch) -> None:
     monkeypatch.setattr(provider_router.settings, "OPENROUTER_FALLBACK_MODEL", "openai/gpt-4o-mini")
 
