@@ -89,7 +89,22 @@ class OpenAILLMProvider(BaseLLMProvider):
         model: str,
         max_tokens: int = 2048,
         temperature: float = 0.7,
+        response_schema: dict[str, Any] | None = None,
     ) -> tuple[str, int]:
+        self.last_finish_reason = None
+        self.last_response_schema_applied = response_schema is not None
+        self.last_schema_has_refs = False
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        # OpenAI's JSON mode guarantees syntactically valid JSON for the
+        # provider-neutral onboarding contract. The Pydantic validation layer
+        # still enforces the full shape after decoding.
+        if response_schema is not None:
+            payload["response_format"] = {"type": "json_object"}
         async with httpx.AsyncClient(timeout=120) as client:
             response = await client.post(
                 f"{self._base_url}/chat/completions",
@@ -97,12 +112,7 @@ class OpenAILLMProvider(BaseLLMProvider):
                     "Authorization": f"Bearer {self._api_key}",
                     "Content-Type": "application/json",
                 },
-                json={
-                    "model": model,
-                    "messages": messages,
-                    "max_tokens": max_tokens,
-                    "temperature": temperature,
-                },
+                json=payload,
             )
             self.last_status_code = response.status_code
             response.raise_for_status()
