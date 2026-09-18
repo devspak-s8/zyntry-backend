@@ -331,6 +331,25 @@ def test_conversational_parser_repairs_safe_json_syntax_before_validation() -> N
     assert response.application_requirements["application_type"] == "customer_support"
 
 
+def test_conversational_parser_normalizes_compatible_requirements() -> None:
+    response = ConfiguredOnboardingModelProvider._parse_response(
+        '{"text":"I need one more detail.",'
+        '"proposed_intent":"clarify_requirements",'
+        '"proposed_data":{},"suggested_actions":[],'
+        '"application_requirements":{"integration_decisions":["postgresql"]}}'
+    )
+
+    assert response.application_requirements is not None
+    assert response.application_requirements["schema_version"] == "1.0"
+    assert response.application_requirements["integration_decisions"] == [
+        {
+            "slug": "postgresql",
+            "decision": "direct",
+            "reason": "The model selected this as a direct runtime integration.",
+        }
+    ]
+
+
 def test_document_storage_is_a_resource_not_an_unsupported_connector() -> None:
     proposed_data = {
         "integrations": ["document_storage"],

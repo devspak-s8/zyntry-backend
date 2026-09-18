@@ -779,15 +779,26 @@ class ConfiguredOnboardingModelProvider:
         embedded_requirements = value.get("application_requirements")
         if embedded_requirements is None and isinstance(proposed_data, dict):
             embedded_requirements = proposed_data.get("application_requirements")
+        # JSON mode guarantees valid JSON, but it does not enforce the nested
+        # onboarding contract. Older/provider-compatible models may omit the
+        # object on an early conversational turn. Treat that as an empty,
+        # incomplete requirements snapshot so the backend can ask the next
+        # clarification question instead of failing the whole turn.
         if embedded_requirements is None:
-            raise ValueError("Onboarding model response is missing application_requirements")
+            embedded_requirements = {}
         if not isinstance(embedded_requirements, dict):
             raise ValueError("Onboarding model application_requirements must be an object")
         try:
             # Validate the combined response before it reaches the engine. A
             # malformed requirements object gets one bounded repair attempt;
             # it no longer triggers a second full extraction request.
-            ApplicationRequirements.model_validate(embedded_requirements)
+            from app.services.onboarding.intelligence import ModelBackedRequirementsExtractor
+
+            normalized_requirements = ModelBackedRequirementsExtractor._prepare_model_payload(
+                embedded_requirements
+            )
+            validated_requirements = ApplicationRequirements.model_validate(normalized_requirements)
+            normalized_requirements = validated_requirements.model_dump(mode="json")
         except ValidationError as exc:
             raise ValueError("Onboarding model application_requirements is invalid") from exc
         if not isinstance(text, str) or not text.strip():
@@ -839,7 +850,7 @@ class ConfiguredOnboardingModelProvider:
             proposed_intent=intent,
             proposed_data=normalized_data,
             suggested_actions=[item.strip() for item in suggested_actions if item.strip()][:8],
-            application_requirements=embedded_requirements,
+            application_requirements=normalized_requirements,
         )
 
     @staticmethod
