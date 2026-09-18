@@ -1031,6 +1031,8 @@ stores a draft; project attachment and connector authorization happen later.
                     trace.finish_call(
                         call_id,
                         status="failed",
+                        provider=getattr(provider, "last_provider", None),
+                        model=getattr(provider, "last_model", None) or model,
                         error=exc,
                         attempts=len(getattr(provider, "last_attempts", []) or []) or 1,
                         http_status=exc.response.status_code,

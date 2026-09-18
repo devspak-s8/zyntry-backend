@@ -122,6 +122,8 @@ class RoutedOnboardingLLMProvider(BaseLLMProvider):
         response_schema: dict | None = None,
     ) -> tuple[str, int]:
         self.last_attempts = []
+        self.last_provider = None
+        self.last_model = None
         self.last_status_code = None
         self.last_finish_reason = None
         self.last_response_schema_applied = False
