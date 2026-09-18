@@ -258,8 +258,8 @@ def _adapter_for(provider: str, api_key: str) -> BaseLLMProvider:
 
 
 _PROVIDER_KEYS: tuple[tuple[str, str], ...] = (
-    ("google", "GOOGLE_API_KEY"),
     ("openai", "OPENAI_API_KEY"),
+    ("google", "GOOGLE_API_KEY"),
     ("anthropic", "ANTHROPIC_API_KEY"),
     ("deepseek", "DEEPSEEK_API_KEY"),
     ("groq", "GROQ_API_KEY"),

@@ -426,6 +426,10 @@ def test_openrouter_onboarding_model_is_pinned(monkeypatch) -> None:
     assert provider_router._model_for("openrouter", "google", "auto") == "openai/gpt-4o-mini"
 
 
+def test_automatic_onboarding_priority_starts_with_openai() -> None:
+    assert provider_router._PROVIDER_KEYS[0] == ("openai", "OPENAI_API_KEY")
+
+
 @pytest.mark.asyncio
 async def test_onboarding_router_bounds_provider_attempts(monkeypatch) -> None:
     from app.services.provider_health import ProviderHealth
