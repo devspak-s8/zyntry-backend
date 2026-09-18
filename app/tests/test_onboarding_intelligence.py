@@ -222,6 +222,7 @@ async def test_conversational_provider_repairs_one_malformed_response(monkeypatc
     class RepairLLM:
         def __init__(self) -> None:
             self.calls = 0
+            self.schemas = []
 
         async def generate(
             self,
@@ -232,6 +233,7 @@ async def test_conversational_provider_repairs_one_malformed_response(monkeypatc
             response_schema=None,
         ):
             self.calls += 1
+            self.schemas.append(response_schema)
             if self.calls == 1:
                 return ("not-json", 5)
             return (
@@ -257,6 +259,7 @@ async def test_conversational_provider_repairs_one_malformed_response(monkeypatc
 
     assert response.text == "Repaired."
     assert llm.calls == 2
+    assert llm.schemas == [onboarding_response_schema(), onboarding_response_schema()]
 
 
 def test_model_payload_normalizes_string_integration_decisions() -> None:
@@ -297,6 +300,33 @@ def test_model_json_parser_repairs_missing_commas_without_changing_values() -> N
     assert parsed["application_type"] == "ai_customer_support"
     assert parsed["primary_function"] == "Answer customer questions"
     assert parsed["integrations"] == [{"slug": "postgresql"}, {"slug": "slack"}]
+
+
+def test_conversational_parser_repairs_safe_json_syntax_before_validation() -> None:
+    content = """{
+      "text": "Captured.",
+      "proposed_intent": "clarify_requirements",
+      "proposed_data": {},
+      "suggested_actions": [],
+      "application_requirements": {
+        "application_type": "customer_support",
+        "primary_function": "Answer customer questions",
+        "target_users": ["customers"],
+        "inputs": ["question"],
+        "outputs": ["answer"],
+        "requires_documents": true,
+        "document_formats": ["pdf"],
+        "requires_external_data": false,
+        "requires_tools": false,
+        "requires_memory": true,
+        "memory_scope": "session"
+      }
+    }""".replace('"text": "Captured.",', '"text": "Captured."')
+
+    response = ConfiguredOnboardingModelProvider._parse_response(content)
+
+    assert response.text == "Captured."
+    assert response.application_requirements["application_type"] == "customer_support"
 
 
 def test_document_storage_is_a_resource_not_an_unsupported_connector() -> None:

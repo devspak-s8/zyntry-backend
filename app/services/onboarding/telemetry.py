@@ -123,6 +123,7 @@ class OnboardingTraceSink:
         attempts: int = 1,
         fallback_used: bool = False,
         http_status: int | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         active = self._active.pop(call_id, None)
         if active is None:
@@ -149,13 +150,15 @@ class OnboardingTraceSink:
             event.error_category, event.error_status = classify_error(error)
         event.metadata_ = {
             **(event.metadata_ or {}),
+            **(metadata or {}),
             "attempts": max(1, attempts),
             "http_status": http_status if http_status is not None else event.error_status,
             "parse_success": status in {"completed", "repaired", "fallback"},
         }
         logger.info(
             "onboarding_model_call provider=%s model=%s call_type=%s duration_ms=%s "
-            "http_status=%s parse_success=%s retry_count=%s",
+            "http_status=%s parse_success=%s retry_count=%s finish_reason=%s "
+            "response_schema_applied=%s schema_has_refs=%s",
             event.provider or "unknown",
             event.model or "unknown",
             event.operation,
@@ -163,6 +166,9 @@ class OnboardingTraceSink:
             http_status if http_status is not None else event.error_status or "unknown",
             status in {"completed", "repaired", "fallback"},
             event.retry_count,
+            (metadata or {}).get("finish_reason", "unknown"),
+            (metadata or {}).get("response_schema_applied", "unknown"),
+            (metadata or {}).get("schema_has_refs", "unknown"),
         )
 
     def start_attempt(

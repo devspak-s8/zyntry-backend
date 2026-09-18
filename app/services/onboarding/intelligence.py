@@ -20,6 +20,7 @@ from app.schemas.onboarding_intelligence import (
     RuntimePlanComponent,
 )
 from app.services.integrations.definitions import integration_registry
+from app.services.onboarding.json_utils import parse_json_object, repair_json_object
 from app.services.onboarding.telemetry import current_trace, use_call
 from app.services.rag import BaseLLMProvider
 
@@ -351,6 +352,19 @@ class GeminiLLMProvider(BaseLLMProvider):
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self.last_status_code: int | None = None
+        self.last_finish_reason: str | None = None
+        self.last_response_schema_applied = False
+        self.last_schema_has_refs = False
+
+    @staticmethod
+    def _schema_contains_refs(value: Any) -> bool:
+        if isinstance(value, dict):
+            if any(key in value for key in ("$ref", "$defs", "oneOf", "anyOf")):
+                return True
+            return any(GeminiLLMProvider._schema_contains_refs(item) for item in value.values())
+        if isinstance(value, list):
+            return any(GeminiLLMProvider._schema_contains_refs(item) for item in value)
+        return False
 
     async def generate(
         self,
@@ -360,6 +374,9 @@ class GeminiLLMProvider(BaseLLMProvider):
         temperature: float = 0.7,
         response_schema: dict[str, Any] | None = None,
     ) -> tuple[str, int]:
+        self.last_finish_reason = None
+        self.last_response_schema_applied = response_schema is not None
+        self.last_schema_has_refs = self._schema_contains_refs(response_schema)
         system = next((m["content"] for m in messages if m.get("role") == "system"), "")
         contents = [
             {"role": "model" if m.get("role") == "assistant" else "user", "parts": [{"text": m["content"]}]}
@@ -387,7 +404,9 @@ class GeminiLLMProvider(BaseLLMProvider):
             self.last_status_code = response.status_code
             response.raise_for_status()
             data = response.json()
-        content = data["candidates"][0]["content"]["parts"][0]["text"]
+        candidate = data["candidates"][0]
+        self.last_finish_reason = candidate.get("finishReason")
+        content = candidate["content"]["parts"][0]["text"]
         usage = data.get("usageMetadata", {}).get("totalTokenCount", 0)
         return content, usage
 
@@ -868,77 +887,11 @@ class ModelBackedRequirementsExtractor:
 
     @staticmethod
     def _parse_json(content: str) -> dict[str, Any]:
-        cleaned = content.strip()
-        if cleaned.startswith("```"):
-            cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-            cleaned = re.sub(r"\s*```$", "", cleaned)
-        start = cleaned.find("{")
-        end = cleaned.rfind("}")
-        if start < 0 or end < start:
-            raise ValueError("Model response did not contain a JSON object")
-        json_object = cleaned[start : end + 1]
-        try:
-            value = json.loads(json_object)
-        except json.JSONDecodeError:
-            # Models occasionally emit structurally correct JSON with a
-            # missing separator or trailing comma. Repair syntax only; field
-            # meaning and values remain untouched and are still validated by
-            # ApplicationRequirements afterwards.
-            value = ModelBackedRequirementsExtractor._load_repaired_json(json_object)
-        if not isinstance(value, dict):
-            raise ValueError("Model response must be a JSON object")
-        return value
+        return parse_json_object(content)
 
     @staticmethod
     def _load_repaired_json(value: str) -> dict[str, Any]:
-        candidate = value
-        for _ in range(12):
-            try:
-                parsed = json.loads(candidate)
-                if not isinstance(parsed, dict):
-                    raise ValueError("Model response must be a JSON object")
-                return parsed
-            except json.JSONDecodeError as exc:
-                position = exc.pos
-                current_index = position
-                while current_index < len(candidate) and candidate[current_index].isspace():
-                    current_index += 1
-                previous_index = position - 1
-                while previous_index >= 0 and candidate[previous_index].isspace():
-                    previous_index -= 1
-                current = candidate[current_index] if current_index < len(candidate) else ""
-                previous = candidate[previous_index] if previous_index >= 0 else ""
-
-                if "trailing comma" in exc.msg.lower():
-                    comma_index = candidate.rfind(",", 0, position + 1)
-                    if comma_index >= 0:
-                        after_comma = comma_index + 1
-                        while after_comma < len(candidate) and candidate[after_comma].isspace():
-                            after_comma += 1
-                        if after_comma < len(candidate) and candidate[after_comma] in "}]":
-                            candidate = candidate[:comma_index] + candidate[comma_index + 1:]
-                            continue
-                if (
-                    exc.msg == "Expecting ',' delimiter"
-                    and current in '\"{[tfn-0123456789'
-                    and previous in '\"}]el0123456789'
-                ):
-                    candidate = candidate[:current_index] + "," + candidate[current_index:]
-                    continue
-                if current in "}]" and previous == "," and (
-                    exc.msg in {
-                        "Expecting property name enclosed in double quotes",
-                        "Expecting value",
-                    }
-                    or "trailing comma" in exc.msg.lower()
-                ):
-                    candidate = candidate[:previous_index] + candidate[previous_index + 1:]
-                    continue
-                if exc.msg == "Expecting ':' delimiter" and current in '\"{[tfn-0123456789':
-                    candidate = candidate[:current_index] + ":" + candidate[current_index:]
-                    continue
-                raise
-        raise ValueError("Model response JSON could not be repaired safely")
+        return repair_json_object(value)
 
     @staticmethod
     def _prepare_model_payload(payload: dict[str, Any]) -> dict[str, Any]:

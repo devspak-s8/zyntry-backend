@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from app.schemas.onboarding_intelligence import ApplicationRequirements
 from app.services.integrations.definitions import integration_registry
+from app.services.onboarding.json_utils import parse_json_object
 from app.services.onboarding.structured_schema import onboarding_response_schema
 from app.services.onboarding.telemetry import current_trace, use_call
 
@@ -733,17 +734,25 @@ class ConfiguredOnboardingModelProvider:
         return safe
 
     @staticmethod
+    def _provider_metadata(provider: Any) -> dict[str, Any]:
+        """Return bounded provider diagnostics without prompt or secret data."""
+
+        return {
+            "finish_reason": getattr(provider, "last_finish_reason", None) or "unknown",
+            "response_schema_applied": bool(
+                getattr(provider, "last_response_schema_applied", False)
+            ),
+            "schema_has_refs": bool(getattr(provider, "last_schema_has_refs", False)),
+        }
+
+    @staticmethod
     def _parse_response(content: str) -> OnboardingModelResponse:
-        cleaned = content.strip()
-        if cleaned.startswith("```"):
-            cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-            cleaned = re.sub(r"\s*```$", "", cleaned)
-        start, end = cleaned.find("{"), cleaned.rfind("}")
-        if start < 0 or end < start:
-            raise ValueError("Onboarding model did not return JSON")
-        value = json.loads(cleaned[start : end + 1])
-        if not isinstance(value, dict):
-            raise ValueError("Onboarding model response must be an object")
+        try:
+            value = parse_json_object(content)
+        except ValueError as exc:
+            # Keep the provider-facing error stable while allowing the shared
+            # parser to repair safe syntax errors before validation.
+            raise ValueError(str(exc).replace("Model response", "Onboarding model response")) from exc
         intent = value.get("proposed_intent")
         if intent not in ConfiguredOnboardingModelProvider._ALLOWED_INTENTS:
             raise ValueError("Onboarding model returned an unsupported intent")
@@ -981,6 +990,7 @@ stores a draft; project attachment and connector authorization happen later.
                     attempts=attempts,
                     fallback_used=False,
                     http_status=getattr(provider, "last_status_code", None),
+                    metadata=self._provider_metadata(provider),
                 )
             return response
         except httpx.HTTPStatusError as exc:
@@ -1003,6 +1013,7 @@ stores a draft; project attachment and connector authorization happen later.
                         error=exc,
                         attempts=len(getattr(provider, "last_attempts", []) or []) or 1,
                         fallback_used=True,
+                        metadata=self._provider_metadata(provider),
                     )
                 return await self.fallback.generate_step_response(
                     user_message, current_state, current_config, history
@@ -1015,6 +1026,7 @@ stores a draft; project attachment and connector authorization happen later.
                         error=exc,
                         attempts=len(getattr(provider, "last_attempts", []) or []) or 1,
                         http_status=exc.response.status_code,
+                        metadata=self._provider_metadata(provider),
                     )
                 raise OnboardingModelRateLimitedError(
                     "The configured onboarding provider is rate limited."
@@ -1025,6 +1037,7 @@ stores a draft; project attachment and connector authorization happen later.
                     status="failed",
                     error=exc,
                     attempts=len(getattr(provider, "last_attempts", []) or []) or 1,
+                    metadata=self._provider_metadata(provider),
                 )
             raise OnboardingModelUnavailableError(
                 "The configured onboarding provider rejected the request."
@@ -1038,12 +1051,12 @@ stores a draft; project attachment and connector authorization happen later.
 
             if bool(getattr(settings, "ONBOARDING_ALLOW_FALLBACK", False)):
                 if trace and call_id:
-                    trace.finish_call(call_id, status="fallback", error=exc, attempts=len(getattr(provider, "last_attempts", []) or []) or 1, fallback_used=True)
+                    trace.finish_call(call_id, status="fallback", error=exc, attempts=len(getattr(provider, "last_attempts", []) or []) or 1, fallback_used=True, metadata=self._provider_metadata(provider))
                 return await self.fallback.generate_step_response(
                     user_message, current_state, current_config, history
                 )
             if trace and call_id:
-                trace.finish_call(call_id, status="failed", error=exc, attempts=len(getattr(provider, "last_attempts", []) or []) or 1)
+                trace.finish_call(call_id, status="failed", error=exc, attempts=len(getattr(provider, "last_attempts", []) or []) or 1, metadata=self._provider_metadata(provider))
             raise OnboardingModelUnavailableError(
                 "The configured onboarding provider could not be reached."
             ) from exc
@@ -1060,6 +1073,7 @@ stores a draft; project attachment and connector authorization happen later.
                     error=exc,
                     attempts=len(getattr(provider, "last_attempts", []) or []) or 1,
                     http_status=getattr(provider, "last_status_code", None),
+                    metadata=self._provider_metadata(provider),
                 )
             repair_id = trace.start_call(
                 operation="conversation_repair",
@@ -1108,6 +1122,7 @@ stores a draft; project attachment and connector authorization happen later.
                         output_text=repaired_content,
                         attempts=len(getattr(provider, "last_attempts", []) or []) or 1,
                         http_status=getattr(provider, "last_status_code", None),
+                        metadata=self._provider_metadata(provider),
                     )
                 return repaired_response
             except httpx.HTTPStatusError as repair_exc:
@@ -1117,6 +1132,7 @@ stores a draft; project attachment and connector authorization happen later.
                         status="failed",
                         error=repair_exc,
                         http_status=repair_exc.response.status_code,
+                        metadata=self._provider_metadata(provider),
                     )
                 from app.services.onboarding.intelligence import (
                     OnboardingModelRateLimitedError,
@@ -1132,7 +1148,7 @@ stores a draft; project attachment and connector authorization happen later.
                 ) from repair_exc
             except httpx.RequestError as repair_exc:
                 if trace and repair_id:
-                    trace.finish_call(repair_id, status="failed", error=repair_exc)
+                    trace.finish_call(repair_id, status="failed", error=repair_exc, metadata=self._provider_metadata(provider))
                 from app.services.onboarding.intelligence import OnboardingModelUnavailableError
 
                 raise OnboardingModelUnavailableError(
@@ -1149,6 +1165,7 @@ stores a draft; project attachment and connector authorization happen later.
                         status="failed",
                         error=repair_exc,
                         http_status=getattr(provider, "last_status_code", None),
+                        metadata=self._provider_metadata(provider),
                     )
                 from app.services.onboarding.intelligence import OnboardingModelResponseError
 
@@ -1161,12 +1178,12 @@ stores a draft; project attachment and connector authorization happen later.
 
             if bool(getattr(settings, "ONBOARDING_ALLOW_FALLBACK", False)):
                 if trace and call_id:
-                    trace.finish_call(call_id, status="fallback", error=exc, attempts=len(getattr(provider, "last_attempts", []) or []) or 1, fallback_used=True)
+                    trace.finish_call(call_id, status="fallback", error=exc, attempts=len(getattr(provider, "last_attempts", []) or []) or 1, fallback_used=True, metadata=self._provider_metadata(provider))
                 return await self.fallback.generate_step_response(
                     user_message, current_state, current_config, history
                 )
             if trace and call_id:
-                trace.finish_call(call_id, status="failed", error=exc, attempts=len(getattr(provider, "last_attempts", []) or []) or 1)
+                trace.finish_call(call_id, status="failed", error=exc, attempts=len(getattr(provider, "last_attempts", []) or []) or 1, metadata=self._provider_metadata(provider))
             raise OnboardingModelResponseError(
                 "The onboarding model returned an invalid response."
             ) from exc

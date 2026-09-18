@@ -82,6 +82,9 @@ class RoutedOnboardingLLMProvider(BaseLLMProvider):
         self.last_provider: str | None = None
         self.last_model: str | None = None
         self.last_status_code: int | None = None
+        self.last_finish_reason: str | None = None
+        self.last_response_schema_applied = False
+        self.last_schema_has_refs = False
         self.last_attempts: list[dict[str, str]] = []
 
     async def generate(
@@ -94,6 +97,9 @@ class RoutedOnboardingLLMProvider(BaseLLMProvider):
     ) -> tuple[str, int]:
         self.last_attempts = []
         self.last_status_code = None
+        self.last_finish_reason = None
+        self.last_response_schema_applied = False
+        self.last_schema_has_refs = False
         errors: list[Exception] = []
         for attempt_number, candidate in enumerate(self.candidates, start=1):
             if not await self.health.is_available_async(candidate.provider):
@@ -127,7 +133,13 @@ class RoutedOnboardingLLMProvider(BaseLLMProvider):
                 else None
             )
             try:
+                adapter: Any | None = None
                 adapter = _adapter_for(candidate.provider, candidate.api_key)
+                # Preserve the selected provider/model even when the adapter
+                # fails. Telemetry for a failed call must not be reported as
+                # ``unknown`` when routing already selected a candidate.
+                self.last_provider = candidate.provider
+                self.last_model = selected_model
                 if response_schema is not None and hasattr(adapter, "generate"):
                     # Only the Gemini adapter currently supports native
                     # response schemas. Other providers remain compatible and
@@ -158,15 +170,24 @@ class RoutedOnboardingLLMProvider(BaseLLMProvider):
                         temperature=temperature,
                     )
                 await self.health.record_success_async(candidate.provider)
-                self.last_provider = candidate.provider
-                self.last_model = selected_model
                 self.last_status_code = getattr(adapter, "last_status_code", None)
+                self.last_finish_reason = getattr(adapter, "last_finish_reason", None)
+                self.last_response_schema_applied = bool(
+                    getattr(adapter, "last_response_schema_applied", False)
+                )
+                self.last_schema_has_refs = bool(getattr(adapter, "last_schema_has_refs", False))
                 self.last_attempts[-1]["status"] = "completed"
                 if trace and active_attempt_id:
                     trace.finish_attempt(active_attempt_id, status="completed")
                 return content, usage
             except Exception as exc:  # adapters expose provider-specific failures
                 errors.append(exc)
+                self.last_status_code = getattr(adapter, "last_status_code", None)
+                self.last_finish_reason = getattr(adapter, "last_finish_reason", None)
+                self.last_response_schema_applied = bool(
+                    getattr(adapter, "last_response_schema_applied", False)
+                )
+                self.last_schema_has_refs = bool(getattr(adapter, "last_schema_has_refs", False))
                 await self.health.record_failure_async(candidate.provider, type(exc).__name__)
                 self.last_attempts[-1].update({"status": "failed", "error": type(exc).__name__})
                 if trace and active_attempt_id:
