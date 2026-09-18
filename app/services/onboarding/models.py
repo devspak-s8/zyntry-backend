@@ -1129,6 +1129,8 @@ stores a draft; project attachment and connector authorization happen later.
                     trace.finish_call(
                         repair_id,
                         status="failed",
+                        provider=getattr(provider, "last_provider", None),
+                        model=getattr(provider, "last_model", None) or model,
                         error=repair_exc,
                         http_status=repair_exc.response.status_code,
                         metadata=self._provider_metadata(provider),
@@ -1147,7 +1149,14 @@ stores a draft; project attachment and connector authorization happen later.
                 ) from repair_exc
             except httpx.RequestError as repair_exc:
                 if trace and repair_id:
-                    trace.finish_call(repair_id, status="failed", error=repair_exc, metadata=self._provider_metadata(provider))
+                    trace.finish_call(
+                        repair_id,
+                        status="failed",
+                        provider=getattr(provider, "last_provider", None),
+                        model=getattr(provider, "last_model", None) or model,
+                        error=repair_exc,
+                        metadata=self._provider_metadata(provider),
+                    )
                 from app.services.onboarding.intelligence import OnboardingModelUnavailableError
 
                 raise OnboardingModelUnavailableError(
@@ -1155,13 +1164,18 @@ stores a draft; project attachment and connector authorization happen later.
                 ) from repair_exc
             except Exception as repair_exc:
                 logger.warning(
-                    "Onboarding conversational response repair failed: %s",
+                    "Onboarding conversational response repair failed type=%s provider=%s model=%s status=%s",
                     type(repair_exc).__name__,
+                    getattr(provider, "last_provider", None) or "unknown",
+                    getattr(provider, "last_model", None) or model,
+                    getattr(provider, "last_status_code", None) or "unknown",
                 )
                 if trace and repair_id:
                     trace.finish_call(
                         repair_id,
                         status="failed",
+                        provider=getattr(provider, "last_provider", None),
+                        model=getattr(provider, "last_model", None) or model,
                         error=repair_exc,
                         http_status=getattr(provider, "last_status_code", None),
                         metadata=self._provider_metadata(provider),

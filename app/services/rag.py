@@ -78,6 +78,10 @@ class OpenAILLMProvider(BaseLLMProvider):
     def __init__(self, api_key: str, base_url: str = "https://api.openai.com/v1") -> None:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
+        self.last_status_code: int | None = None
+        self.last_finish_reason: str | None = None
+        self.last_response_schema_applied = False
+        self.last_schema_has_refs = False
 
     async def generate(
         self,
@@ -100,9 +104,12 @@ class OpenAILLMProvider(BaseLLMProvider):
                     "temperature": temperature,
                 },
             )
+            self.last_status_code = response.status_code
             response.raise_for_status()
             data = response.json()
-            content = data["choices"][0]["message"]["content"]
+            choice = data["choices"][0]
+            self.last_finish_reason = choice.get("finish_reason")
+            content = choice["message"]["content"]
             usage = data.get("usage", {}).get("total_tokens", 0)
             return content, usage
 
@@ -151,6 +158,10 @@ class AnthropicLLMProvider(BaseLLMProvider):
     def __init__(self, api_key: str, base_url: str = "https://api.anthropic.com/v1") -> None:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
+        self.last_status_code: int | None = None
+        self.last_finish_reason: str | None = None
+        self.last_response_schema_applied = False
+        self.last_schema_has_refs = False
 
     async def generate(
         self,
@@ -186,8 +197,10 @@ class AnthropicLLMProvider(BaseLLMProvider):
                 },
                 json=payload,
             )
+            self.last_status_code = response.status_code
             response.raise_for_status()
             data = response.json()
+            self.last_finish_reason = data.get("stop_reason")
             content = data["content"][0]["text"]
             usage = (
                 data.get("usage", {}).get("input_tokens", 0)
