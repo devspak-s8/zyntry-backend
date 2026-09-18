@@ -38,3 +38,17 @@ def test_google_integrations_use_google_oauth_endpoint() -> None:
         )
         assert provider._default_token_url(slug) == "https://oauth2.googleapis.com/token"
 
+
+def test_notion_authorization_uses_public_connection_parameters() -> None:
+    from app.services.integrations.definitions import integration_registry
+
+    provider = OAuth2AuthProvider()
+    definition = integration_registry.get("notion")
+    assert definition is not None
+    flow = provider.generate_auth_flow(
+        integration=definition,
+        redirect_uri="https://api.zyntry.space/api/v1/connections/notion/callback",
+        client_id="notion-client",
+    )
+    assert "owner=user" in flow["url"]
+    assert "code_challenge" not in flow["url"]

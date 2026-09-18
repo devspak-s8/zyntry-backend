@@ -49,6 +49,13 @@ class OAuth2AuthProvider:
             "code_challenge": code_challenge,
             "code_challenge_method": "S256",
         }
+        if integration.slug == "notion":
+            # Notion's public connection flow requires owner=user and does
+            # not use PKCE. Sending provider-specific parameters here keeps
+            # the generic OAuth flow compatible with other integrations.
+            params["owner"] = "user"
+            params.pop("code_challenge", None)
+            params.pop("code_challenge_method", None)
         if scope_str:
             params["scope"] = scope_str
         if extra_params:
@@ -81,14 +88,15 @@ class OAuth2AuthProvider:
 
         payload: dict[str, Any] = {
             "grant_type": "authorization_code",
-            "client_id": cid,
             "code": code,
             "redirect_uri": redirect_uri,
         }
-        if csecret:
-            payload["client_secret"] = csecret
-        if code_verifier:
-            payload["code_verifier"] = code_verifier
+        if integration.slug != "notion":
+            payload["client_id"] = cid
+            if csecret:
+                payload["client_secret"] = csecret
+            if code_verifier:
+                payload["code_verifier"] = code_verifier
 
         # OAuth exchanges always go through the provider token endpoint. A
         # network or provider error is surfaced to the caller; no synthetic
@@ -96,7 +104,20 @@ class OAuth2AuthProvider:
         try:
             async with httpx.AsyncClient(timeout=15) as client:
                 headers = {"Accept": "application/json"}
-                resp = await client.post(token_url, data=payload, headers=headers)
+                if integration.slug == "notion":
+                    if not csecret:
+                        raise ValueError(
+                            "OAuth client secret is not configured for integration 'notion'."
+                        )
+                    headers["Content-Type"] = "application/json"
+                    resp = await client.post(
+                        token_url,
+                        json=payload,
+                        headers=headers,
+                        auth=httpx.BasicAuth(cid, csecret),
+                    )
+                else:
+                    resp = await client.post(token_url, data=payload, headers=headers)
                 if resp.status_code != 200:
                     raise ValueError(
                         f"OAuth token exchange failed for '{integration.slug}' "
