@@ -747,6 +747,15 @@ class ConfiguredOnboardingModelProvider:
         }
 
     @staticmethod
+    def _response_failure_stage(error: BaseException) -> str:
+        message = str(error).lower()
+        if "json" in message or "object" in message:
+            return "json_parse"
+        if "application_requirements" in message or "unsupported intent" in message:
+            return "schema_validation"
+        return "response_validation"
+
+    @staticmethod
     def _parse_response(content: str) -> OnboardingModelResponse:
         try:
             value = parse_json_object(content)
@@ -973,7 +982,7 @@ stores a draft; project attachment and connector authorization happen later.
                     provider,
                     messages=model_messages,
                     model=model,
-                    max_tokens=2400,
+                    max_tokens=4096,
                     temperature=0.25,
                 )
             response = self._parse_response(content)
@@ -1072,7 +1081,10 @@ stores a draft; project attachment and connector authorization happen later.
                     error=exc,
                     attempts=len(getattr(provider, "last_attempts", []) or []) or 1,
                     http_status=getattr(provider, "last_status_code", None),
-                    metadata=self._provider_metadata(provider),
+                    metadata={
+                        **self._provider_metadata(provider),
+                        "response_failure_stage": self._response_failure_stage(exc),
+                    },
                 )
             repair_id = trace.start_call(
                 operation="conversation_repair",
@@ -1107,7 +1119,7 @@ stores a draft; project attachment and connector authorization happen later.
                         provider,
                         messages=repair_messages,
                         model=model,
-                        max_tokens=2400,
+                        max_tokens=4096,
                         temperature=0.1,
                     )
                 repaired_response = self._parse_response(repaired_content)
@@ -1178,7 +1190,10 @@ stores a draft; project attachment and connector authorization happen later.
                         model=getattr(provider, "last_model", None) or model,
                         error=repair_exc,
                         http_status=getattr(provider, "last_status_code", None),
-                        metadata=self._provider_metadata(provider),
+                        metadata={
+                            **self._provider_metadata(provider),
+                            "response_failure_stage": self._response_failure_stage(repair_exc),
+                        },
                     )
                 from app.services.onboarding.intelligence import OnboardingModelResponseError
 

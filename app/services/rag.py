@@ -100,11 +100,20 @@ class OpenAILLMProvider(BaseLLMProvider):
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
-        # OpenAI's JSON mode guarantees syntactically valid JSON for the
-        # provider-neutral onboarding contract. The Pydantic validation layer
-        # still enforces the full shape after decoding.
+        # Use strict structured output for onboarding. The provider-neutral
+        # schema is authored in Gemini's OpenAPI dialect, so convert it at the
+        # adapter boundary rather than sending incompatible type names.
         if response_schema is not None:
-            payload["response_format"] = {"type": "json_object"}
+            from app.services.onboarding.structured_schema import onboarding_response_json_schema
+
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "zyntry_onboarding_response",
+                    "strict": True,
+                    "schema": onboarding_response_json_schema(),
+                },
+            }
         async with httpx.AsyncClient(timeout=120) as client:
             response = await client.post(
                 f"{self._base_url}/chat/completions",

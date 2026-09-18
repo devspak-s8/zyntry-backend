@@ -175,3 +175,39 @@ def onboarding_response_schema() -> dict[str, Any]:
             "application_requirements",
         ],
     }
+
+
+def _openai_json_schema(value: dict[str, Any]) -> dict[str, Any]:
+    """Convert the Gemini OpenAPI schema to strict JSON Schema for OpenAI."""
+
+    schema_type = value.get("type")
+    if not isinstance(schema_type, str):
+        schema_type = "object"
+    type_map = {
+        "OBJECT": "object",
+        "ARRAY": "array",
+        "STRING": "string",
+        "BOOLEAN": "boolean",
+        "NUMBER": "number",
+    }
+    result: dict[str, Any] = {"type": type_map.get(schema_type, schema_type)}
+    if "enum" in value:
+        result["enum"] = list(value["enum"])
+    if schema_type == "OBJECT":
+        result["properties"] = {
+            key: _openai_json_schema(item)
+            for key, item in value.get("properties", {}).items()
+        }
+        result["required"] = list(value.get("required", []))
+        result["additionalProperties"] = False
+    elif schema_type == "ARRAY":
+        result["items"] = _openai_json_schema(value.get("items", {"type": "STRING"}))
+    if value.get("nullable"):
+        result = {"anyOf": [result, {"type": "null"}]}
+    return result
+
+
+def onboarding_response_json_schema() -> dict[str, Any]:
+    """Return a strict JSON Schema suitable for OpenAI response formatting."""
+
+    return _openai_json_schema(onboarding_response_schema())
