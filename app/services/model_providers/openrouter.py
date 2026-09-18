@@ -14,6 +14,12 @@ from app.services.model_providers.streaming import stream_openai_compatible
 class OpenRouterProvider(BaseModelProvider):
     BASE_URL = "https://openrouter.ai/api/v1"
 
+    def __init__(self) -> None:
+        self.last_status_code: int | None = None
+        self.last_finish_reason: str | None = None
+        self.last_response_schema_applied = False
+        self.last_schema_has_refs = False
+
     def name(self) -> str:
         return "openrouter"
 
@@ -63,7 +69,37 @@ class OpenRouterProvider(BaseModelProvider):
             )
             return resp.status_code == 200
 
-    async def chat_completion(self, api_key: str, model: str, messages: list[dict[str, str]], max_tokens: int = 2048, temperature: float = 0.7) -> str:
+    async def chat_completion(
+        self,
+        api_key: str,
+        model: str,
+        messages: list[dict[str, str]],
+        max_tokens: int = 2048,
+        temperature: float = 0.7,
+        response_schema: dict | None = None,
+    ) -> str:
+        self.last_finish_reason = None
+        self.last_response_schema_applied = response_schema is not None
+        self.last_schema_has_refs = False
+        payload: dict = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        if response_schema is not None:
+            from app.services.onboarding.structured_schema import onboarding_response_json_schema
+
+            json_schema = onboarding_response_json_schema()
+            self.last_schema_has_refs = self._schema_contains_refs(json_schema)
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "zyntry_onboarding_response",
+                    "strict": True,
+                    "schema": json_schema,
+                },
+            }
         async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(
                 f"{self.BASE_URL}/chat/completions",
@@ -73,11 +109,24 @@ class OpenRouterProvider(BaseModelProvider):
                     "X-Title": "Zyntra",
                     "Content-Type": "application/json",
                 },
-                json={"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": temperature},
+                json=payload,
             )
+            self.last_status_code = resp.status_code
             resp.raise_for_status()
             data = resp.json()
-            return ProviderResponse(data["choices"][0]["message"]["content"], data.get("usage"))
+            choice = data["choices"][0]
+            self.last_finish_reason = choice.get("finish_reason")
+            return ProviderResponse(choice["message"]["content"], data.get("usage"))
+
+    @staticmethod
+    def _schema_contains_refs(value: object) -> bool:
+        if isinstance(value, dict):
+            if any(key in value for key in ("$ref", "$defs", "oneOf", "anyOf")):
+                return True
+            return any(OpenRouterProvider._schema_contains_refs(item) for item in value.values())
+        if isinstance(value, list):
+            return any(OpenRouterProvider._schema_contains_refs(item) for item in value)
+        return False
 
     async def chat_completion_stream(
         self,

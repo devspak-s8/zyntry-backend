@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 from app.schemas.onboarding_intelligence import ApplicationRequirements
+from app.services.onboarding import provider_router
 from app.services.onboarding.engine import OnboardingEngine
 from app.services.onboarding.intelligence import (
     AdaptiveClarificationService,
@@ -417,6 +418,39 @@ async def test_onboarding_provider_router_fails_over_to_configured_provider(monk
     assert usage == 4
     assert router.last_provider == "openai"
     assert [item["status"] for item in router.last_attempts] == ["failed", "completed"]
+
+
+def test_openrouter_onboarding_model_is_pinned(monkeypatch) -> None:
+    monkeypatch.setattr(provider_router.settings, "OPENROUTER_FALLBACK_MODEL", "openai/gpt-4o-mini")
+
+    assert provider_router._model_for("openrouter", "google", "auto") == "openai/gpt-4o-mini"
+
+
+@pytest.mark.asyncio
+async def test_onboarding_router_bounds_provider_attempts(monkeypatch) -> None:
+    from app.services.provider_health import ProviderHealth
+
+    class FailingAdapter:
+        async def generate(self, **kwargs):
+            raise RuntimeError("provider unavailable")
+
+    adapters = {name: FailingAdapter() for name in ("google", "openai", "openrouter")}
+    monkeypatch.setattr(provider_router, "_adapter_for", lambda provider, key: adapters[provider])
+    monkeypatch.setattr(provider_router.settings, "ONBOARDING_MAX_PROVIDER_ATTEMPTS", 2)
+
+    router = RoutedOnboardingLLMProvider(
+        [
+            OnboardingProviderCandidate("google", "gemini-2.5-flash", "google-key"),
+            OnboardingProviderCandidate("openai", "gpt-4o-mini", "openai-key"),
+            OnboardingProviderCandidate("openrouter", "openai/gpt-4o-mini", "router-key"),
+        ],
+        health=ProviderHealth(redis=None, failure_threshold=10),
+    )
+
+    with pytest.raises(RuntimeError, match="provider unavailable"):
+        await router.generate([], "automatic")
+
+    assert len(router.last_attempts) == 2
 
 
 @pytest.mark.asyncio

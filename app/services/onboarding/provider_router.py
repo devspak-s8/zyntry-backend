@@ -35,6 +35,10 @@ class _GenericLLMAdapter(BaseLLMProvider):
     def __init__(self, provider: str, api_key: str) -> None:
         self.provider = provider
         self.api_key = api_key
+        self.last_status_code: int | None = None
+        self.last_finish_reason: str | None = None
+        self.last_response_schema_applied = False
+        self.last_schema_has_refs = False
 
     async def generate(
         self,
@@ -42,17 +46,34 @@ class _GenericLLMAdapter(BaseLLMProvider):
         model: str,
         max_tokens: int = 2048,
         temperature: float = 0.7,
+        response_schema: dict[str, Any] | None = None,
     ) -> tuple[str, int]:
         provider_cls = PROVIDER_REGISTRY.get(self.provider)
         if provider_cls is None:
             raise RuntimeError(f"Unsupported onboarding provider: {self.provider}")
-        result = await provider_cls().chat_completion(
-            api_key=self.api_key,
-            model=model,
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
+        provider_instance = provider_cls()
+        kwargs: dict[str, Any] = {
+            "api_key": self.api_key,
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        # OpenRouter is OpenAI-compatible, but only its adapter knows how to
+        # translate our provider-neutral schema into strict response_format.
+        if response_schema is not None and self.provider == "openrouter":
+            kwargs["response_schema"] = response_schema
+        try:
+            result = await provider_instance.chat_completion(**kwargs)
+        finally:
+            self.last_status_code = getattr(provider_instance, "last_status_code", None)
+            self.last_finish_reason = getattr(provider_instance, "last_finish_reason", None)
+            self.last_response_schema_applied = bool(
+                getattr(provider_instance, "last_response_schema_applied", False)
+            )
+            self.last_schema_has_refs = bool(
+                getattr(provider_instance, "last_schema_has_refs", False)
+            )
         usage = getattr(result, "usage", {}) or {}
         total = usage.get("total_tokens")
         if total is None:
@@ -86,6 +107,11 @@ class RoutedOnboardingLLMProvider(BaseLLMProvider):
         self.last_response_schema_applied = False
         self.last_schema_has_refs = False
         self.last_attempts: list[dict[str, str]] = []
+        configured_limit = getattr(settings, "ONBOARDING_MAX_PROVIDER_ATTEMPTS", 2)
+        try:
+            self.max_attempts = max(1, int(configured_limit))
+        except (TypeError, ValueError):
+            self.max_attempts = 2
 
     async def generate(
         self,
@@ -101,20 +127,24 @@ class RoutedOnboardingLLMProvider(BaseLLMProvider):
         self.last_response_schema_applied = False
         self.last_schema_has_refs = False
         errors: list[Exception] = []
-        for attempt_number, candidate in enumerate(self.candidates, start=1):
+        attempts_started = 0
+        for candidate in self.candidates:
             if not await self.health.is_available_async(candidate.provider):
-                self.last_attempts.append({"provider": candidate.provider, "status": "cooldown"})
                 trace = current_trace()
                 if trace:
                     attempt_id = trace.start_attempt(
                         operation="provider_routing",
                         provider=candidate.provider,
                         model=candidate.model or model,
-                        attempt_number=attempt_number,
+                        attempt_number=attempts_started + 1,
                         status="cooldown",
                     )
                     trace.finish_attempt(attempt_id, status="skipped")
                 continue
+            if attempts_started >= self.max_attempts:
+                break
+            attempts_started += 1
+            attempt_number = attempts_started
             selected_model = candidate.model or model
             self.last_attempts.append({
                 "provider": candidate.provider,
@@ -247,6 +277,12 @@ _DEFAULT_MODELS = {
 
 def _model_for(provider: str, preferred_provider: str, configured_model: str) -> str:
     requested = configured_model.strip()
+    if provider == "openrouter" and requested.lower() in {"", "auto", "automatic", "dynamic", "routing"}:
+        configured_fallback = str(
+            getattr(settings, "OPENROUTER_FALLBACK_MODEL", "openai/gpt-4o-mini")
+            or "openai/gpt-4o-mini"
+        ).strip()
+        return configured_fallback or "openai/gpt-4o-mini"
     if requested and requested.lower() not in {"auto", "automatic", "dynamic", "routing"}:
         if provider == preferred_provider:
             return requested

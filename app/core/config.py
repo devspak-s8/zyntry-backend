@@ -68,6 +68,9 @@ class AppSettings(BaseSettings):
     GOOGLE_API_KEY: str = ""
     DEEPSEEK_API_KEY: str = ""
     OPENROUTER_API_KEY: str = ""
+    # OpenRouter's ``auto`` model can select models that do not support the
+    # structured JSON contract required by onboarding.
+    OPENROUTER_FALLBACK_MODEL: str = "openai/gpt-4o-mini"
     GROQ_API_KEY: str = ""
     MISTRAL_API_KEY: str = ""
     FIREWORKS_API_KEY: str = ""
@@ -79,6 +82,8 @@ class AppSettings(BaseSettings):
     # Disabled by default so production never guesses requirements when the
     # model is unavailable. Local tests may opt in explicitly.
     ONBOARDING_ALLOW_FALLBACK: bool = False
+    # Bound provider fan-out to one preferred attempt plus one failover.
+    ONBOARDING_MAX_PROVIDER_ATTEMPTS: int = 2
     RUNTIME_ASSISTANT_PROVIDER: str = "google"
     RUNTIME_ASSISTANT_MODEL: str = "gemini-2.5-flash"
     AZURE_OPENAI_ENDPOINT: str = ""
