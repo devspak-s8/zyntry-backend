@@ -11,7 +11,25 @@ from app.schemas.onboarding_chat import (
     OnboardingMessageRequest,
 )
 from app.services.onboarding import OnboardingService
-from app.services.onboarding.engine import OnboardingNameMismatchError
+from app.services.onboarding.engine import OnboardingEngine, OnboardingNameMismatchError
+
+
+def test_runtime_creation_requires_explicit_confirmation() -> None:
+    assert not OnboardingEngine._is_explicit_runtime_confirmation(
+        message="yes",
+        state="configuring_runtime",
+        proposed_intent="execute_provisioning",
+    )
+    assert not OnboardingEngine._is_explicit_runtime_confirmation(
+        message="yes, continue with available integrations",
+        state="confirming_configuration",
+        proposed_intent="execute_provisioning",
+    )
+    assert OnboardingEngine._is_explicit_runtime_confirmation(
+        message="Confirm & Create Runtime",
+        state="confirming_configuration",
+        proposed_intent="clarify_requirements",
+    )
 
 
 @pytest.mark.asyncio

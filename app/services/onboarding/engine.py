@@ -533,11 +533,10 @@ class OnboardingEngine:
 
         # Step 2: Check for direct execution / confirmation
         msg_lower = req.message.lower().strip()
-        is_confirmation = (
-            ai_resp.proposed_intent == "execute_provisioning"
-            or (session.state in ("confirming_configuration", "configuring_runtime") and any(
-                k in msg_lower for k in ["confirm", "create runtime", "create", "yes", "looks good", "let's do it", "provision", "proceed"]
-            ))
+        is_confirmation = self._is_explicit_runtime_confirmation(
+            message=msg_lower,
+            state=session.state,
+            proposed_intent=ai_resp.proposed_intent,
         )
 
         if is_confirmation:
@@ -657,6 +656,39 @@ class OnboardingEngine:
             runtime_plan=validated_config.get("runtime_plan"),
             clarification_question=clarification_question,
         )
+
+    @staticmethod
+    def _is_explicit_runtime_confirmation(
+        *,
+        message: str,
+        state: str,
+        proposed_intent: str | None,
+    ) -> bool:
+        """Require an unambiguous create/provision instruction.
+
+        A model intent is advisory and a bare ``yes`` may answer an integration
+        or clarification question. Neither is sufficient to create a runtime.
+        The user must explicitly confirm creation/provisioning.
+        """
+
+        if state not in ("confirming_configuration", "configuring_runtime"):
+            return False
+        normalized = re.sub(r"\s+", " ", message.strip().lower())
+        explicit_phrases = (
+            "confirm & create runtime",
+            "confirm and create runtime",
+            "confirm configuration",
+            "create runtime",
+            "provision runtime",
+            "proceed with creation",
+            "proceed with provisioning",
+            "yes, create",
+            "yes create",
+            "looks good, create",
+            "let's do it",
+            "lets do it",
+        )
+        return any(phrase in normalized for phrase in explicit_phrases)
 
     async def _apply_requirements_intelligence(
         self,
