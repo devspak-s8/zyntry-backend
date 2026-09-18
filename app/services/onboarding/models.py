@@ -771,11 +771,34 @@ class ConfiguredOnboardingModelProvider:
             # parser to repair safe syntax errors before validation.
             raise ValueError(str(exc).replace("Model response", "Onboarding model response")) from exc
         intent = value.get("proposed_intent")
+        if not isinstance(intent, str):
+            intent = "clarify_requirements"
+        intent = intent.strip().lower()
+        intent_aliases = {
+            "clarify": "clarify_requirements",
+            "clarification": "clarify_requirements",
+            "ask_question": "clarify_requirements",
+            "ask_clarifying_question": "clarify_requirements",
+            "collect_requirements": "clarify_requirements",
+            "ready": "requirements_ready",
+            "complete": "execute_provisioning",
+        }
+        intent = intent_aliases.get(intent, intent)
+        # JSON mode is intentionally less strict than native structured
+        # output. If a provider omits or renames the intent, keep the turn
+        # read-only and let the backend clarification logic decide the next
+        # question rather than rejecting the entire onboarding request.
         if intent not in ConfiguredOnboardingModelProvider._ALLOWED_INTENTS:
-            raise ValueError("Onboarding model returned an unsupported intent")
+            intent = "clarify_requirements"
         text = value.get("text")
+        if not isinstance(text, str) or not text.strip():
+            text = "I’ve captured the information so far. I need one more detail to continue."
         proposed_data = value.get("proposed_data", {})
+        if not isinstance(proposed_data, dict):
+            proposed_data = {}
         suggested_actions = value.get("suggested_actions", [])
+        if not isinstance(suggested_actions, list):
+            suggested_actions = []
         embedded_requirements = value.get("application_requirements")
         if embedded_requirements is None and isinstance(proposed_data, dict):
             embedded_requirements = proposed_data.get("application_requirements")
@@ -801,12 +824,7 @@ class ConfiguredOnboardingModelProvider:
             normalized_requirements = validated_requirements.model_dump(mode="json")
         except ValidationError as exc:
             raise ValueError("Onboarding model application_requirements is invalid") from exc
-        if not isinstance(text, str) or not text.strip():
-            raise ValueError("Onboarding model response has no text")
-        if not isinstance(proposed_data, dict):
-            raise ValueError("Onboarding model proposed_data must be an object")
-        if not isinstance(suggested_actions, list) or not all(isinstance(item, str) for item in suggested_actions):
-            raise ValueError("Onboarding model suggested_actions must be strings")
+        suggested_actions = [item for item in suggested_actions if isinstance(item, str)]
 
         # The model may return a display object instead of a slug despite the
         # prompt. Normalize it here and discard unknown connectors before the

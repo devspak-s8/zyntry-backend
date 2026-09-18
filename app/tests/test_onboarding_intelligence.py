@@ -350,6 +350,17 @@ def test_conversational_parser_normalizes_compatible_requirements() -> None:
     ]
 
 
+def test_conversational_parser_keeps_incomplete_json_as_clarification() -> None:
+    response = ConfiguredOnboardingModelProvider._parse_response(
+        '{"text":"Tell me more about the users."}'
+    )
+
+    assert response.proposed_intent == "clarify_requirements"
+    assert response.proposed_data == {}
+    assert response.suggested_actions == []
+    assert response.application_requirements["schema_version"] == "1.0"
+
+
 def test_document_storage_is_a_resource_not_an_unsupported_connector() -> None:
     proposed_data = {
         "integrations": ["document_storage"],
