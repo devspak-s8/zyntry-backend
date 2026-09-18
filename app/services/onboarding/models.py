@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import re
@@ -842,23 +843,21 @@ class ConfiguredOnboardingModelProvider:
         path without affecting the production Gemini path.
         """
 
-        try:
-            return await provider.generate(
-                messages=messages,
-                model=model,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                response_schema=onboarding_response_schema(),
-            )
-        except TypeError as exc:
-            if "response_schema" not in str(exc):
-                raise
-            return await provider.generate(
-                messages=messages,
-                model=model,
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
+        generate = provider.generate
+        parameters = inspect.signature(generate).parameters
+        supports_schema = "response_schema" in parameters or any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        )
+        kwargs: dict[str, Any] = {
+            "messages": messages,
+            "model": model,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        if supports_schema:
+            kwargs["response_schema"] = onboarding_response_schema()
+        return await generate(**kwargs)
 
     async def generate_step_response(
         self,
@@ -974,7 +973,7 @@ stores a draft; project attachment and connector authorization happen later.
                     provider,
                     messages=model_messages,
                     model=model,
-                    max_tokens=1400,
+                    max_tokens=2400,
                     temperature=0.25,
                 )
             response = self._parse_response(content)
@@ -1108,7 +1107,7 @@ stores a draft; project attachment and connector authorization happen later.
                         provider,
                         messages=repair_messages,
                         model=model,
-                        max_tokens=1400,
+                        max_tokens=2400,
                         temperature=0.1,
                     )
                 repaired_response = self._parse_response(repaired_content)
