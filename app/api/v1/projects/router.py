@@ -33,6 +33,7 @@ from app.schemas.projects import (
     ProjectUpdate,
 )
 from app.schemas.runtimes import RuntimeCreate, RuntimeRead
+from app.services.integrations.service import IntegrationService
 from app.services.notifications import publish_notification
 from app.services.runtimes import RuntimeService
 
@@ -478,6 +479,36 @@ async def update_project(
                 project_id=pid,
                 organization_id=proj.organization_id,
             )
+
+            # Older runtime creation flows stored the onboarding integration
+            # policies in ``runtime.config`` but did not create the separate
+            # RuntimeIntegration rows consumed by the integrations UI and the
+            # build gate. Reconcile them at bind time so an existing runtime
+            # exposes PostgreSQL (and other supported connectors) as
+            # ``connection_required`` instead of appearing empty.
+            runtime_config = runtime.config or {}
+            integration_policies = runtime_config.get("integration_policies") or (
+                runtime_config.get("runtime_plan") or {}
+            ).get("integration_policies")
+            if not integration_policies:
+                onboarding_session_id = runtime_config.get("onboarding_session_id")
+                if onboarding_session_id:
+                    try:
+                        onboarding_session = await uow.onboarding_sessions.get(
+                            uuid.UUID(str(onboarding_session_id))
+                        )
+                    except (TypeError, ValueError):
+                        onboarding_session = None
+                    if onboarding_session and onboarding_session.user_id == runtime.user_id:
+                        session_config = onboarding_session.configuration or {}
+                        integration_policies = session_config.get("integration_policies") or (
+                            session_config.get("runtime_plan") or {}
+                        ).get("integration_policies")
+            if integration_policies:
+                await IntegrationService(uow).reconcile_runtime_policies(
+                    runtime.id,
+                    integration_policies,
+                )
         if update_data:
             await uow.projects.update(proj, **update_data)
         await uow.commit()

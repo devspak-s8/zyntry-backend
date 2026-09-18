@@ -10,6 +10,7 @@ return the normal retryable onboarding response.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, cast
 
 import httpx
 
@@ -80,6 +81,7 @@ class RoutedOnboardingLLMProvider(BaseLLMProvider):
         self.health = health or provider_health
         self.last_provider: str | None = None
         self.last_model: str | None = None
+        self.last_status_code: int | None = None
         self.last_attempts: list[dict[str, str]] = []
 
     async def generate(
@@ -88,8 +90,10 @@ class RoutedOnboardingLLMProvider(BaseLLMProvider):
         model: str,
         max_tokens: int = 2048,
         temperature: float = 0.7,
+        response_schema: dict | None = None,
     ) -> tuple[str, int]:
         self.last_attempts = []
+        self.last_status_code = None
         errors: list[Exception] = []
         for attempt_number, candidate in enumerate(self.candidates, start=1):
             if not await self.health.is_available_async(candidate.provider):
@@ -124,15 +128,39 @@ class RoutedOnboardingLLMProvider(BaseLLMProvider):
             )
             try:
                 adapter = _adapter_for(candidate.provider, candidate.api_key)
-                content, usage = await adapter.generate(
-                    messages=messages,
-                    model=selected_model,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                )
+                if response_schema is not None and hasattr(adapter, "generate"):
+                    # Only the Gemini adapter currently supports native
+                    # response schemas. Other providers remain compatible and
+                    # receive the same JSON-only prompt without this keyword.
+                    try:
+                        generate = cast(Any, adapter).generate
+                        content, usage = await generate(
+                            messages=messages,
+                            model=selected_model,
+                            max_tokens=max_tokens,
+                            temperature=temperature,
+                            response_schema=response_schema,
+                        )
+                    except TypeError as exc:
+                        if "response_schema" not in str(exc):
+                            raise
+                        content, usage = await adapter.generate(
+                            messages=messages,
+                            model=selected_model,
+                            max_tokens=max_tokens,
+                            temperature=temperature,
+                        )
+                else:
+                    content, usage = await adapter.generate(
+                        messages=messages,
+                        model=selected_model,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                    )
                 await self.health.record_success_async(candidate.provider)
                 self.last_provider = candidate.provider
                 self.last_model = selected_model
+                self.last_status_code = getattr(adapter, "last_status_code", None)
                 self.last_attempts[-1]["status"] = "completed"
                 if trace and active_attempt_id:
                     trace.finish_attempt(active_attempt_id, status="completed")

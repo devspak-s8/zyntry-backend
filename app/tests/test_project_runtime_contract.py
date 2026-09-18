@@ -190,6 +190,74 @@ async def test_wizard_attaches_configures_and_builds_the_same_runtime(
 
 
 @pytest.mark.asyncio
+async def test_binding_existing_runtime_materializes_saved_postgresql_policy(
+    db_session, monkeypatch
+) -> None:
+    """Reusing a configured runtime must expose its DB policy to the project wizard."""
+    uow = UnitOfWork(db_session)
+    organization = await uow.organizations.create(
+        name="Policy Reconcile Org", slug="policy-reconcile-org"
+    )
+    await uow.commit()
+    user = await uow.users.create(
+        email="policy-reconcile@zyntry.space",
+        name="Policy Reconcile User",
+        organization_id=organization.id,
+    )
+    project = await uow.projects.create(
+        name="Policy Reconcile Project",
+        slug="policy-reconcile-project",
+        organization_id=organization.id,
+        settings={"environment": "development"},
+        status="ready",
+    )
+    runtime = await uow.runtimes.create(
+        user_id=user.id,
+        organization_id=organization.id,
+        environment="development",
+        name="Configured Support Runtime",
+        provider="google",
+        model="gemini-2.5-flash",
+        config={
+            "integration_policies": [
+                {
+                    "integration_slug": "postgresql",
+                    "connection_mode": "zyntry_managed",
+                    "enabled_capabilities": ["query"],
+                    "purpose": "Customer records",
+                },
+                {
+                    "integration_slug": "document_storage",
+                    "connection_mode": "zyntry_managed",
+                    "enabled_capabilities": [],
+                },
+            ]
+        },
+    )
+    await uow.commit()
+    monkeypatch.setattr(
+        "app.api.v1.projects.router._invalidate_projects_cache",
+        AsyncMock(return_value=None),
+    )
+
+    response = await update_project(
+        str(project.id),
+        ProjectUpdate(runtime_id=runtime.id),
+        user,
+        db_session,
+    )
+
+    assert response.runtime_id == runtime.id
+    integrations = await IntegrationService(uow).list_runtime_integrations(runtime.id)
+    assert [item.integration_slug for item in integrations] == ["postgresql"]
+    postgresql = integrations[0]
+    assert postgresql.connection_mode == "zyntry_managed"
+    assert postgresql.connection_required is True
+    assert postgresql.connection_status == "connection_required"
+    assert postgresql.connection_id is None
+
+
+@pytest.mark.asyncio
 async def test_project_runtime_binding_allows_atomic_org_rebind(
     db_session, monkeypatch
 ) -> None:

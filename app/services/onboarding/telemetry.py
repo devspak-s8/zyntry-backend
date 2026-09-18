@@ -8,6 +8,7 @@ persists counts, timings, identifiers, and safe error categories.
 from __future__ import annotations
 
 import contextvars
+import logging
 import time
 import uuid
 from collections.abc import Iterator
@@ -27,6 +28,8 @@ _CURRENT_TRACE: contextvars.ContextVar[OnboardingTraceSink | None] = contextvars
 _CURRENT_CALL: contextvars.ContextVar[uuid.UUID | None] = contextvars.ContextVar(
     "onboarding_trace_call", default=None
 )
+
+logger = logging.getLogger(__name__)
 
 
 def classify_error(error: BaseException) -> tuple[str, int | None]:
@@ -119,6 +122,7 @@ class OnboardingTraceSink:
         error: BaseException | None = None,
         attempts: int = 1,
         fallback_used: bool = False,
+        http_status: int | None = None,
     ) -> None:
         active = self._active.pop(call_id, None)
         if active is None:
@@ -146,7 +150,20 @@ class OnboardingTraceSink:
         event.metadata_ = {
             **(event.metadata_ or {}),
             "attempts": max(1, attempts),
+            "http_status": http_status if http_status is not None else event.error_status,
+            "parse_success": status in {"completed", "repaired", "fallback"},
         }
+        logger.info(
+            "onboarding_model_call provider=%s model=%s call_type=%s duration_ms=%s "
+            "http_status=%s parse_success=%s retry_count=%s",
+            event.provider or "unknown",
+            event.model or "unknown",
+            event.operation,
+            event.latency_ms,
+            http_status if http_status is not None else event.error_status or "unknown",
+            status in {"completed", "repaired", "fallback"},
+            event.retry_count,
+        )
 
     def start_attempt(
         self,

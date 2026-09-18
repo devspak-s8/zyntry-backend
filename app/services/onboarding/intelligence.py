@@ -350,6 +350,7 @@ class GeminiLLMProvider(BaseLLMProvider):
     def __init__(self, api_key: str, base_url: str = "https://generativelanguage.googleapis.com/v1beta") -> None:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
+        self.last_status_code: int | None = None
 
     async def generate(
         self,
@@ -357,6 +358,7 @@ class GeminiLLMProvider(BaseLLMProvider):
         model: str,
         max_tokens: int = 2048,
         temperature: float = 0.7,
+        response_schema: dict[str, Any] | None = None,
     ) -> tuple[str, int]:
         system = next((m["content"] for m in messages if m.get("role") == "system"), "")
         contents = [
@@ -372,6 +374,8 @@ class GeminiLLMProvider(BaseLLMProvider):
                 "responseMimeType": "application/json",
             },
         }
+        if response_schema is not None:
+            payload["generationConfig"]["responseSchema"] = response_schema
         if system:
             payload["systemInstruction"] = {"parts": [{"text": system}]}
         async with httpx.AsyncClient(timeout=120) as client:
@@ -380,6 +384,7 @@ class GeminiLLMProvider(BaseLLMProvider):
                 headers={"x-goog-api-key": self._api_key},
                 json=payload,
             )
+            self.last_status_code = response.status_code
             response.raise_for_status()
             data = response.json()
         content = data["candidates"][0]["content"]["parts"][0]["text"]
@@ -499,6 +504,7 @@ class OnboardingRequirementsError(RuntimeError):
 
     code = "onboarding_model_unavailable"
     retryable = True
+    http_status = 503
     public_message = "The onboarding assistant is temporarily unavailable. Please try again shortly."
 
     def __init__(self, message: str | None = None) -> None:
@@ -517,6 +523,7 @@ class OnboardingModelResponseError(OnboardingRequirementsError):
     """Raised when the onboarding model returns an invalid response."""
 
     code = "onboarding_response_invalid"
+    http_status = 422
     public_message = "We couldn't process that setup request. Please try again."
 
 
@@ -524,6 +531,7 @@ class OnboardingModelRateLimitedError(OnboardingRequirementsError):
     """Raised when the configured provider rejects a request with HTTP 429."""
 
     code = "onboarding_provider_rate_limited"
+    http_status = 429
     public_message = "The onboarding assistant is temporarily busy. Please try again shortly."
 
 

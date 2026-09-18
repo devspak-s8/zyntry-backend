@@ -8,8 +8,11 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 import httpx
+from pydantic import ValidationError
 
+from app.schemas.onboarding_intelligence import ApplicationRequirements
 from app.services.integrations.definitions import integration_registry
+from app.services.onboarding.structured_schema import onboarding_response_schema
 from app.services.onboarding.telemetry import current_trace, use_call
 
 logger = logging.getLogger(__name__)
@@ -750,8 +753,17 @@ class ConfiguredOnboardingModelProvider:
         embedded_requirements = value.get("application_requirements")
         if embedded_requirements is None and isinstance(proposed_data, dict):
             embedded_requirements = proposed_data.get("application_requirements")
-        if embedded_requirements is not None and not isinstance(embedded_requirements, dict):
+        if embedded_requirements is None:
+            raise ValueError("Onboarding model response is missing application_requirements")
+        if not isinstance(embedded_requirements, dict):
             raise ValueError("Onboarding model application_requirements must be an object")
+        try:
+            # Validate the combined response before it reaches the engine. A
+            # malformed requirements object gets one bounded repair attempt;
+            # it no longer triggers a second full extraction request.
+            ApplicationRequirements.model_validate(embedded_requirements)
+        except ValidationError as exc:
+            raise ValueError("Onboarding model application_requirements is invalid") from exc
         if not isinstance(text, str) or not text.strip():
             raise ValueError("Onboarding model response has no text")
         if not isinstance(proposed_data, dict):
@@ -803,6 +815,41 @@ class ConfiguredOnboardingModelProvider:
             suggested_actions=[item.strip() for item in suggested_actions if item.strip()][:8],
             application_requirements=embedded_requirements,
         )
+
+    @staticmethod
+    async def _generate_structured(
+        provider: Any,
+        *,
+        messages: list[dict[str, str]],
+        model: str,
+        max_tokens: int,
+        temperature: float,
+    ) -> tuple[str, int]:
+        """Generate one onboarding response with native schema constraints.
+
+        Routed Gemini providers accept ``response_schema`` and forward it to
+        ``responseSchema``. Test doubles and other provider adapters may not
+        expose that keyword, so they retain the JSON-prompt compatibility
+        path without affecting the production Gemini path.
+        """
+
+        try:
+            return await provider.generate(
+                messages=messages,
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                response_schema=onboarding_response_schema(),
+            )
+        except TypeError as exc:
+            if "response_schema" not in str(exc):
+                raise
+            return await provider.generate(
+                messages=messages,
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
 
     async def generate_step_response(
         self,
@@ -904,13 +951,19 @@ stores a draft; project attachment and connector authorization happen later.
                 {"role": "user", "content": json.dumps(payload, default=str)},
             ],
         ) if trace else None
+        content = ""
         try:
             with use_call(call_id) if call_id else nullcontext():
-                content, usage = await provider.generate(
-                    messages=[
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": json.dumps(payload, default=str)},
-                    ],
+                model_messages = [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": json.dumps(payload, default=str)},
+                ]
+                # The routed production provider forwards this schema to
+                # Gemini's native constrained-decoding API. Test doubles and
+                # non-Gemini providers continue through the compatibility path.
+                content, usage = await self._generate_structured(
+                    provider,
+                    messages=model_messages,
                     model=model,
                     max_tokens=1400,
                     temperature=0.25,
@@ -927,6 +980,7 @@ stores a draft; project attachment and connector authorization happen later.
                     output_text=content,
                     attempts=attempts,
                     fallback_used=False,
+                    http_status=getattr(provider, "last_status_code", None),
                 )
             return response
         except httpx.HTTPStatusError as exc:
@@ -955,7 +1009,13 @@ stores a draft; project attachment and connector authorization happen later.
                 )
             if exc.response.status_code == 429:
                 if trace and call_id:
-                    trace.finish_call(call_id, status="failed", error=exc, attempts=len(getattr(provider, "last_attempts", []) or []) or 1)
+                    trace.finish_call(
+                        call_id,
+                        status="failed",
+                        error=exc,
+                        attempts=len(getattr(provider, "last_attempts", []) or []) or 1,
+                        http_status=exc.response.status_code,
+                    )
                 raise OnboardingModelRateLimitedError(
                     "The configured onboarding provider is rate limited."
                 ) from exc
@@ -987,6 +1047,114 @@ stores a draft; project attachment and connector authorization happen later.
             raise OnboardingModelUnavailableError(
                 "The configured onboarding provider could not be reached."
             ) from exc
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            # A schema-constrained provider should almost never reach this
+            # branch. Keep exactly one repair request for older models or
+            # providers that ignore responseSchema; never chain repairs.
+            if trace and call_id:
+                trace.finish_call(
+                    call_id,
+                    status="failed",
+                    provider=getattr(provider, "last_provider", None),
+                    model=getattr(provider, "last_model", None) or model,
+                    error=exc,
+                    attempts=len(getattr(provider, "last_attempts", []) or []) or 1,
+                    http_status=getattr(provider, "last_status_code", None),
+                )
+            repair_id = trace.start_call(
+                operation="conversation_repair",
+                model=model,
+                messages=[],
+            ) if trace else None
+            repair_messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        system
+                        + "\nThe previous response failed validation. Return one valid JSON object "
+                        "matching the supplied response schema. Do not add markdown or commentary."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "malformed_response": content,
+                            "latest_message": user_message,
+                            "current_state": current_state,
+                            "current_config": self._safe_config(current_config),
+                        },
+                        default=str,
+                    ),
+                },
+            ]
+            try:
+                with use_call(repair_id) if repair_id else nullcontext():
+                    repaired_content, repaired_usage = await self._generate_structured(
+                        provider,
+                        messages=repair_messages,
+                        model=model,
+                        max_tokens=1400,
+                        temperature=0.1,
+                    )
+                repaired_response = self._parse_response(repaired_content)
+                if trace and repair_id:
+                    trace.finish_call(
+                        repair_id,
+                        status="repaired",
+                        provider=getattr(provider, "last_provider", None),
+                        model=getattr(provider, "last_model", None) or model,
+                        usage=repaired_usage,
+                        output_text=repaired_content,
+                        attempts=len(getattr(provider, "last_attempts", []) or []) or 1,
+                        http_status=getattr(provider, "last_status_code", None),
+                    )
+                return repaired_response
+            except httpx.HTTPStatusError as repair_exc:
+                if trace and repair_id:
+                    trace.finish_call(
+                        repair_id,
+                        status="failed",
+                        error=repair_exc,
+                        http_status=repair_exc.response.status_code,
+                    )
+                from app.services.onboarding.intelligence import (
+                    OnboardingModelRateLimitedError,
+                    OnboardingModelUnavailableError,
+                )
+
+                if repair_exc.response.status_code == 429:
+                    raise OnboardingModelRateLimitedError(
+                        "The configured onboarding provider is rate limited."
+                    ) from repair_exc
+                raise OnboardingModelUnavailableError(
+                    "The configured onboarding provider rejected the repair request."
+                ) from repair_exc
+            except httpx.RequestError as repair_exc:
+                if trace and repair_id:
+                    trace.finish_call(repair_id, status="failed", error=repair_exc)
+                from app.services.onboarding.intelligence import OnboardingModelUnavailableError
+
+                raise OnboardingModelUnavailableError(
+                    "The configured onboarding provider could not be reached."
+                ) from repair_exc
+            except Exception as repair_exc:
+                logger.warning(
+                    "Onboarding conversational response repair failed: %s",
+                    type(repair_exc).__name__,
+                )
+                if trace and repair_id:
+                    trace.finish_call(
+                        repair_id,
+                        status="failed",
+                        error=repair_exc,
+                        http_status=getattr(provider, "last_status_code", None),
+                    )
+                from app.services.onboarding.intelligence import OnboardingModelResponseError
+
+                raise OnboardingModelResponseError(
+                    "The onboarding model returned an invalid response."
+                ) from repair_exc
         except Exception as exc:
             logger.exception("Onboarding conversational model failed")
             from app.services.onboarding.intelligence import OnboardingModelResponseError

@@ -19,6 +19,7 @@ from app.services.onboarding.provider_router import (
     OnboardingProviderCandidate,
     RoutedOnboardingLLMProvider,
 )
+from app.services.onboarding.structured_schema import onboarding_response_schema
 
 
 class FakeLLM:
@@ -165,6 +166,97 @@ async def test_conversational_provider_accepts_embedded_requirements(monkeypatch
 
     assert response.application_requirements is not None
     assert response.application_requirements["application_type"] == "ai_customer_support"
+
+
+@pytest.mark.asyncio
+async def test_conversational_provider_requests_native_response_schema(monkeypatch) -> None:
+    class SchemaAwareLLM:
+        def __init__(self) -> None:
+            self.response_schema = None
+
+        async def generate(
+            self,
+            messages,
+            model,
+            max_tokens=2048,
+            temperature=0.7,
+            response_schema=None,
+        ):
+            self.response_schema = response_schema
+            return (
+                '{"text":"I understand.","proposed_intent":"clarify_requirements",'
+                '"proposed_data":{},"suggested_actions":[],"application_requirements":{'
+                '"schema_version":"1.0","application_type":"ai_customer_support",'
+                '"primary_function":"Answer customer questions","target_users":["customers"],'
+                '"inputs":["questions"],"outputs":["answers"],"requires_ai":true,'
+                '"requires_documents":false,"document_formats":[],"requires_external_data":false,'
+                '"external_source_types":[],"requires_tools":false,"requires_memory":false,'
+                '"memory_scope":null,"connection_ownership":null,"integrations":[],'
+                '"integration_decisions":[],"requested_actions":[],"constraints":[],"'
+                'data_sensitivity":null,"expected_scale":null,"assumptions":[],"confidence":0.9}}',
+                12,
+            )
+
+    llm = SchemaAwareLLM()
+    provider = ConfiguredOnboardingModelProvider()
+    monkeypatch.setattr(
+        ConfiguredOnboardingModelProvider,
+        "_provider",
+        staticmethod(lambda: (llm, "gemini-2.5-flash")),
+    )
+
+    response = await provider.generate_step_response(
+        user_message="Build a customer support assistant",
+        current_state="onboarding_started",
+        current_config={},
+        history=[],
+    )
+
+    assert response.application_requirements is not None
+    assert llm.response_schema == onboarding_response_schema()
+    assert llm.response_schema["properties"]["application_requirements"]["type"] == "OBJECT"
+
+
+@pytest.mark.asyncio
+async def test_conversational_provider_repairs_one_malformed_response(monkeypatch) -> None:
+    class RepairLLM:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def generate(
+            self,
+            messages,
+            model,
+            max_tokens=2048,
+            temperature=0.7,
+            response_schema=None,
+        ):
+            self.calls += 1
+            if self.calls == 1:
+                return ("not-json", 5)
+            return (
+                '{"text":"Repaired.","proposed_intent":"clarify_requirements",'
+                '"proposed_data":{},"suggested_actions":[],"application_requirements":{}}',
+                7,
+            )
+
+    llm = RepairLLM()
+    provider = ConfiguredOnboardingModelProvider()
+    monkeypatch.setattr(
+        ConfiguredOnboardingModelProvider,
+        "_provider",
+        staticmethod(lambda: (llm, "gemini-2.5-flash")),
+    )
+
+    response = await provider.generate_step_response(
+        user_message="Build a support assistant",
+        current_state="onboarding_started",
+        current_config={},
+        history=[],
+    )
+
+    assert response.text == "Repaired."
+    assert llm.calls == 2
 
 
 def test_model_payload_normalizes_string_integration_decisions() -> None:

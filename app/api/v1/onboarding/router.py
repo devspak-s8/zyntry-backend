@@ -34,7 +34,7 @@ def _safe_onboarding_error(exc: OnboardingRequirementsError) -> HTTPException:
     """Return a stable public error without exposing provider internals."""
 
     return HTTPException(
-        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        status_code=int(getattr(exc, "http_status", status.HTTP_503_SERVICE_UNAVAILABLE)),
         detail={
             "code": getattr(exc, "code", "onboarding_model_unavailable"),
             "message": getattr(
