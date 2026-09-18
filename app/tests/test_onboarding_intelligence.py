@@ -375,6 +375,17 @@ def test_conversational_parser_discards_invalid_nested_requirements_safely() -> 
     assert response.application_requirements["memory_scope"] is None
 
 
+def test_embedded_requirements_apply_explicit_application_type_answer() -> None:
+    extractor = ModelBackedRequirementsExtractor(provider=None)
+    requirements = extractor.validate_embedded_requirements(
+        {},
+        message="Customer support",
+        pending_requirement="application_type",
+    )
+
+    assert requirements.application_type == "ai_customer_support"
+
+
 def test_document_storage_is_a_resource_not_an_unsupported_connector() -> None:
     proposed_data = {
         "integrations": ["document_storage"],

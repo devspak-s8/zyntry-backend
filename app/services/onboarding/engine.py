@@ -482,6 +482,10 @@ class OnboardingEngine:
                     embedded_requirements,
                     message=req.message,
                     current_data=current_config.get("application_requirements"),
+                    pending_requirement=(
+                        current_config.get("pending_requirement")
+                        or current_config.get("onboarding_pending_question")
+                    ),
                 )
             except Exception as exc:
                 # Do not trust an incomplete model object. The dedicated

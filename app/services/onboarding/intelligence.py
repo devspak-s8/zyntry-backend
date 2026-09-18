@@ -581,6 +581,7 @@ class ModelBackedRequirementsExtractor:
         *,
         message: str,
         current_data: dict[str, Any] | None = None,
+        pending_requirement: str | None = None,
     ) -> ApplicationRequirements:
         """Validate requirements returned alongside a conversational response.
 
@@ -593,6 +594,11 @@ class ModelBackedRequirementsExtractor:
         normalized = self._prepare_model_payload(payload)
         extracted = ApplicationRequirements.model_validate(normalized)
         merged = self._merge(current, extracted)
+        merged = self._apply_explicit_pending_answer(
+            merged,
+            pending_requirement=pending_requirement,
+            message=message,
+        )
         merged = self._normalize_integration_decisions(merged, message)
         merged.completeness_score = merged.calculate_completeness_score()
         merged.extraction_source = "model"
@@ -678,6 +684,11 @@ class ModelBackedRequirementsExtractor:
             model_payload = self._prepare_model_payload(self._parse_json(content))
             extracted = ApplicationRequirements.model_validate(model_payload)
             merged = self._merge(current, extracted)
+            merged = self._apply_explicit_pending_answer(
+                merged,
+                pending_requirement=pending_requirement,
+                message=message,
+            )
             merged = self._normalize_integration_decisions(merged, message)
             merged.completeness_score = merged.calculate_completeness_score()
             merged.extraction_source = "model"
@@ -707,6 +718,11 @@ class ModelBackedRequirementsExtractor:
                 repaired_payload = self._prepare_model_payload(self._parse_json(repaired_content))
                 repaired = ApplicationRequirements.model_validate(repaired_payload)
                 merged = self._merge(current, repaired)
+                merged = self._apply_explicit_pending_answer(
+                    merged,
+                    pending_requirement=pending_requirement,
+                    message=message,
+                )
                 merged = self._normalize_integration_decisions(merged, message)
                 merged.completeness_score = merged.calculate_completeness_score()
                 merged.extraction_source = "model"
@@ -1072,6 +1088,34 @@ class ModelBackedRequirementsExtractor:
         normalized["integrations"] = direct_integrations
         normalized["integration_decisions"] = decisions
         return normalized
+
+    @staticmethod
+    def _apply_explicit_pending_answer(
+        requirements: ApplicationRequirements,
+        *,
+        pending_requirement: str | None,
+        message: str,
+    ) -> ApplicationRequirements:
+        """Apply an unambiguous answer to the active clarification checkpoint.
+
+        This is deliberately narrow: it does not infer a full application from
+        arbitrary text. It only canonicalizes a direct answer to the specific
+        question currently shown by onboarding, preventing a model that omits
+        one field from making the same question repeat forever.
+        """
+
+        if pending_requirement != "application_type":
+            return requirements
+        text = message.lower().replace("-", " ")
+        if any(term in text for term in ("customer support", "customer service", "support assistant")):
+            return requirements.model_copy(update={"application_type": "ai_customer_support"})
+        if any(term in text for term in ("knowledge assistant", "knowledge base", "rag assistant")):
+            return requirements.model_copy(update={"application_type": "knowledge_search_rag"})
+        if any(term in text for term in ("developer tool", "developer assistant", "coding assistant")):
+            return requirements.model_copy(update={"application_type": "developer_ai_assistant"})
+        if "architecture" in text and any(term in text for term in ("analysis", "investigation")):
+            return requirements.model_copy(update={"application_type": "architecture_analysis"})
+        return requirements
 
     @staticmethod
     def _merge(
