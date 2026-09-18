@@ -22,6 +22,7 @@ from app.schemas.onboarding_chat import (
 from app.services.onboarding import OnboardingService
 from app.services.onboarding.engine import OnboardingNameMismatchError
 from app.services.onboarding.intelligence import OnboardingRequirementsError
+from app.services.runtimes import RuntimeCreationConflict
 
 router = APIRouter(prefix="/onboarding", tags=["onboarding"])
 
@@ -174,6 +175,8 @@ async def complete_onboarding(
     try:
         return await service.complete_chat_onboarding(user_id=current_user.id, req=body)
     except OnboardingNameMismatchError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.as_detail()) from exc
+    except RuntimeCreationConflict as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.as_detail()) from exc
     except ValueError:
         raise HTTPException(

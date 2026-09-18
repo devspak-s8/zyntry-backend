@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from uuid import UUID
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -80,10 +82,14 @@ async def test_chat_onboarding_full_lifecycle(db_session: AsyncSession) -> None:
     )
     assert resp4.is_complete is True
     assert resp4.state == "completed"
-    assert "Configuration draft saved" in resp4.response
+    assert "Runtime created" in resp4.response
     assert resp4.proposed_runtime is not None
-    assert resp4.proposed_runtime["runtime_id"] is None
-    assert resp4.proposed_runtime["status"] == "draft"
+    assert resp4.proposed_runtime["runtime_id"] is not None
+    assert resp4.proposed_runtime["status"] == "preconfigured"
+    created_runtime = await uow.runtimes.get(UUID(resp4.proposed_runtime["runtime_id"]))
+    assert created_runtime is not None
+    assert created_runtime.project_id is None
+    assert created_runtime.name == resp4.proposed_runtime["runtime_name"]
 
 
 @pytest.mark.asyncio
@@ -142,7 +148,9 @@ async def test_chat_onboarding_natural_engineer_agent_flow(db_session: AsyncSess
     )
     assert resp3.is_complete is True
     assert resp3.state == "completed"
-    assert "Configuration draft saved" in resp3.response
+    assert "Runtime created" in resp3.response
+    assert resp3.proposed_runtime is not None
+    assert resp3.proposed_runtime["runtime_id"] is not None
 
 
 @pytest.mark.asyncio
@@ -240,6 +248,40 @@ async def test_completion_requires_review_when_submitted_name_differs(
         ),
     )
     assert reviewed.runtime_name == "Different Runtime"
+
+
+@pytest.mark.asyncio
+async def test_onboarding_completion_creates_one_idempotent_runtime(
+    db_session: AsyncSession,
+) -> None:
+    uow = UnitOfWork(db_session)
+    onboarding = OnboardingService(uow)
+    user = await uow.users.create(
+        email="idempotent_runtime@zyntry.space",
+        name="Idempotent Runtime User",
+        is_active=True,
+    )
+    await uow.commit()
+
+    session = await onboarding.create_chat_session(
+        user.id,
+        initial_prompt="Create a runtime named Idempotent Support Assistant.",
+    )
+    request = OnboardingCompleteRequest(
+        session_id=session["id"],
+        runtime_name="Idempotent Support Assistant",
+        environment="development",
+    )
+
+    first = await onboarding.complete_chat_onboarding(user.id, request)
+    second = await onboarding.complete_chat_onboarding(user.id, request)
+
+    assert first.runtime_id is not None
+    assert second.runtime_id == first.runtime_id
+    assert first.status == second.status == "preconfigured"
+    runtime = await uow.runtimes.get_by_owner_and_name(user.id, "Idempotent Support Assistant")
+    assert runtime is not None
+    assert str(runtime.id) == first.runtime_id
 
 
 @pytest.mark.asyncio

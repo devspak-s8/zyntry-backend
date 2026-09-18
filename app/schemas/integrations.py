@@ -61,6 +61,7 @@ class RuntimeIntegrationCreate(BaseModel):
 
 
 class RuntimeIntegrationUpdate(BaseModel):
+    connection_mode: str | None = None
     enabled_capabilities: list[str] | None = None
     is_enabled: bool | None = None
     config: dict[str, Any] | None = None

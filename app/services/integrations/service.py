@@ -296,6 +296,84 @@ class IntegrationService:
             raise ValueError(f"Integration '{integration_slug}' is not configured on this runtime")
 
         kwargs: dict[str, Any] = {}
+        if data.connection_mode is not None:
+            definition = integration_registry.get(existing.integration_slug)
+            if definition is None:
+                raise ValueError(f"Integration '{integration_slug}' is not supported")
+
+            next_mode, mode_resolution = self._resolve_connection_mode(
+                existing.integration_slug,
+                data.connection_mode,
+            )
+            next_mode = next_mode or "zyntry_managed"
+            if next_mode != existing.connection_mode:
+                current_config = dict(existing.config or {})
+                previous_mode = current_config.get("previous_connection_mode")
+                previous_connection_id = current_config.get("previous_connection_id")
+                restored_connection = None
+                if previous_mode == next_mode and previous_connection_id:
+                    try:
+                        restored_connection = await self.uow.integration_connections.get(
+                            UUID(str(previous_connection_id))
+                        )
+                    except (TypeError, ValueError):
+                        restored_connection = None
+                    if (
+                        restored_connection is None
+                        or restored_connection.status != "active"
+                        or restored_connection.connection_mode != next_mode
+                    ):
+                        restored_connection = None
+
+                if restored_connection is not None:
+                    next_config = {
+                        **current_config,
+                        "mode_change": {
+                            "from": existing.connection_mode,
+                            "to": next_mode,
+                            "status": "restored",
+                        },
+                    }
+                    kwargs.update(
+                        connection_mode=next_mode,
+                        connection_id=restored_connection.id,
+                        connection_required=False,
+                        connection_status="connected",
+                        config=next_config,
+                    )
+                else:
+                    old_connection_id = str(existing.connection_id) if existing.connection_id else None
+                    next_config = {
+                        **current_config,
+                        "allowed_connection_modes": (
+                            ["zyntry_managed", "end_user_oauth"]
+                            if next_mode == "hybrid"
+                            else [next_mode]
+                        ),
+                        "requested_connection_mode": data.connection_mode,
+                        "mode_resolution": mode_resolution,
+                        "previous_connection_mode": existing.connection_mode,
+                        "previous_connection_id": old_connection_id,
+                        "mode_change": {
+                            "from": existing.connection_mode,
+                            "to": next_mode,
+                            "status": "pending_connection",
+                        },
+                    }
+                    kwargs.update(
+                        connection_mode=next_mode,
+                        # Keep the old connection row intact for rollback, but
+                        # do not use it while the new mode is being prepared.
+                        connection_id=None,
+                        connection_required=next_mode in {"zyntry_managed", "hybrid"},
+                        connection_status=(
+                            "ready_for_end_users"
+                            if next_mode == "end_user_oauth"
+                            else "connection_required"
+                        ),
+                        config=next_config,
+                    )
+
         if data.enabled_capabilities is not None:
             defn = integration_registry.get(integration_slug)
             if defn:

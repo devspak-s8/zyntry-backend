@@ -9,6 +9,7 @@ from app.repositories import UnitOfWork
 from app.schemas.integrations import (
     ConnectionAuthorizeRequest,
     RuntimeIntegrationCreate,
+    RuntimeIntegrationUpdate,
 )
 from app.services.connections.service import ConnectionService
 from app.services.integrations.service import IntegrationService
@@ -264,3 +265,68 @@ async def test_stale_runtime_connection_link_is_cleared_when_policy_is_reenabled
     assert refreshed.connection_id is None
     assert refreshed.connection_required is True
     assert refreshed.connection_status == "connection_required"
+
+
+@pytest.mark.asyncio
+async def test_connection_mode_switch_preserves_company_connection_for_rollback(
+    db_session: AsyncSession,
+) -> None:
+    uow = UnitOfWork(db_session)
+    service = IntegrationService(uow)
+    user = await uow.users.create(
+        email="mode_switch@zyntry.space",
+        name="Mode Switch User",
+    )
+    runtime = await uow.runtimes.create(
+        user_id=user.id,
+        name="Mode Switch Runtime",
+        provider="openai",
+        model="gpt-4o",
+    )
+    policy = await service.enable_runtime_integration(
+        runtime.id,
+        RuntimeIntegrationCreate(
+            integration_slug="github",
+            connection_mode="zyntry_managed",
+            enabled_capabilities=["repository_search"],
+        ),
+    )
+    company_connection = await uow.integration_connections.create(
+        user_id=user.id,
+        runtime_id=runtime.id,
+        integration_slug="github",
+        connection_mode="zyntry_managed",
+        display_name="Company GitHub",
+        auth_method="oauth2",
+        encrypted_credentials="ENCV1:company-github",
+        scopes=["repo"],
+        status="active",
+        health_status="healthy",
+    )
+    await uow.runtime_integrations.update(
+        policy,
+        connection_id=company_connection.id,
+        connection_required=False,
+        connection_status="connected",
+    )
+    await uow.commit()
+
+    switched = await service.update_runtime_integration(
+        runtime.id,
+        "github",
+        RuntimeIntegrationUpdate(connection_mode="end_user_oauth"),
+    )
+    assert switched.connection_mode == "end_user_oauth"
+    assert switched.connection_id is None
+    assert switched.connection_status == "ready_for_end_users"
+    assert (switched.config or {}).get("previous_connection_id") == str(company_connection.id)
+    assert (await uow.integration_connections.get(company_connection.id)).status == "active"
+
+    restored = await service.update_runtime_integration(
+        runtime.id,
+        "github",
+        RuntimeIntegrationUpdate(connection_mode="zyntry_managed"),
+    )
+    assert restored.connection_mode == "zyntry_managed"
+    assert restored.connection_id == company_connection.id
+    assert restored.connection_status == "connected"

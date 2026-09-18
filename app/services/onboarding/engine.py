@@ -30,7 +30,9 @@ from app.services.onboarding.models import (
     OnboardingModelResponse,
     default_onboarding_model_provider,
 )
+from app.services.onboarding.provider_router import build_onboarding_provider
 from app.services.onboarding.telemetry import OnboardingTraceSink, use_trace
+from app.services.runtimes import RuntimeCreationConflict
 
 logger = logging.getLogger(__name__)
 
@@ -1323,10 +1325,11 @@ class OnboardingEngine:
         if session is None or session.user_id != user_id:
             raise ValueError("Onboarding session not found")
 
-        # Onboarding is non-provisioning: it stores a configuration draft.
+        # Completion is idempotent.  A completed onboarding session owns one
+        # real, preconfigured Runtime record; the project binding/build gate
+        # still happens later when the user chooses a project.
         if session.state == "completed":
             config = session.configuration or {}
-            original_config = config
             recovered_name = self._runtime_name_from_messages(session.messages)
             configured_name = config.get("runtime_name")
             requested_name = (req.runtime_name or "").strip()
@@ -1378,12 +1381,11 @@ class OnboardingEngine:
                 config,
                 previous_plan=config.get("runtime_plan"),
             )
-            if config != original_config:
-                await self.uow.onboarding_sessions.update(session, configuration=config)
-                await self.uow.commit()
-            return OnboardingCompleteResponse(
-                session_id=str(session.id),
-                runtime_id=None,
+            runtime, config = await self._ensure_onboarding_runtime(
+                user_id=user_id,
+                session=session,
+                config=config,
+                enabled_integrations=normalized_policies,
                 runtime_name=(
                     recovered_name
                     if recovered_name and (
@@ -1394,9 +1396,18 @@ class OnboardingEngine:
                     else requested_name or config.get("runtime_name", "AI App Runtime")
                 ),
                 environment=req.environment or config.get("environment", "development"),
-                status="draft",
+            )
+            return OnboardingCompleteResponse(
+                session_id=str(session.id),
+                runtime_id=str(runtime.id),
+                runtime_name=runtime.name,
+                environment=runtime.environment,
+                status=runtime.status,
                 enabled_integrations=normalized_policies,
-                message="Configuration draft already saved. Create a project to provision the runtime.",
+                message=(
+                    "Runtime created and ready to attach to a project. "
+                    "Connect its resources and build it from the Runtime Console."
+                ),
                 application_requirements=config.get("application_requirements"),
                 runtime_plan=config.get("runtime_plan"),
             )
@@ -1426,7 +1437,9 @@ class OnboardingEngine:
 
         config = {**config, "runtime_name": runtime_name, "environment": env}
 
-        # Record intended integrations in the draft; provision them later.
+        # Record intended integrations before creating the preconfigured
+        # runtime.  Connection rows are materialized now, but remain
+        # connection_required until the project/provider is configured.
         enabled_integrations_list: list[dict[str, Any]] = []
         document_resource_slugs = {
             "pdf", "docx", "txt", "csv", "markdown", "html", "json", "document_storage"
@@ -1470,15 +1483,14 @@ class OnboardingEngine:
             previous_plan=config.get("runtime_plan"),
         )
 
-        # 3. Mark session completed (API Key generation is decoupled and user-requested)
-        await self.uow.onboarding_sessions.update(
-            session,
-            state="completed",
-            created_runtime_id=None,
-            configuration=config,
-            completed_at=datetime.now(UTC),
+        runtime, config = await self._ensure_onboarding_runtime(
+            user_id=user_id,
+            session=session,
+            config=config,
+            enabled_integrations=enabled_integrations_list,
+            runtime_name=runtime_name,
+            environment=env,
         )
-        await self.uow.commit()
 
         integ_lines = []
         for item in enabled_integrations_list:
@@ -1491,24 +1503,163 @@ class OnboardingEngine:
         integs_formatted = "\n".join(integ_lines) if integ_lines else "• Standard read access"
 
         message_markdown = (
-            "Configuration draft saved.\n\n"
+            "Runtime created.\n\n"
             f"• Name: {runtime_name}\n"
-            "• Status: Draft\n"
+            f"• Status: {runtime.status.replace('_', ' ').title()}\n"
             f"• Environment: {env.capitalize()}\n"
             f"• Routing Strategy: {config.get('routing_strategy', 'balanced').replace('_', ' ').capitalize()}\n\n"
             "Configured Integrations:\n"
             f"{integs_formatted}\n\n"
-            "Next: create a project, connect the selected resources, and provision the runtime."
+            "Next: attach it to a project, connect the selected resources, and build it."
         )
 
         return OnboardingCompleteResponse(
             session_id=str(session.id),
-            runtime_id=None,
+            runtime_id=str(runtime.id),
             runtime_name=runtime_name,
             environment=env,
-            status="draft",
+            status=runtime.status,
             enabled_integrations=enabled_integrations_list,
             message=message_markdown,
             application_requirements=config.get("application_requirements"),
             runtime_plan=config.get("runtime_plan"),
         )
+
+    async def _ensure_onboarding_runtime(
+        self,
+        *,
+        user_id: UUID,
+        session: OnboardingSession,
+        config: dict[str, Any],
+        enabled_integrations: list[dict[str, Any]],
+        runtime_name: str,
+        environment: str,
+    ) -> tuple[Any, dict[str, Any]]:
+        """Create or reuse the real preconfigured runtime for a session.
+
+        Onboarding is allowed to create the runtime definition without a
+        project.  The runtime remains ``preconfigured`` until a project,
+        credentials, documents, and connections are supplied.  The session
+        marker makes retries safe and prevents duplicate runtimes.
+        """
+        session_id = str(session.id)
+        runtime = None
+
+        if session.created_runtime_id:
+            runtime = await self.uow.runtimes.get(session.created_runtime_id)
+
+        stored_runtime_id = config.get("runtime_id")
+        if runtime is None and stored_runtime_id:
+            try:
+                runtime = await self.uow.runtimes.get(UUID(str(stored_runtime_id)))
+            except (TypeError, ValueError):
+                runtime = None
+
+        existing_by_name = await self.uow.runtimes.get_by_owner_and_name(user_id, runtime_name)
+        if runtime is None and existing_by_name is not None:
+            existing_marker = str((existing_by_name.config or {}).get("onboarding_session_id") or "")
+            if existing_marker == session_id:
+                runtime = existing_by_name
+            else:
+                raise RuntimeCreationConflict(
+                    "runtime_name_already_exists",
+                    (
+                        f"A runtime named '{existing_by_name.name}' already exists. "
+                        "Review the existing runtime before proceeding."
+                    ),
+                    existing_by_name,
+                )
+
+        if runtime is None:
+            provider, model, fallback_models = self._runtime_model_selection(config)
+            runtime_config = {
+                "onboarding_session_id": session_id,
+                "onboarding_requirements": config.get("application_requirements"),
+                "runtime_plan": config.get("runtime_plan"),
+                "integrations": config.get("integrations", []),
+                "capabilities": config.get("capabilities", {}),
+                "integration_mode": config.get("integration_mode"),
+                "integration_modes": config.get("integration_modes", {}),
+                "requires_documents": bool(config.get("requires_documents")),
+                "external_sources": config.get("external_sources", {}),
+                "memory_policy": config.get("memory_policy"),
+                "provider_preference": config.get("provider") or "automatic",
+                "model_preference": config.get("model") or "automatic",
+            }
+            runtime = await self.uow.runtimes.create(
+                user_id=user_id,
+                project_id=None,
+                organization_id=None,
+                name=runtime_name,
+                environment=environment or "development",
+                provider=provider,
+                model=model,
+                fallback_models=fallback_models,
+                routing_strategy=config.get("routing_strategy") or "balanced",
+                embedding_model=config.get("embedding_model") or "text-embedding-3-small",
+                vector_store=config.get("vector_store") or "pgvector",
+                chunk_size=int(config.get("chunk_size") or 512),
+                chunk_overlap=int(config.get("chunk_overlap") or 64),
+                system_instructions=config.get("system_instructions"),
+                security_policies=config.get("security_policies") or {},
+                config=runtime_config,
+                status="preconfigured",
+                health=0.0,
+            )
+
+        # Keep the integrations API and the runtime config in sync from the
+        # moment the runtime is created, rather than waiting for project bind.
+        if enabled_integrations:
+            await self.integration_service.reconcile_runtime_policies(
+                runtime.id,
+                enabled_integrations,
+            )
+
+        config = {
+            **config,
+            "runtime_id": str(runtime.id),
+            "runtime_name": runtime.name,
+            "runtime_status": runtime.status,
+            "onboarding_session_id": session_id,
+        }
+        await self.uow.onboarding_sessions.update(
+            session,
+            state="completed",
+            created_runtime_id=runtime.id,
+            configuration=config,
+            completed_at=session.completed_at or datetime.now(UTC),
+        )
+        await self.uow.commit()
+        return runtime, config
+
+    @staticmethod
+    def _runtime_model_selection(config: dict[str, Any]) -> tuple[str, str, list[str]]:
+        """Resolve onboarding's automatic preference to a valid runtime pair."""
+        configured_provider = str(config.get("provider") or "automatic").strip().lower()
+        configured_model = str(config.get("model") or "automatic").strip()
+        automatic_values = {"", "auto", "automatic", "dynamic", "routing"}
+
+        if configured_provider not in automatic_values and configured_model.lower() not in automatic_values:
+            return configured_provider, configured_model, list(config.get("fallback_models") or [])
+
+        routed, _ = build_onboarding_provider()
+        candidates = list(getattr(routed, "candidates", []) or [])
+        selected = None
+        if configured_provider not in automatic_values:
+            selected = next(
+                (candidate for candidate in candidates if candidate.provider == configured_provider),
+                None,
+            )
+        if selected is None and candidates:
+            selected = candidates[0]
+        if selected is not None:
+            fallback_models = [
+                candidate.model
+                for candidate in candidates
+                if candidate.provider != selected.provider or candidate.model != selected.model
+            ]
+            return selected.provider, selected.model, list(dict.fromkeys(fallback_models))
+
+        # Runtime creation does not require provider credentials.  Build-time
+        # validation will surface any missing credential in the console.
+        return "openai", "gpt-4o-mini", []
