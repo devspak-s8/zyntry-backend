@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 import uuid
 from abc import ABC, abstractmethod
@@ -16,6 +17,8 @@ from app.schemas.rag import Citation, RAGQuery, RAGResponse, SourceDocument
 from app.services.context_manager import ContextManager
 from app.services.model_providers.base import UsageCallback, emit_usage
 from app.services.token_engine import TokenEngine
+
+logger = logging.getLogger(__name__)
 
 
 class HybridSearchResult:
@@ -82,6 +85,47 @@ class OpenAILLMProvider(BaseLLMProvider):
         self.last_finish_reason: str | None = None
         self.last_response_schema_applied = False
         self.last_schema_has_refs = False
+        self.last_error_metadata: dict[str, str] = {}
+
+    @staticmethod
+    def _error_metadata(response: httpx.Response) -> tuple[dict[str, str], str]:
+        """Extract safe provider diagnostics without retaining prompt data."""
+
+        try:
+            payload = response.json()
+        except (ValueError, TypeError):
+            return {}, ""
+        error = payload.get("error") if isinstance(payload, dict) else None
+        if not isinstance(error, dict):
+            return {}, ""
+        metadata: dict[str, str] = {}
+        for key in ("type", "code", "param"):
+            value = error.get(key)
+            if isinstance(value, str) and value:
+                metadata[key] = value[:120]
+        message = error.get("message")
+        return metadata, message[:500] if isinstance(message, str) else ""
+
+    @staticmethod
+    def _is_schema_rejection(
+        response: httpx.Response,
+        metadata: dict[str, str],
+        message: str,
+    ) -> bool:
+        if response.status_code != 400:
+            return False
+        marker = " ".join(
+            [
+                metadata.get("type", ""),
+                metadata.get("code", ""),
+                metadata.get("param", ""),
+                message,
+            ]
+        ).lower()
+        return any(
+            token in marker
+            for token in ("response_format", "json_schema", "structured output", "schema")
+        )
 
     async def generate(
         self,
@@ -94,6 +138,7 @@ class OpenAILLMProvider(BaseLLMProvider):
         self.last_finish_reason = None
         self.last_response_schema_applied = response_schema is not None
         self.last_schema_has_refs = False
+        self.last_error_metadata = {}
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -124,8 +169,56 @@ class OpenAILLMProvider(BaseLLMProvider):
                 json=payload,
             )
             self.last_status_code = response.status_code
-            response.raise_for_status()
-            data = response.json()
+            if response.is_error:
+                error_metadata, error_message = self._error_metadata(response)
+                self.last_error_metadata = error_metadata
+                logger.warning(
+                    "OpenAI onboarding request rejected status=%s type=%s code=%s param=%s",
+                    response.status_code,
+                    error_metadata.get("type", "unknown"),
+                    error_metadata.get("code", "unknown"),
+                    error_metadata.get("param", "unknown"),
+                )
+                # A schema rejected by the provider should not take down
+                # onboarding when the same model can still return valid JSON.
+                # Retry only schema-specific 400s, never auth, quota, or
+                # transport failures. The system prompt already requires one
+                # JSON object, so the compatibility mode remains parseable.
+                if response_schema is not None and self._is_schema_rejection(
+                    response, error_metadata, error_message
+                ):
+                    compatibility_payload = {
+                        **payload,
+                        "response_format": {"type": "json_object"},
+                    }
+                    compatibility_response = await client.post(
+                        f"{self._base_url}/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {self._api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json=compatibility_payload,
+                    )
+                    self.last_status_code = compatibility_response.status_code
+                    if compatibility_response.is_error:
+                        compatibility_metadata, _ = self._error_metadata(
+                            compatibility_response
+                        )
+                        self.last_error_metadata = compatibility_metadata
+                        logger.warning(
+                            "OpenAI onboarding compatibility request rejected status=%s type=%s code=%s param=%s",
+                            compatibility_response.status_code,
+                            compatibility_metadata.get("type", "unknown"),
+                            compatibility_metadata.get("code", "unknown"),
+                            compatibility_metadata.get("param", "unknown"),
+                        )
+                        compatibility_response.raise_for_status()
+                    self.last_response_schema_applied = False
+                    data = compatibility_response.json()
+                else:
+                    response.raise_for_status()
+            else:
+                data = response.json()
             choice = data["choices"][0]
             self.last_finish_reason = choice.get("finish_reason")
             content = choice["message"]["content"]

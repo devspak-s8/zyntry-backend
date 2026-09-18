@@ -158,7 +158,8 @@ class OnboardingTraceSink:
         logger.info(
             "onboarding_model_call provider=%s model=%s call_type=%s duration_ms=%s "
             "http_status=%s parse_success=%s retry_count=%s finish_reason=%s "
-            "response_schema_applied=%s schema_has_refs=%s",
+            "response_schema_applied=%s schema_has_refs=%s "
+            "provider_error_type=%s provider_error_code=%s provider_error_param=%s",
             event.provider or "unknown",
             event.model or "unknown",
             event.operation,
@@ -169,6 +170,9 @@ class OnboardingTraceSink:
             (metadata or {}).get("finish_reason", "unknown"),
             (metadata or {}).get("response_schema_applied", "unknown"),
             (metadata or {}).get("schema_has_refs", "unknown"),
+            (metadata or {}).get("provider_error_type", "unknown"),
+            (metadata or {}).get("provider_error_code", "unknown"),
+            (metadata or {}).get("provider_error_param", "unknown"),
         )
 
     def start_attempt(

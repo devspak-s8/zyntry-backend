@@ -738,13 +738,20 @@ class ConfiguredOnboardingModelProvider:
     def _provider_metadata(provider: Any) -> dict[str, Any]:
         """Return bounded provider diagnostics without prompt or secret data."""
 
-        return {
+        metadata: dict[str, Any] = {
             "finish_reason": getattr(provider, "last_finish_reason", None) or "unknown",
             "response_schema_applied": bool(
                 getattr(provider, "last_response_schema_applied", False)
             ),
             "schema_has_refs": bool(getattr(provider, "last_schema_has_refs", False)),
         }
+        error_metadata = getattr(provider, "last_error_metadata", {})
+        if isinstance(error_metadata, dict):
+            for key in ("type", "code", "param"):
+                value = error_metadata.get(key)
+                if isinstance(value, str) and value:
+                    metadata[f"provider_error_{key}"] = value[:120]
+        return metadata
 
     @staticmethod
     def _response_failure_stage(error: BaseException) -> str:
@@ -1045,8 +1052,11 @@ stores a draft; project attachment and connector authorization happen later.
                 trace.finish_call(
                     call_id,
                     status="failed",
+                    provider=getattr(provider, "last_provider", None),
+                    model=getattr(provider, "last_model", None) or model,
                     error=exc,
                     attempts=len(getattr(provider, "last_attempts", []) or []) or 1,
+                    http_status=exc.response.status_code,
                     metadata=self._provider_metadata(provider),
                 )
             raise OnboardingModelUnavailableError(

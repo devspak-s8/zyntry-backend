@@ -142,6 +142,7 @@ class RoutedOnboardingLLMProvider(BaseLLMProvider):
         self.last_finish_reason: str | None = None
         self.last_response_schema_applied = False
         self.last_schema_has_refs = False
+        self.last_error_metadata: dict[str, str] = {}
         self.last_attempts: list[dict[str, str]] = []
         configured_limit = getattr(settings, "ONBOARDING_MAX_PROVIDER_ATTEMPTS", 2)
         try:
@@ -164,7 +165,8 @@ class RoutedOnboardingLLMProvider(BaseLLMProvider):
         self.last_finish_reason = None
         self.last_response_schema_applied = False
         self.last_schema_has_refs = False
-        errors: list[Exception] = []
+        self.last_error_metadata = {}
+        errors: list[tuple[Exception, str, str, int | None, dict[str, str]]] = []
         attempts_started = 0
         for candidate in self.candidates:
             if _provider_is_session_cooled_down(candidate.provider):
@@ -211,9 +213,10 @@ class RoutedOnboardingLLMProvider(BaseLLMProvider):
                 self.last_provider = candidate.provider
                 self.last_model = selected_model
                 if response_schema is not None and hasattr(adapter, "generate"):
-                    # Only the Gemini adapter currently supports native
-                    # response schemas. Other providers remain compatible and
-                    # receive the same JSON-only prompt without this keyword.
+                    # Provider adapters translate the provider-neutral schema
+                    # into their native structured-output format. Adapters
+                    # that do not support the keyword retain the JSON-prompt
+                    # compatibility path below.
                     try:
                         generate = cast(Any, adapter).generate
                         content, usage = await generate(
@@ -246,12 +249,23 @@ class RoutedOnboardingLLMProvider(BaseLLMProvider):
                     getattr(adapter, "last_response_schema_applied", False)
                 )
                 self.last_schema_has_refs = bool(getattr(adapter, "last_schema_has_refs", False))
+                self.last_error_metadata = {}
                 self.last_attempts[-1]["status"] = "completed"
                 if trace and active_attempt_id:
                     trace.finish_attempt(active_attempt_id, status="completed")
                 return content, usage
             except Exception as exc:  # adapters expose provider-specific failures
-                errors.append(exc)
+                error_status = getattr(adapter, "last_status_code", None)
+                error_metadata = getattr(adapter, "last_error_metadata", {})
+                errors.append(
+                    (
+                        exc,
+                        candidate.provider,
+                        selected_model,
+                        error_status,
+                        error_metadata if isinstance(error_metadata, dict) else {},
+                    )
+                )
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
                     _cool_down_provider_for_session(candidate.provider)
                 self.last_status_code = getattr(adapter, "last_status_code", None)
@@ -260,6 +274,9 @@ class RoutedOnboardingLLMProvider(BaseLLMProvider):
                     getattr(adapter, "last_response_schema_applied", False)
                 )
                 self.last_schema_has_refs = bool(getattr(adapter, "last_schema_has_refs", False))
+                self.last_error_metadata = (
+                    error_metadata if isinstance(error_metadata, dict) else {}
+                )
                 await self.health.record_failure_async(candidate.provider, type(exc).__name__)
                 self.last_attempts[-1].update({"status": "failed", "error": type(exc).__name__})
                 if trace and active_attempt_id:
@@ -270,16 +287,21 @@ class RoutedOnboardingLLMProvider(BaseLLMProvider):
             # rate-limited. If a fallback was attempted and failed for another
             # reason, report that final failure instead of blaming Gemini.
             non_rate_limit_errors = [
-                error
-                for error in errors
+                item
+                for item in errors
                 if not (
-                    isinstance(error, httpx.HTTPStatusError)
-                    and error.response.status_code == 429
+                    isinstance(item[0], httpx.HTTPStatusError)
+                    and item[0].response.status_code == 429
                 )
             ]
+            selected_error = non_rate_limit_errors[-1] if non_rate_limit_errors else errors[-1]
+            self.last_provider = selected_error[1]
+            self.last_model = selected_error[2]
+            self.last_status_code = selected_error[3]
+            self.last_error_metadata = selected_error[4]
             if non_rate_limit_errors:
-                raise non_rate_limit_errors[-1]
-            raise errors[-1]
+                raise selected_error[0]
+            raise selected_error[0]
         raise RuntimeError("No configured onboarding model provider is available")
 
     async def astream(self, messages, model, max_tokens=2048, temperature=0.7, on_usage=None):

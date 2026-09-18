@@ -21,6 +21,7 @@ from app.services.onboarding.provider_router import (
     RoutedOnboardingLLMProvider,
 )
 from app.services.onboarding.structured_schema import onboarding_response_schema
+from app.services.rag import OpenAILLMProvider
 
 
 class FakeLLM:
@@ -449,6 +450,71 @@ async def test_router_reports_fallback_failure_instead_of_earlier_rate_limit(mon
         await router.generate([], "automatic")
 
     assert raised.value.response.status_code == 400
+    assert router.last_provider == "openai"
+    assert router.last_model == "gpt-4o-mini"
+
+
+@pytest.mark.asyncio
+async def test_openai_schema_rejection_retries_with_json_compatibility_mode(monkeypatch) -> None:
+    from app.services import rag
+
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    rejected = httpx.Response(
+        400,
+        request=request,
+        json={
+            "error": {
+                "type": "invalid_request_error",
+                "code": "invalid_json_schema",
+                "param": "response_format",
+                "message": "schema rejected",
+            }
+        },
+    )
+    completed = httpx.Response(
+        200,
+        request=request,
+        json={
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"content": '{"text":"ok"}'},
+                }
+            ],
+            "usage": {"total_tokens": 4},
+        },
+    )
+
+    class FakeClient:
+        calls = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, *args, **kwargs):
+            response = rejected if self.calls == 0 else completed
+            self.calls += 1
+            return response
+
+    client = FakeClient()
+    monkeypatch.setattr(rag.httpx, "AsyncClient", lambda **kwargs: client)
+    provider = OpenAILLMProvider("openai-key")
+
+    content, usage = await provider.generate(
+        [{"role": "user", "content": "return JSON"}],
+        "gpt-4o-mini",
+        response_schema=onboarding_response_schema(),
+    )
+
+    assert content == '{"text":"ok"}'
+    assert usage == 4
+    assert client.calls == 2
+    assert provider.last_status_code == 200
+    assert provider.last_response_schema_applied is False
+    assert provider.last_error_metadata["code"] == "invalid_json_schema"
 
 
 @pytest.mark.asyncio
