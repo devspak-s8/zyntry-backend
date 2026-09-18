@@ -225,13 +225,39 @@ class OnboardingEngine:
                     current_config={},
                     history=messages,
                 )
+            pre_extracted_requirements: ApplicationRequirements | None = None
+            requirements_error: OnboardingRequirementsError | None = None
+            embedded_requirements = getattr(ai_resp, "application_requirements", None)
+            if isinstance(embedded_requirements, dict):
+                try:
+                    pre_extracted_requirements = self.requirements_extractor.validate_embedded_requirements(
+                        embedded_requirements,
+                        message=initial_prompt,
+                        current_data=None,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Embedded onboarding requirements were invalid: %s",
+                        type(exc).__name__,
+                    )
+            if pre_extracted_requirements is None:
+                try:
+                    pre_extracted_requirements = await self.requirements_extractor.extract(
+                        message=initial_prompt,
+                        current_data=None,
+                        history=self._history_for_model(messages),
+                    )
+                except OnboardingRequirementsError as exc:
+                    requirements_error = exc
             with use_trace(trace_sink):
                 ai_resp, _ = await self._apply_requirements_intelligence(
                     ai_resp=ai_resp,
                     message=initial_prompt,
                     current_state="onboarding_started",
                     current_config={},
-                    history=messages,
+                    history=self._history_for_model(messages),
+                    pre_extracted_requirements=pre_extracted_requirements,
+                    requirements_error=requirements_error,
                 )
             # Preserve an explicit name from the initial prompt. The initial
             # prompt follows a different path from later messages; without
@@ -275,6 +301,55 @@ class OnboardingEngine:
             trace_sink.bind_session_id(session.id)
         await self.uow.commit()
         return session
+
+    @staticmethod
+    def _history_for_model(messages: list[dict[str, Any]], limit: int = 12) -> list[dict[str, str]]:
+        """Keep model context bounded and exclude persistence metadata."""
+        bounded: list[dict[str, str]] = []
+        for item in messages[-limit:]:
+            role = item.get("role")
+            content = item.get("content")
+            if role not in {"user", "assistant"} or content is None:
+                continue
+            bounded.append({"role": str(role), "content": str(content)[:12000]})
+        return bounded
+
+    async def _persist_provider_error(
+        self,
+        session: OnboardingSession,
+        messages: list[dict[str, Any]],
+        current_config: dict[str, Any],
+        exc: OnboardingRequirementsError,
+    ) -> None:
+        """Persist a safe retry marker without exposing provider diagnostics."""
+        error_code = getattr(exc, "code", "onboarding_model_unavailable")
+        retryable = bool(getattr(exc, "retryable", True))
+        safe_message = getattr(
+            exc,
+            "public_message",
+            "The onboarding assistant is temporarily unavailable. Please try again shortly.",
+        )
+        messages.append({
+            "role": "assistant",
+            "content": safe_message,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "error": {"code": error_code, "retryable": retryable},
+        })
+        try:
+            await self.uow.onboarding_sessions.update(
+                session,
+                messages=messages,
+                configuration={
+                    **current_config,
+                    "onboarding_model_error": {
+                        "code": error_code,
+                        "retryable": retryable,
+                    },
+                },
+            )
+            await self.uow.commit()
+        except Exception:
+            logger.exception("Could not persist failed onboarding turn")
 
     async def process_message(
         self, user_id: UUID, req: OnboardingMessageRequest
@@ -377,57 +452,67 @@ class OnboardingEngine:
             turn_id=uuid4(),
         )
 
-        # Step 1: LLM interprets user message and proposes actions
+        # Step 1: ask the conversational provider for the reply and typed
+        # requirements together. A compliant production model completes this
+        # turn with one provider round trip. Older/custom providers may omit
+        # the typed object; only then do we call the dedicated extractor.
+        model_history = self._history_for_model(messages)
         with use_trace(trace_sink):
+            conversation_result = await self.model_provider.generate_step_response(
+                user_message=req.message,
+                current_state=session.state,
+                current_config=current_config,
+                history=model_history,
+            )
+
+        if isinstance(conversation_result, OnboardingRequirementsError):
+            await self._persist_provider_error(session, messages, current_config, conversation_result)
+            raise conversation_result
+        if isinstance(conversation_result, BaseException):
+            raise conversation_result
+
+        requirements_error: OnboardingRequirementsError | None = None
+        pre_extracted_requirements: ApplicationRequirements | None = None
+        embedded_requirements = getattr(conversation_result, "application_requirements", None)
+        if isinstance(embedded_requirements, dict):
             try:
-                ai_resp = await self.model_provider.generate_step_response(
-                    user_message=req.message,
-                    current_state=session.state,
-                    current_config=current_config,
-                    history=messages,
+                pre_extracted_requirements = self.requirements_extractor.validate_embedded_requirements(
+                    embedded_requirements,
+                    message=req.message,
+                    current_data=current_config.get("application_requirements"),
+                )
+            except Exception as exc:
+                # Do not trust an incomplete model object. The dedicated
+                # extractor still validates against the same schema and is
+                # used only for this compatibility/error path.
+                logger.warning(
+                    "Embedded onboarding requirements were invalid: %s",
+                    type(exc).__name__,
+                )
+
+        if pre_extracted_requirements is None:
+            try:
+                pre_extracted_requirements = await self.requirements_extractor.extract(
+                    message=req.message,
+                    current_data=current_config.get("application_requirements"),
+                    history=model_history,
+                    pending_requirement=(
+                        current_config.get("pending_requirement")
+                        or current_config.get("onboarding_pending_question")
+                    ),
                 )
             except OnboardingRequirementsError as exc:
-            # Keep the user's turn and a safe retry marker durable even when
-            # the conversational provider fails before extraction begins.
-            # This lets the UI resume the same conversation instead of losing
-            # the prompt or creating a second onboarding session.
-                safe_message = getattr(
-                    exc,
-                    "public_message",
-                    "The onboarding assistant is temporarily unavailable. Please try again shortly.",
-                )
-                messages.append({
-                    "role": "assistant",
-                    "content": safe_message,
-                    "timestamp": datetime.now(UTC).isoformat(),
-                    "error": {
-                        "code": getattr(exc, "code", "onboarding_model_unavailable"),
-                        "retryable": bool(getattr(exc, "retryable", True)),
-                    },
-                })
-                try:
-                    await self.uow.onboarding_sessions.update(
-                        session,
-                        messages=messages,
-                        configuration={
-                            **current_config,
-                            "onboarding_model_error": {
-                                "code": getattr(exc, "code", "onboarding_model_unavailable"),
-                                "retryable": bool(getattr(exc, "retryable", True)),
-                            },
-                        },
-                    )
-                    await self.uow.commit()
-                except Exception:
-                    logger.exception("Could not persist failed onboarding turn")
-                raise
+                requirements_error = exc
+
         with use_trace(trace_sink):
             ai_resp, _ = await self._apply_requirements_intelligence(
-                ai_resp=ai_resp,
+                ai_resp=conversation_result,
                 message=req.message,
                 current_state=session.state,
                 current_config=current_config,
-                history=messages,
+                history=model_history,
+                pre_extracted_requirements=pre_extracted_requirements,
+                requirements_error=requirements_error,
             )
         # Preserve an explicit name embedded in a natural-language onboarding
         # message even when the message also contains a long capability list.
@@ -539,7 +624,18 @@ class OnboardingEngine:
         if requirements_data:
             try:
                 requirements = ApplicationRequirements.model_validate(requirements_data)
-                clarification_question = self.clarification_service.next_question(requirements)
+                asked_requirements = {
+                    str(item)
+                    for item in validated_config.get("onboarding_questions_asked", [])
+                    if item
+                }
+                pending_requirement = validated_config.get("onboarding_pending_question")
+                if pending_requirement and pending_requirement not in requirements.missing_requirements():
+                    asked_requirements.add(str(pending_requirement))
+                clarification_question = self.clarification_service.next_conversation_question(
+                    requirements,
+                    asked_requirements=asked_requirements,
+                )
             except Exception:
                 clarification_question = None
 
@@ -564,6 +660,8 @@ class OnboardingEngine:
         current_state: str,
         current_config: dict[str, Any],
         history: list[dict[str, Any]],
+        pre_extracted_requirements: ApplicationRequirements | None = None,
+        requirements_error: OnboardingRequirementsError | None = None,
     ) -> tuple[OnboardingModelResponse, ApplicationRequirements]:
         stored_requirements = current_config.get("application_requirements")
         # The connection mode is kept in the onboarding configuration while
@@ -580,15 +678,29 @@ class OnboardingEngine:
             if ownership:
                 stored_requirements = {**stored_requirements, "connection_ownership": ownership}
         try:
-            requirements = await self.requirements_extractor.extract(
-                message=message,
-                current_data=stored_requirements,
-                history=history,
-                pending_requirement=(
-                    current_config.get("pending_requirement")
-                    or current_config.get("onboarding_pending_question")
-                ),
-            )
+            if requirements_error is not None:
+                raise requirements_error
+            if pre_extracted_requirements is not None:
+                requirements = pre_extracted_requirements
+            else:
+                requirements = await self.requirements_extractor.extract(
+                    message=message,
+                    current_data=stored_requirements,
+                    history=history,
+                    pending_requirement=(
+                        current_config.get("pending_requirement")
+                        or current_config.get("onboarding_pending_question")
+                    ),
+                )
+            if not requirements.connection_ownership:
+                configured_mode = current_config.get("integration_mode")
+                ownership = {
+                    "zyntry_managed": "company",
+                    "end_user_oauth": "end_user",
+                    "hybrid": "hybrid",
+                }.get(configured_mode if isinstance(configured_mode, str) else "")
+                if ownership:
+                    requirements = requirements.model_copy(update={"connection_ownership": ownership})
         except OnboardingRequirementsError as exc:
             # Never silently infer a plan when the production model is
             # unavailable. Preserve an existing validated snapshot, if any,

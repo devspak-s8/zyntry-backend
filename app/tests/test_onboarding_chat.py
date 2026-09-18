@@ -146,6 +146,36 @@ async def test_chat_onboarding_natural_engineer_agent_flow(db_session: AsyncSess
 
 
 @pytest.mark.asyncio
+async def test_onboarding_returns_an_adaptive_question_before_plan_confirmation(
+    db_session: AsyncSession,
+) -> None:
+    uow = UnitOfWork(db_session)
+    onboarding = OnboardingService(uow)
+    user = await uow.users.create(
+        email="adaptive_question@zyntry.space",
+        name="Adaptive Question User",
+        is_active=True,
+    )
+    await uow.commit()
+
+    session = await onboarding.create_chat_session(user.id)
+    response = await onboarding.send_chat_message(
+        user.id,
+        OnboardingMessageRequest(
+            session_id=session["id"],
+            message=(
+                "Create a runtime named Atlas Customer Support Assistant. "
+                "It should answer customer questions using private documents and PostgreSQL."
+            ),
+        ),
+    )
+
+    assert response.is_complete is False
+    assert response.clarification_question is not None
+    assert "Does this sound right" not in response.response
+
+
+@pytest.mark.asyncio
 async def test_initial_prompt_preserves_explicit_runtime_name(
     db_session: AsyncSession,
 ) -> None:

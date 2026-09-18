@@ -650,6 +650,24 @@ async def test_validated_requirements_override_model_connector_question_for_docu
     assert response.proposed_data["integrations"] == ["postgresql"]
 
 
+def test_onboarding_model_history_is_bounded_and_excludes_persistence_metadata() -> None:
+    messages = [
+        {
+            "role": "user",
+            "content": f"message-{index}",
+            "timestamp": "private timestamp",
+            "idempotency_key": "private key",
+        }
+        for index in range(20)
+    ]
+
+    bounded = OnboardingEngine._history_for_model(messages)
+
+    assert len(bounded) == 12
+    assert bounded[0] == {"role": "user", "content": "message-8"}
+    assert all(set(item) == {"role", "content"} for item in bounded)
+
+
 def test_plan_never_grants_non_direct_integration_decisions() -> None:
     payload = _SCENARIOS[2][2]
     requirements = ApplicationRequirements.model_validate(payload)

@@ -548,6 +548,29 @@ class ModelBackedRequirementsExtractor:
         self.fallback = fallback or (RuleBasedRequirementsExtractor() if allow_fallback else None)
         self.allow_fallback = allow_fallback
 
+    def validate_embedded_requirements(
+        self,
+        payload: dict[str, Any],
+        *,
+        message: str,
+        current_data: dict[str, Any] | None = None,
+    ) -> ApplicationRequirements:
+        """Validate requirements returned alongside a conversational response.
+
+        The conversational provider can return the user-facing reply and the
+        typed requirements in one JSON response. This keeps the normal path to
+        one provider round trip while preserving the same schema, registry,
+        and merge checks used by the dedicated extractor.
+        """
+        current = self._validated_current(current_data)
+        normalized = self._prepare_model_payload(payload)
+        extracted = ApplicationRequirements.model_validate(normalized)
+        merged = self._merge(current, extracted)
+        merged = self._normalize_integration_decisions(merged, message)
+        merged.completeness_score = merged.calculate_completeness_score()
+        merged.extraction_source = "model"
+        return merged
+
     async def extract(
         self,
         message: str,

@@ -21,6 +21,11 @@ class OnboardingModelResponse:
     proposed_intent: str | None = None
     proposed_data: dict[str, Any] = field(default_factory=dict)
     suggested_actions: list[str] = field(default_factory=list)
+    # Production model responses may carry the typed requirements alongside
+    # the conversational reply. This lets the normal path use one provider
+    # request; the dedicated extractor remains a validated fallback when the
+    # provider omits or corrupts this object.
+    application_requirements: dict[str, Any] | None = None
 
 
 class OnboardingModelProvider(Protocol):
@@ -742,6 +747,11 @@ class ConfiguredOnboardingModelProvider:
         text = value.get("text")
         proposed_data = value.get("proposed_data", {})
         suggested_actions = value.get("suggested_actions", [])
+        embedded_requirements = value.get("application_requirements")
+        if embedded_requirements is None and isinstance(proposed_data, dict):
+            embedded_requirements = proposed_data.get("application_requirements")
+        if embedded_requirements is not None and not isinstance(embedded_requirements, dict):
+            raise ValueError("Onboarding model application_requirements must be an object")
         if not isinstance(text, str) or not text.strip():
             raise ValueError("Onboarding model response has no text")
         if not isinstance(proposed_data, dict):
@@ -791,6 +801,7 @@ class ConfiguredOnboardingModelProvider:
             proposed_intent=intent,
             proposed_data=normalized_data,
             suggested_actions=[item.strip() for item in suggested_actions if item.strip()][:8],
+            application_requirements=embedded_requirements,
         )
 
     async def generate_step_response(
@@ -850,8 +861,16 @@ deprecated, or coming_soon.
 
 Return exactly one JSON object with these keys:
 text (a concise natural-language reply), proposed_intent (one of the allowed
-intents), proposed_data (safe configuration changes), and suggested_actions
-(zero to eight short choices). Never include credentials, secrets, private
+intents), proposed_data (safe configuration changes), suggested_actions
+(zero to eight short choices), and application_requirements. The
+application_requirements object must match schema version 1.0 and must reflect
+the entire conversation. Include these fields in that object: application_type,
+primary_function, target_users, inputs, outputs, requires_documents,
+document_formats, requires_external_data, external_source_types,
+requires_tools, requires_memory, memory_scope, connection_ownership,
+integrations, integration_decisions, requested_actions, constraints,
+data_sensitivity, expected_scale, confidence, and assumptions. Use null or an
+empty array when a value is not known yet. Never include credentials, secrets, private
 data, hidden reasoning, or markdown outside the JSON object.
 
 If the user requests a connector that is not in the manifest, put its name in
@@ -862,7 +881,9 @@ ask whether the user wants to continue with available sources.
 
 Ask a focused clarification question when the requirements extractor has not
 captured enough information. Never execute provisioning or a write action
-unless the user has explicitly confirmed it. For company data versus
+unless the user has explicitly confirmed it. Do not use a generic "Does this
+sound right?" confirmation when a specific requirement is still missing.
+For company data versus
 end-user OAuth, preserve the ownership stated by the user. Runtime creation
 stores a draft; project attachment and connector authorization happen later.
 """

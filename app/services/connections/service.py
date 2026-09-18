@@ -137,7 +137,7 @@ class ConnectionService:
                 extra={"integration_slug": integration_slug},
             )
             raise OAuthAuthorizationError(
-                "OAuth is not configured for this integration yet. Ask a workspace administrator to verify its provider credentials and callback URL.",
+                "OAuth is not configured for this integration yet. Ask a workspace administrator to verify the provider setup.",
                 code="oauth_not_configured",
                 status_code=503,
             ) from exc

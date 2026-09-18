@@ -131,6 +131,42 @@ async def test_conversational_provider_maps_provider_429_to_safe_retryable_error
     )
 
 
+@pytest.mark.asyncio
+async def test_conversational_provider_accepts_embedded_requirements(monkeypatch) -> None:
+    class StructuredLLM:
+        async def generate(self, messages, model, max_tokens=2048, temperature=0.7):
+            return (
+                '{"text":"I understand the application.",'
+                '"proposed_intent":"clarify_requirements",'
+                '"proposed_data":{},"suggested_actions":[],"application_requirements":{'
+                '"schema_version":"1.0","application_type":"ai_customer_support",'
+                '"primary_function":"Answer customer questions",'
+                '"target_users":["customers"],"inputs":["questions"],'
+                '"outputs":["support answers"],"requires_documents":true,'
+                '"document_formats":["pdf"],"requires_external_data":false,'
+                '"requires_tools":false,"requires_memory":true,"memory_scope":"session",'
+                '"confidence":0.9}}',
+                24,
+            )
+
+    provider = ConfiguredOnboardingModelProvider()
+    monkeypatch.setattr(
+        ConfiguredOnboardingModelProvider,
+        "_provider",
+        staticmethod(lambda: (StructuredLLM(), "gemini-2.5-flash")),
+    )
+
+    response = await provider.generate_step_response(
+        user_message="Build a customer support assistant",
+        current_state="onboarding_started",
+        current_config={},
+        history=[],
+    )
+
+    assert response.application_requirements is not None
+    assert response.application_requirements["application_type"] == "ai_customer_support"
+
+
 def test_model_payload_normalizes_string_integration_decisions() -> None:
     payload = {
         "application_type": "customer_support",
