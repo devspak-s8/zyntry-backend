@@ -78,9 +78,20 @@ class BaseLLMProvider(ABC):
 
 
 class OpenAILLMProvider(BaseLLMProvider):
-    def __init__(self, api_key: str, base_url: str = "https://api.openai.com/v1") -> None:
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str = "https://api.openai.com/v1",
+        *,
+        onboarding_compatibility_mode: bool = False,
+    ) -> None:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
+        # Some OpenAI-compatible deployments accept ``json_object`` but reject
+        # the stricter ``json_schema`` response format. Onboarding validates
+        # the complete response with Pydantic after the provider call, so this
+        # keeps the provider usable without weakening the application contract.
+        self._onboarding_compatibility_mode = onboarding_compatibility_mode
         self.last_status_code: int | None = None
         self.last_finish_reason: str | None = None
         self.last_response_schema_applied = False
@@ -148,7 +159,10 @@ class OpenAILLMProvider(BaseLLMProvider):
         # Use strict structured output for onboarding. The provider-neutral
         # schema is authored in Gemini's OpenAPI dialect, so convert it at the
         # adapter boundary rather than sending incompatible type names.
-        if response_schema is not None:
+        if response_schema is not None and self._onboarding_compatibility_mode:
+            payload["response_format"] = {"type": "json_object"}
+            self.last_response_schema_applied = False
+        elif response_schema is not None:
             from app.services.onboarding.structured_schema import onboarding_response_json_schema
 
             payload["response_format"] = {

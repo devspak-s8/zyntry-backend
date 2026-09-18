@@ -518,6 +518,54 @@ async def test_openai_schema_rejection_retries_with_json_compatibility_mode(monk
 
 
 @pytest.mark.asyncio
+async def test_openai_onboarding_compatibility_mode_starts_with_json_object(monkeypatch) -> None:
+    from app.services import rag
+
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    completed = httpx.Response(
+        200,
+        request=request,
+        json={
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"content": '{"text":"ok"}'},
+                }
+            ],
+            "usage": {"total_tokens": 4},
+        },
+    )
+
+    class FakeClient:
+        captured: list[dict] = []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, *args, **kwargs):
+            self.captured.append(kwargs["json"])
+            return completed
+
+    client = FakeClient()
+    monkeypatch.setattr(rag.httpx, "AsyncClient", lambda **kwargs: client)
+    provider = OpenAILLMProvider("openai-key", onboarding_compatibility_mode=True)
+
+    content, usage = await provider.generate(
+        [{"role": "user", "content": "return JSON"}],
+        "gpt-4o-mini",
+        response_schema=onboarding_response_schema(),
+    )
+
+    assert content == '{"text":"ok"}'
+    assert usage == 4
+    assert client.captured[0]["response_format"] == {"type": "json_object"}
+    assert provider.last_response_schema_applied is False
+
+
+@pytest.mark.asyncio
 async def test_provider_429_is_cooled_down_for_the_current_session(monkeypatch) -> None:
     from app.services.onboarding import provider_router
     from app.services.provider_health import ProviderHealth

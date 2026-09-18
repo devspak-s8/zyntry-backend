@@ -319,7 +319,11 @@ def _adapter_for(provider: str, api_key: str) -> BaseLLMProvider:
     if normalized == "openai":
         from app.services.rag import OpenAILLMProvider
 
-        return OpenAILLMProvider(api_key)
+        # Onboarding validates the complete response with Pydantic after the
+        # provider call. Use OpenAI's widely supported JSON mode instead of
+        # sending the large provider-specific strict schema, which some
+        # OpenAI-compatible deployments reject with ``param=response_format``.
+        return OpenAILLMProvider(api_key, onboarding_compatibility_mode=True)
     if normalized == "anthropic":
         from app.services.rag import AnthropicLLMProvider
 
