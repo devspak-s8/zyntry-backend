@@ -200,6 +200,14 @@ async def test_onboarding_returns_an_adaptive_question_before_plan_confirmation(
     assert response.clarification_question is not None
     assert "Does this sound right" not in response.response
     assert response.clarification_question.question in response.response
+    checkpoint = response.clarification_question.requirement
+    assert response.configuration["onboarding_pending_question"] == checkpoint
+    assert checkpoint in response.configuration["onboarding_questions_asked"]
+
+    persisted = await onboarding.get_chat_session(UUID(session["id"]))
+    assert persisted is not None
+    assert persisted["configuration"]["onboarding_pending_question"] == checkpoint
+    assert persisted["clarification_question"].requirement == checkpoint
 
 
 @pytest.mark.asyncio

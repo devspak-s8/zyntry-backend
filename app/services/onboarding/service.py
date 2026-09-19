@@ -36,8 +36,16 @@ class OnboardingService:
             if item
         }
         pending = config.get("onboarding_pending_question")
-        if pending and pending not in requirements.missing_requirements():
-            asked.add(str(pending))
+        if pending:
+            # The pending checkpoint is the question already shown in the
+            # conversation. Return it verbatim instead of calculating the next
+            # missing field; otherwise a session reload can show a different
+            # question from the one the user just answered.
+            persisted_question = self.engine.clarification_service.question_for_requirement(
+                str(pending)
+            )
+            if persisted_question:
+                return persisted_question
         return self.engine.clarification_service.next_conversation_question(
             requirements,
             asked_requirements=asked,

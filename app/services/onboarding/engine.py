@@ -462,14 +462,29 @@ class OnboardingEngine:
                 if isinstance(following, dict) and following.get("role") == "assistant" and following.get("error"):
                     messages = messages[:index]
                 elif isinstance(following, dict) and following.get("role") == "assistant":
+                    replayed_config = dict(session.configuration or {})
+                    pending = (
+                        replayed_config.get("onboarding_pending_question")
+                        or replayed_config.get("pending_requirement")
+                    )
+                    replayed_question = (
+                        self.clarification_service.question_for_requirement(str(pending))
+                        if pending
+                        else self._checkpoint_in_response(str(following.get("content") or ""))
+                    )
+                    if isinstance(replayed_question, str):
+                        replayed_question = self.clarification_service.question_for_requirement(
+                            replayed_question
+                        )
                     return OnboardingMessageResponse(
                         session_id=str(session.id),
                         response=str(following.get("content") or ""),
                         state=session.state,
-                        configuration=dict(session.configuration or {}),
+                        configuration=replayed_config,
                         is_complete=session.state == "completed",
-                        application_requirements=(session.configuration or {}).get("application_requirements"),
-                        runtime_plan=(session.configuration or {}).get("runtime_plan"),
+                        application_requirements=replayed_config.get("application_requirements"),
+                        runtime_plan=replayed_config.get("runtime_plan"),
+                        clarification_question=replayed_question,
                     )
                 break
         messages.append({
@@ -642,6 +657,33 @@ class OnboardingEngine:
             normalized_config.pop("runtime_plan", None)
             validated_config = normalized_config
 
+        # The conversational model may include the checkpoint in its visible
+        # reply while an older provider/transition path omits the companion
+        # metadata. Keep the persisted checkpoint and the API metadata aligned
+        # with the exact question the user saw. Without this reconciliation a
+        # session can display “Which document formats...” while the response
+        # contains either no clarification object or the next unrelated
+        # checkpoint.
+        if next_state == "clarifying_requirements":
+            pending = (
+                validated_config.get("onboarding_pending_question")
+                or validated_config.get("pending_requirement")
+            )
+            if not pending:
+                pending = self._checkpoint_in_response(ai_resp.text)
+            if pending:
+                pending = str(pending)
+                validated_config["onboarding_pending_question"] = pending
+                validated_config["pending_requirement"] = pending
+                asked = [
+                    str(item)
+                    for item in validated_config.get("onboarding_questions_asked", [])
+                    if item
+                ]
+                validated_config["onboarding_questions_asked"] = list(
+                    dict.fromkeys([*asked, pending])
+                )
+
         # Append assistant response
         assistant_message: dict[str, Any] = {
             "role": "assistant",
@@ -690,6 +732,21 @@ class OnboardingEngine:
             runtime_plan=validated_config.get("runtime_plan"),
             clarification_question=clarification_question,
         )
+
+    def _checkpoint_in_response(self, response_text: str | None) -> str | None:
+        """Find the checkpoint represented by a generated clarification reply."""
+
+        if not response_text:
+            return None
+        questions = list(self.clarification_service._QUESTIONS.values())
+        questions.extend(
+            question
+            for _, question in self.clarification_service._CONTEXTUAL_QUESTIONS
+        )
+        for question in questions:
+            if question.question in response_text:
+                return question.requirement
+        return None
 
     @staticmethod
     def _is_explicit_runtime_confirmation(
