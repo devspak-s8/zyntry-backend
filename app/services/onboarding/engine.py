@@ -635,7 +635,7 @@ class OnboardingEngine:
                     if item
                 }
                 pending_requirement = validated_config.get("onboarding_pending_question")
-                if pending_requirement and pending_requirement not in requirements.missing_requirements():
+                if pending_requirement:
                     asked_requirements.add(str(pending_requirement))
                 clarification_question = self.clarification_service.next_conversation_question(
                     requirements,
@@ -798,11 +798,15 @@ class OnboardingEngine:
             if item
         }
         pending_question = current_config.get("onboarding_pending_question")
-        if pending_question and pending_question not in requirements.missing_requirements():
+        if pending_question:
             asked_requirements.add(str(pending_question))
         question = self.clarification_service.next_conversation_question(
             requirements,
             asked_requirements=asked_requirements,
+        )
+        question_budget_exhausted = (
+            len(asked_requirements)
+            >= self.clarification_service.MAX_CONVERSATIONAL_QUESTIONS
         )
         should_ask_context = (
             current_state == "onboarding_started"
@@ -817,7 +821,12 @@ class OnboardingEngine:
         # resource/integration boundary. Other onboarding transitions retain
         # their existing state behavior while requirements are gathered.
         document_question = question and question.requirement == "document_formats"
-        if self._should_prioritize_clarification(current_state, requirements, question) or document_question or should_ask_context:
+        if (
+            self._should_prioritize_clarification(current_state, requirements, question)
+            or document_question
+            or should_ask_context
+            or question_budget_exhausted
+        ):
             if question:
                 ai_resp.text = (
                     "I’ve captured the requirements you provided. "
@@ -826,6 +835,11 @@ class OnboardingEngine:
                 ai_resp.proposed_intent = "clarify_requirements"
                 ai_resp.proposed_data["pending_requirement"] = question.requirement
                 ai_resp.proposed_data["onboarding_pending_question"] = question.requirement
+                # Mark a question as discussed when it is presented, rather
+                # than waiting for the model to successfully extract its
+                # answer. This prevents a provider omission from causing the
+                # same prompt to reappear on the next turn.
+                asked_requirements.add(question.requirement)
                 ai_resp.proposed_data["onboarding_questions_asked"] = sorted(asked_requirements)
                 ai_resp.suggested_actions = question.suggested_answers
             else:

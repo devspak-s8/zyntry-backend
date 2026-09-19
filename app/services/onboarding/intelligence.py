@@ -1152,9 +1152,20 @@ class ModelBackedRequirementsExtractor:
         }
         for key, value in model_data.items():
             if key in list_fields:
-                result[key] = list(dict.fromkeys(value or []))
+                # Providers commonly omit already-set list fields by emitting
+                # an empty array. Treat that as "no new information" and
+                # preserve the conversation's accumulated requirements. An
+                # explicit request to clear a field is handled by the policy
+                # guards using the latest user message.
+                if value:
+                    result[key] = list(dict.fromkeys(value))
+                elif key not in result:
+                    result[key] = []
             elif key == "integrations":
-                result[key] = value or []
+                if value:
+                    result[key] = value
+                elif key not in result:
+                    result[key] = []
             elif value is not None and value != "":
                 result[key] = value
         result["confidence"] = extracted.confidence
@@ -1308,6 +1319,11 @@ Do not include markdown, explanation, credentials, or hidden reasoning outside t
 
 
 class AdaptiveClarificationService:
+    # Onboarding is a guided conversation, not a requirements questionnaire.
+    # Keep a small, bounded budget so an incomplete model extraction cannot
+    # trap a user in an endless loop of essentially equivalent questions.
+    MAX_CONVERSATIONAL_QUESTIONS = 5
+
     _QUESTIONS: dict[str, ClarificationQuestion] = {
         "application_type": ClarificationQuestion(
             requirement="application_type",
@@ -1454,11 +1470,21 @@ class AdaptiveClarificationService:
         a long first prompt cannot silently become a plan without discussing
         access, actions, privacy, or external retrieval.
         """
-        missing = self.next_question(requirements)
-        if missing:
-            return missing
-
         asked = asked_requirements or set()
+        if len(asked) >= self.MAX_CONVERSATIONAL_QUESTIONS:
+            return None
+
+        # A requirement can remain technically missing when a provider omits
+        # it from its next extraction. It has still already been discussed,
+        # so do not restart the conversation at the same question. The engine
+        # records the key as soon as a question is shown (see below).
+        for missing_name in requirements.missing_requirements():
+            if missing_name in asked:
+                continue
+            question = self._QUESTIONS.get(missing_name)
+            if question:
+                return question
+
         context = f"{requirements.application_type or ''} {requirements.primary_function or ''}".lower()
         for terms, question in self._CONTEXTUAL_QUESTIONS:
             if question.requirement not in asked and any(term in context for term in terms):

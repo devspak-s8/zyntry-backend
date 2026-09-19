@@ -73,6 +73,38 @@ async def test_model_extraction_is_validated_and_merged() -> None:
 
 
 @pytest.mark.asyncio
+async def test_model_extraction_preserves_accumulated_lists_when_turn_omits_them() -> None:
+    class FollowUpLLM:
+        async def generate(self, messages, model, max_tokens=2048, temperature=0.7):
+            return (
+                '{"application_type":null,"primary_function":null,'
+                '"target_users":[],"inputs":[],"outputs":[],'
+                '"requires_documents":null,"requires_external_data":null,'
+                '"requires_tools":null,"requires_memory":null}',
+                10,
+            )
+
+    extractor = ModelBackedRequirementsExtractor(provider=FollowUpLLM())
+    requirements = await extractor.extract(
+        "Keep the existing setup.",
+        current_data={
+            "application_type": "knowledge_search_rag",
+            "primary_function": "Answer internal questions",
+            "target_users": ["internal team"],
+            "inputs": ["natural-language questions"],
+            "outputs": ["grounded answers"],
+            "requires_documents": True,
+            "document_formats": ["PDF", "DOCX"],
+        },
+    )
+
+    assert requirements.target_users == ["internal team"]
+    assert requirements.inputs == ["natural-language questions"]
+    assert requirements.outputs == ["grounded answers"]
+    assert requirements.document_formats == ["PDF", "DOCX"]
+
+
+@pytest.mark.asyncio
 async def test_model_extraction_repairs_non_json_provider_response() -> None:
     provider = NaturalLanguageThenJsonLLM()
     extractor = ModelBackedRequirementsExtractor(provider=provider)
@@ -832,6 +864,38 @@ def test_contextual_checkpoint_is_not_repeated_after_answer() -> None:
     assert first.requirement == "tool_permissions"
     assert second is not None
     assert second.requirement == "external_retrieval_policy"
+
+
+def test_missing_requirement_already_discussed_is_skipped() -> None:
+    requirements = ApplicationRequirements(
+        application_type="knowledge_search_rag",
+        primary_function="Answer internal questions",
+        target_users=[],
+        inputs=[],
+        outputs=[],
+        requires_documents=None,
+    )
+
+    service = AdaptiveClarificationService()
+    question = service.next_conversation_question(requirements, {"target_users"})
+
+    assert question is not None
+    assert question.requirement != "target_users"
+
+
+def test_clarification_budget_is_bounded() -> None:
+    requirements = ApplicationRequirements(
+        application_type="knowledge_search_rag",
+        primary_function="Answer internal questions",
+    )
+
+    service = AdaptiveClarificationService()
+    asked = {
+        f"question_{index}"
+        for index in range(service.MAX_CONVERSATIONAL_QUESTIONS)
+    }
+
+    assert service.next_conversation_question(requirements, asked) is None
 
 
 def test_unavailable_integrations_are_explained_without_entering_the_draft() -> None:
