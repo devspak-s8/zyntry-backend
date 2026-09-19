@@ -140,6 +140,32 @@ class ApplicationRequirements(BaseModel):
             missing.append("memory_scope")
         return missing
 
+    def provisioning_gaps(self) -> list[str]:
+        """Return only facts that cannot be safely defaulted before review.
+
+        Onboarding must not turn every optional runtime setting into a user
+        question. Audience labels, input/output wording, document formats,
+        session memory, external retrieval, routing, and observability all
+        have safe platform defaults and remain editable after provisioning.
+        """
+
+        gaps: list[str] = []
+        purpose = (self.primary_function or "").strip().lower()
+        generic_purposes = {
+            "",
+            "build an ai app",
+            "create an ai app",
+            "ai application",
+            "general ai application",
+        }
+        if not self.application_type and purpose in generic_purposes:
+            gaps.append("primary_function")
+        elif self.application_type in {None, "general_ai_application"} and purpose in generic_purposes:
+            gaps.append("primary_function")
+        if self.integrations and not self.connection_ownership:
+            gaps.append("connection_ownership")
+        return gaps
+
     def calculate_completeness_score(self) -> float:
         """Return a stable score for the plan-affecting fields."""
 

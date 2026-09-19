@@ -51,63 +51,36 @@ async def test_chat_onboarding_full_lifecycle(db_session: AsyncSession) -> None:
         initial_prompt="I want to build an AI support agent for my customers",
     )
     assert session_data["user_id"] == str(user.id)
-    assert session_data["state"] == "discovering_application_type"
-    assert len(session_data["suggested_actions"]) > 0
+    assert session_data["state"] == "clarifying_requirements"
+    assert session_data["clarification_question"].requirement == "access_and_actions"
     session_id = session_data["id"]
 
-    # 3. Message 1: Discovering Application Type & Integration Mode
+    # One product-level answer is enough to produce a reviewable plan.
     resp1 = await onboarding.send_chat_message(
         user_id=user.id,
         req=OnboardingMessageRequest(
             session_id=session_id,
-            message="My end users will connect their own external accounts (Mode B)",
+            message="Only answer questions. Keep it read-only.",
         ),
     )
-    assert resp1.state == "selecting_integrations"
-    assert resp1.configuration.get("integration_mode") == "end_user_oauth"
+    assert resp1.state == "confirming_configuration"
+    assert resp1.proposed_runtime is not None
+    assert resp1.runtime_plan is not None
+    assert resp1.runtime_plan.status == "validated"
+    assert "Review and create runtime" in resp1.suggested_actions
 
-    # 4. Message 2: Selecting Integrations & Capabilities
-    resp2 = await onboarding.send_chat_message(
+    complete = await onboarding.complete_chat_onboarding(
         user_id=user.id,
-        req=OnboardingMessageRequest(
+        req=OnboardingCompleteRequest(
             session_id=session_id,
-            message="I need GitHub for file retrieval and Slack for message search",
         ),
     )
-    assert resp2.state == "configuring_runtime"
-    assert "github" in resp2.configuration.get("integrations", [])
-    assert "slack" in resp2.configuration.get("integrations", [])
-
-    # 5. Message 3: Configuring Runtime -> Preview
-    resp3 = await onboarding.send_chat_message(
-        user_id=user.id,
-        req=OnboardingMessageRequest(
-            session_id=session_id,
-            message="Use GPT-4o with balanced routing in development environment",
-        ),
-    )
-    assert resp3.state == "confirming_configuration"
-    assert resp3.proposed_runtime is not None
-    assert "Confirm & Create Runtime" in resp3.suggested_actions
-
-    # 6. Message 4: User clicks or types 'Confirm & Create Runtime' directly in chat
-    resp4 = await onboarding.send_chat_message(
-        user_id=user.id,
-        req=OnboardingMessageRequest(
-            session_id=session_id,
-            message="Confirm & Create Runtime",
-        ),
-    )
-    assert resp4.is_complete is True
-    assert resp4.state == "completed"
-    assert "Runtime created" in resp4.response
-    assert resp4.proposed_runtime is not None
-    assert resp4.proposed_runtime["runtime_id"] is not None
-    assert resp4.proposed_runtime["status"] == "preconfigured"
-    created_runtime = await uow.runtimes.get(UUID(resp4.proposed_runtime["runtime_id"]))
+    assert complete.runtime_id is not None
+    assert complete.status == "preconfigured"
+    created_runtime = await uow.runtimes.get(UUID(complete.runtime_id))
     assert created_runtime is not None
     assert created_runtime.project_id is None
-    assert created_runtime.name == resp4.proposed_runtime["runtime_name"]
+    assert created_runtime.name == complete.runtime_name
 
 
 @pytest.mark.asyncio
@@ -135,40 +108,24 @@ async def test_chat_onboarding_natural_engineer_agent_flow(db_session: AsyncSess
         user_id=user.id,
         req=OnboardingMessageRequest(
             session_id=session_id,
-            message="GitHub, Slack, Notion and PostgreSQL",
+            message="My users will connect GitHub, Slack, and Notion. My team will manage PostgreSQL.",
         ),
     )
-    assert resp1.state == "configuring_runtime"
+    assert resp1.state == "confirming_configuration"
     assert "github" in resp1.configuration.get("integrations", [])
     assert "slack" in resp1.configuration.get("integrations", [])
     assert "notion" in resp1.configuration.get("integrations", [])
     integs = resp1.configuration.get("integrations", [])
     assert "postgres" in integs or "postgresql" in integs
 
-    # 3. User selects performance strategy
-    resp2 = await onboarding.send_chat_message(
+    complete = await onboarding.complete_chat_onboarding(
         user_id=user.id,
-        req=OnboardingMessageRequest(
+        req=OnboardingCompleteRequest(
             session_id=session_id,
-            message="Fast responses",
         ),
     )
-    assert resp2.state == "confirming_configuration"
-    assert "Confirm & Create Runtime" in resp2.suggested_actions
-
-    # 4. User confirms
-    resp3 = await onboarding.send_chat_message(
-        user_id=user.id,
-        req=OnboardingMessageRequest(
-            session_id=session_id,
-            message="Confirm & Create Runtime",
-        ),
-    )
-    assert resp3.is_complete is True
-    assert resp3.state == "completed"
-    assert "Runtime created" in resp3.response
-    assert resp3.proposed_runtime is not None
-    assert resp3.proposed_runtime["runtime_id"] is not None
+    assert complete.runtime_id is not None
+    assert complete.status == "preconfigured"
 
 
 @pytest.mark.asyncio

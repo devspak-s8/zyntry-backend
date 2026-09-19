@@ -641,7 +641,7 @@ class OnboardingEngine:
         # Keep planning behind the final conversational checkpoint. During
         # discovery and clarification we persist requirements only; a plan is
         # generated once the user confirms the completed configuration.
-        if next_state in ("provisioning", "completed"):
+        if next_state in ("confirming_configuration", "provisioning", "completed"):
             validated_config = self._attach_runtime_plan(
                 validated_config,
                 previous_plan=current_config.get("runtime_plan"),
@@ -898,91 +898,43 @@ class OnboardingEngine:
         }
         pending_question = current_config.get("onboarding_pending_question")
         if pending_question:
-            pending_name = str(pending_question)
-            # If the active checkpoint is still missing after this turn, do
-            # not let the "already asked" guard advance past it. This keeps a
-            # provider omission from silently leaving (for example)
-            # ``primary_function`` empty while asking about target users.
-            if pending_name in requirements.missing_requirements():
-                asked_requirements.discard(pending_name)
-            else:
-                asked_requirements.add(pending_name)
+            asked_requirements.add(str(pending_question))
         question = self.clarification_service.next_conversation_question(
             requirements,
             asked_requirements=asked_requirements,
+            latest_message=message,
         )
-        question_budget_exhausted = (
-            len(asked_requirements)
-            >= self.clarification_service.MAX_CONVERSATIONAL_QUESTIONS
-        )
-        should_ask_context = (
-            current_state == "onboarding_started"
-            and not requirements.missing_requirements()
-            and not current_config.get("onboarding_exploration_complete")
-        )
-        # The conversational model can produce a plausible but incorrect
-        # connector question (for example, treating private uploaded files as
-        # a ``document_storage`` integration). Once the requirements extractor
-        # has validated that document formats are the next missing field, the
-        # backend owns that checkpoint so the model cannot contradict the
-        # resource/integration boundary. Other onboarding transitions retain
-        # their existing state behavior while requirements are gathered.
-        document_question = question and question.requirement == "document_formats"
-        if (
-            self._should_prioritize_clarification(current_state, requirements, question)
-            or document_question
-            or should_ask_context
-            or question_budget_exhausted
-        ):
-            if question:
-                ai_resp.text = (
-                    "I’ve captured the requirements you provided. "
-                    f"{question.question}"
-                )
-                ai_resp.proposed_intent = "clarify_requirements"
-                ai_resp.proposed_data["pending_requirement"] = question.requirement
-                ai_resp.proposed_data["onboarding_pending_question"] = question.requirement
-                # Mark a question as discussed when it is presented, rather
-                # than waiting for the model to successfully extract its
-                # answer. This prevents a provider omission from causing the
-                # same prompt to reappear on the next turn.
-                asked_requirements.add(question.requirement)
-                ai_resp.proposed_data["onboarding_questions_asked"] = sorted(asked_requirements)
-                ai_resp.suggested_actions = question.suggested_answers
-            else:
-                ready_data = self._requirements_configuration(requirements)
-                ai_resp.text = (
-                    "I have enough information to generate the runtime plan.\n\n"
-                    "Choose the routing preference: low latency, balanced, or maximum quality."
-                )
-                ai_resp.proposed_intent = "requirements_ready"
-                ai_resp.proposed_data = {
-                    **ai_resp.proposed_data,
-                    **ready_data,
-                    "pending_requirement": None,
-                    "onboarding_pending_question": None,
-                    "onboarding_exploration_complete": True,
-                }
-                ai_resp.suggested_actions = ["Low latency", "Balanced", "Maximum quality"]
-        return ai_resp, requirements
+        if question:
+            ai_resp.text = question.question
+            ai_resp.proposed_intent = "clarify_requirements"
+            ai_resp.proposed_data["pending_requirement"] = question.requirement
+            ai_resp.proposed_data["onboarding_pending_question"] = question.requirement
+            asked_requirements.add(question.requirement)
+            ai_resp.proposed_data["onboarding_questions_asked"] = sorted(asked_requirements)
+            ai_resp.suggested_actions = question.suggested_answers
+            return ai_resp, requirements
 
-    @staticmethod
-    def _should_prioritize_clarification(
-        current_state: str,
-        requirements: ApplicationRequirements,
-        question: Any,
-    ) -> bool:
-        if current_state == "clarifying_requirements":
-            return True
-        if current_state != "onboarding_started" or question is None:
-            return False
-        if requirements.application_type == "general_ai_application":
-            return True
-        return question.requirement in {
-            "document_formats",
-            "external_source_types",
-            "memory_scope",
+        requirements = self.clarification_service.apply_safe_defaults(requirements)
+        requirements.completeness_score = requirements.calculate_completeness_score()
+        ready_data = self._requirements_configuration(requirements)
+        ai_resp.text = "Got it. I have enough to prepare the runtime."
+        ai_resp.proposed_intent = "confirm_configuration"
+        ai_resp.proposed_data = {
+            **ai_resp.proposed_data,
+            **ready_data,
+            "application_requirements": requirements.model_dump(mode="json"),
+            "requires_tools": requirements.requires_tools,
+            "provider": "automatic",
+            "model": "automatic",
+            "routing_strategy": "balanced",
+            "environment": current_config.get("environment", "development"),
+            "pending_requirement": None,
+            "onboarding_pending_question": None,
+            "onboarding_questions_asked": sorted(asked_requirements),
+            "onboarding_exploration_complete": True,
         }
+        ai_resp.suggested_actions = ["Review and create runtime"]
+        return ai_resp, requirements
 
     @staticmethod
     def _requirements_configuration(
@@ -1417,6 +1369,10 @@ class OnboardingEngine:
         if proposed_intent == "confirm_configuration":
             if proposed_data.get("runtime_name"):
                 config["runtime_name"] = proposed_data["runtime_name"]
+            for key in ("use_case", "application_type", "integration_mode"):
+                if proposed_data.get(key) is not None:
+                    config[key] = proposed_data[key]
+            config, _ = self._validate_integrations_and_transition(config, proposed_data)
             config["model"] = proposed_data.get("model", "automatic")
             config["provider"] = proposed_data.get("provider", "automatic")
             config["routing_strategy"] = proposed_data.get("routing_strategy", "balanced")

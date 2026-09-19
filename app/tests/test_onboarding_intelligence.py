@@ -853,7 +853,7 @@ def test_complete_requirements_still_receive_contextual_checkpoint() -> None:
 
     assert question is not None
     assert question.requirement == "access_and_actions"
-    assert "read-only" in question.question
+    assert "only answer questions" in question.question
 
 
 def test_contextual_checkpoint_is_not_repeated_after_answer() -> None:
@@ -873,10 +873,8 @@ def test_contextual_checkpoint_is_not_repeated_after_answer() -> None:
     first = service.next_conversation_question(requirements, set())
     second = service.next_conversation_question(requirements, {"tool_permissions"})
 
-    assert first is not None
-    assert first.requirement == "tool_permissions"
-    assert second is not None
-    assert second.requirement == "external_retrieval_policy"
+    assert first is None
+    assert second is None
 
 
 def test_missing_requirement_already_discussed_is_skipped() -> None:
@@ -892,8 +890,7 @@ def test_missing_requirement_already_discussed_is_skipped() -> None:
     service = AdaptiveClarificationService()
     question = service.next_conversation_question(requirements, {"target_users"})
 
-    assert question is not None
-    assert question.requirement != "target_users"
+    assert question is None
 
 
 def test_clarification_budget_is_bounded() -> None:

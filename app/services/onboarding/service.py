@@ -77,7 +77,11 @@ class OnboardingService:
         suggested = self.engine.get_suggested_actions_for_state(
             session.state, session.configuration
         )
-        plan_available = session.state in {"provisioning", "completed"}
+        plan_available = session.state in {
+            "confirming_configuration",
+            "provisioning",
+            "completed",
+        }
         return {
             "id": str(session.id),
             "user_id": str(session.user_id),
@@ -109,7 +113,11 @@ class OnboardingService:
         suggested = self.engine.get_suggested_actions_for_state(
             session.state, session.configuration
         )
-        plan_available = session.state in {"provisioning", "completed"}
+        plan_available = session.state in {
+            "confirming_configuration",
+            "provisioning",
+            "completed",
+        }
         return {
             "id": str(session.id),
             "user_id": str(session.user_id),

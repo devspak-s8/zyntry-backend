@@ -597,7 +597,7 @@ async def test_architecture_conversation_uses_full_history_and_host_managed_sour
 
 
 @pytest.mark.asyncio
-async def test_validated_requirements_override_model_connector_question_for_documents() -> None:
+async def test_document_formats_are_defaulted_instead_of_asked_during_onboarding() -> None:
     class FixedExtractor:
         async def extract(self, **kwargs: Any) -> ApplicationRequirements:
             return ApplicationRequirements(
@@ -644,8 +644,8 @@ async def test_validated_requirements_override_model_connector_question_for_docu
 
     assert requirements.requires_documents is True
     assert response.proposed_intent == "clarify_requirements"
-    assert response.proposed_data["pending_requirement"] == "document_formats"
-    assert "Which document formats" in response.text
+    assert response.proposed_data["pending_requirement"] == "access_and_actions"
+    assert "only answer questions" in response.text
     assert "document storage integration" not in response.text
     assert response.proposed_data["integrations"] == ["postgresql"]
 

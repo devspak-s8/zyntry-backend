@@ -1355,10 +1355,10 @@ Do not include markdown, explanation, credentials, or hidden reasoning outside t
 
 
 class AdaptiveClarificationService:
-    # Onboarding is a guided conversation, not a requirements questionnaire.
-    # Keep a small, bounded budget so an incomplete model extraction cannot
-    # trap a user in an endless loop of essentially equivalent questions.
-    MAX_CONVERSATIONAL_QUESTIONS = 5
+    # Normal onboarding aims for zero questions and never asks more than two.
+    # Everything else receives a safe default and remains editable later.
+    MAX_CONVERSATIONAL_QUESTIONS = 2
+    DEFAULT_DOCUMENT_FORMATS = ["pdf", "docx", "txt", "markdown", "csv", "json"]
 
     _QUESTIONS: dict[str, ClarificationQuestion] = {
         "application_type": ClarificationQuestion(
@@ -1368,8 +1368,8 @@ class AdaptiveClarificationService:
         ),
         "primary_function": ClarificationQuestion(
             requirement="primary_function",
-            question="What is the single most important job this application should perform?",
-            suggested_answers=["Answer questions", "Analyze content", "Perform actions", "Help me define it"],
+            question="What should the AI help people do?",
+            suggested_answers=["Answer questions", "Work with my data", "Take actions", "Help me define it"],
         ),
         "target_users": ClarificationQuestion(
             requirement="target_users",
@@ -1418,8 +1418,8 @@ class AdaptiveClarificationService:
         ),
         "connection_ownership": ClarificationQuestion(
             requirement="connection_ownership",
-            question="Who will connect these systems?",
-            suggested_answers=["My company", "My application users", "Both", "Not sure yet"],
+            question="Who will connect services like Google Drive or GitHub?",
+            suggested_answers=["My team", "My users", "Both", "Not sure yet"],
         ),
         "requires_memory": ClarificationQuestion(
             requirement="requires_memory",
@@ -1438,12 +1438,12 @@ class AdaptiveClarificationService:
             ("support", "customer", "service"),
             ClarificationQuestion(
                 requirement="access_and_actions",
-                question="I understand this is a customer-support assistant. Who should be allowed to see customer data, and should it remain read-only or perform confirmed actions?",
+                question="Should it only answer questions, or also perform actions?",
                 suggested_answers=[
-                    "Read-only answers for support agents",
-                    "Different access by user role",
-                    "Read data and perform confirmed actions",
-                    "I am not sure yet",
+                    "Only answer questions",
+                    "Perform actions with approval",
+                    "Perform actions automatically",
+                    "Not sure yet",
                 ],
             ),
         ),
@@ -1451,7 +1451,7 @@ class AdaptiveClarificationService:
             ("developer", "code", "architecture", "repository"),
             ClarificationQuestion(
                 requirement="tool_permissions",
-                question="Should this developer assistant only analyze the supplied context, or may it create issues, pull requests, or other changes after confirmation?",
+                question="Should it only analyze code, or also make changes after approval?",
                 suggested_answers=[
                     "Analyze only",
                     "Read repositories and discussions",
@@ -1461,28 +1461,14 @@ class AdaptiveClarificationService:
             ),
         ),
         (
-            ("student", "education", "course", "learning"),
-            ClarificationQuestion(
-                requirement="role_privacy",
-                question="Which roles will use this education assistant, and should each person only see the records allowed for their role?",
-                suggested_answers=[
-                    "Students only see their own records",
-                    "Students and instructors have different access",
-                    "Administrators can see everything allowed by policy",
-                    "I am not sure yet",
-                ],
-            ),
-        ),
-        (
             ("document", "knowledge", "rag", "search"),
             ClarificationQuestion(
                 requirement="external_retrieval_policy",
-                question="When private knowledge cannot answer a question, should the runtime stay private or use approved external sources with citations?",
+                question="Should it only use your private materials, or also use approved external sources?",
                 suggested_answers=[
-                    "Stay limited to private data",
-                    "Use approved official sources with citations",
-                    "Allow external retrieval only when I enable it",
-                    "I am not sure yet",
+                    "Private materials only",
+                    "Private materials and approved external sources",
+                    "Configure later",
                 ],
             ),
         ),
@@ -1525,48 +1511,100 @@ class AdaptiveClarificationService:
         self,
         requirements: ApplicationRequirements,
         asked_requirements: set[str] | None = None,
+        latest_message: str | None = None,
     ) -> ClarificationQuestion | None:
-        """Return a missing requirement or a contextual checkpoint.
-
-        A complete extraction still receives one conversational checkpoint so
-        a long first prompt cannot silently become a plan without discussing
-        access, actions, privacy, or external retrieval.
-        """
+        """Return only a product decision required before useful provisioning."""
         asked = asked_requirements or set()
         if len(asked) >= self.MAX_CONVERSATIONAL_QUESTIONS:
             return None
 
-        # A requirement can remain technically missing when a provider omits
-        # it from its next extraction. It has still already been discussed,
-        # so do not restart the conversation at the same question. The engine
-        # records the key as soon as a question is shown (see below).
-        for missing_name in requirements.missing_requirements():
+        for missing_name in requirements.provisioning_gaps():
             if missing_name in asked:
-                continue
-            # A clear purpose/data shape is enough to classify the runtime.
-            # Do not make users restate the application type after saying
-            # "internal knowledge assistant", "customer support assistant",
-            # or an equivalent product description.
-            if missing_name == "application_type" and (
-                requirements.primary_function
-                or requirements.inputs
-                or requirements.outputs
-                or requirements.requires_documents is not None
-            ):
                 continue
             question = self._QUESTIONS.get(missing_name)
             if question:
                 return question
 
-        context = f"{requirements.application_type or ''} {requirements.primary_function or ''}".lower()
-        for terms, question in self._CONTEXTUAL_QUESTIONS:
-            if question.requirement not in asked and any(term in context for term in terms):
-                return question
+        context = (
+            f"{requirements.application_type or ''} "
+            f"{requirements.primary_function or ''} "
+            f"{latest_message or ''}"
+        ).lower()
+        explicit_read_only = any(
+            phrase in context
+            for phrase in ("read-only", "read only", "only answer", "answer questions only")
+        )
+        has_actions = bool(requirements.requested_actions) or any(
+            integration.write_access for integration in requirements.integrations
+        )
 
-        generic = self.question_for_requirement("external_retrieval_policy")
-        if generic is None or generic.requirement in asked:
-            return None
-        return generic
+        if (
+            "access_and_actions" not in asked
+            and not explicit_read_only
+            and any(term in context for term in ("support", "customer service", "helpdesk"))
+        ):
+            return self.question_for_requirement("access_and_actions")
+        if (
+            "tool_permissions" not in asked
+            and has_actions
+            and any(term in context for term in ("developer", "code", "repository", "agent"))
+        ):
+            return self.question_for_requirement("tool_permissions")
+        if (
+            "external_retrieval_policy" not in asked
+            and requirements.requires_documents
+            and requirements.requires_external_data is None
+        ):
+            return self.question_for_requirement("external_retrieval_policy")
+        return None
+
+    def apply_safe_defaults(
+        self,
+        requirements: ApplicationRequirements,
+    ) -> ApplicationRequirements:
+        """Complete optional facts with conservative, editable defaults."""
+
+        updates: dict[str, Any] = {}
+        app_type = requirements.application_type or "general_ai_application"
+        if not requirements.application_type:
+            updates["application_type"] = app_type
+        if not requirements.primary_function:
+            updates["primary_function"] = {
+                "ai_customer_support": "Answer customer questions",
+                "knowledge_search_rag": "Answer questions from private knowledge",
+                "developer_ai_assistant": "Help developers understand and improve code",
+                "resume_analyzer": "Analyze resumes and provide useful feedback",
+            }.get(app_type, "Help users with their requests")
+        if not requirements.target_users:
+            updates["target_users"] = ["application users"]
+        if not requirements.inputs:
+            updates["inputs"] = ["natural-language requests"]
+        if not requirements.outputs:
+            updates["outputs"] = ["natural-language responses"]
+        if requirements.requires_documents is None:
+            updates["requires_documents"] = False
+        elif requirements.requires_documents and not requirements.document_formats:
+            updates["document_formats"] = list(self.DEFAULT_DOCUMENT_FORMATS)
+        if requirements.requires_external_data is None:
+            updates["requires_external_data"] = False
+        elif requirements.requires_external_data and not requirements.external_source_types:
+            updates["external_source_types"] = ["approved sources"]
+        if requirements.requires_tools is None:
+            updates["requires_tools"] = bool(requirements.integrations)
+        if requirements.requires_memory is None:
+            updates["requires_memory"] = True
+            updates["memory_scope"] = "session"
+        elif requirements.requires_memory and not requirements.memory_scope:
+            updates["memory_scope"] = "session"
+        if requirements.integrations and not requirements.connection_ownership:
+            updates["connection_ownership"] = "company"
+        if requirements.data_sensitivity is None:
+            updates["data_sensitivity"] = (
+                "confidential"
+                if requirements.requires_documents or requirements.integrations
+                else "internal"
+            )
+        return requirements.model_copy(update=updates)
 
 
 class RuntimePlanGenerator:
@@ -1597,7 +1635,7 @@ class RuntimePlanGenerator:
             and (previous_plan or {}).get("deployment") == deployment
         )
         version = max(previous_version, 1) if same_plan else previous_version + 1
-        unresolved = requirements.missing_requirements()
+        unresolved = requirements.provisioning_gaps()
         pending_question = configuration.get("onboarding_pending_question")
         if pending_question and pending_question not in unresolved:
             # A complete field extraction still requires one contextual
