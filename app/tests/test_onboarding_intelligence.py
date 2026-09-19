@@ -898,6 +898,22 @@ def test_clarification_budget_is_bounded() -> None:
     assert service.next_conversation_question(requirements, asked) is None
 
 
+def test_application_type_question_is_skipped_when_purpose_is_clear() -> None:
+    requirements = ApplicationRequirements(
+        primary_function="Answer employees' questions from private company knowledge",
+        requires_documents=True,
+        inputs=["natural-language questions"],
+    )
+
+    question = AdaptiveClarificationService().next_conversation_question(
+        requirements,
+        asked_requirements=set(),
+    )
+
+    assert question is not None
+    assert question.requirement != "application_type"
+
+
 def test_unavailable_integrations_are_explained_without_entering_the_draft() -> None:
     proposed_data = {"integrations": ["bitbucket", "not_a_real_connector", "github"]}
     response = OnboardingModelResponse(

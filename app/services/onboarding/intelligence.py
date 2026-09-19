@@ -1301,6 +1301,12 @@ merely mentioning a service means the runtime should connect to it. The latest e
 instruction overrides earlier assumptions, while facts not revisited should be preserved from
 current_requirements.
 
+Infer ``application_type`` when the product description makes it unambiguous. For example,
+an internal knowledge assistant that searches private documents is a knowledge-search
+application, and a customer-support assistant is a customer-support application. Do not ask
+the user to restate that category; leave it null only when the product purpose is genuinely
+ambiguous.
+
 For every service mentioned, record an integration_decisions entry with exactly one decision:
 direct (the runtime itself must connect), host_managed (the user's application supplies the
 data), excluded (the user explicitly does not want it), unsupported (not available in the
@@ -1480,6 +1486,17 @@ class AdaptiveClarificationService:
         # records the key as soon as a question is shown (see below).
         for missing_name in requirements.missing_requirements():
             if missing_name in asked:
+                continue
+            # A clear purpose/data shape is enough to classify the runtime.
+            # Do not make users restate the application type after saying
+            # "internal knowledge assistant", "customer support assistant",
+            # or an equivalent product description.
+            if missing_name == "application_type" and (
+                requirements.primary_function
+                or requirements.inputs
+                or requirements.outputs
+                or requirements.requires_documents is not None
+            ):
                 continue
             question = self._QUESTIONS.get(missing_name)
             if question:
