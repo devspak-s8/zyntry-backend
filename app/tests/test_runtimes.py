@@ -29,6 +29,7 @@ class FakeUnitOfWork:
         self.runtime_integrations = SimpleNamespace(
             get_by_runtime=AsyncMock(return_value=integrations or [])
         )
+        self.documents = SimpleNamespace(count_by_project=AsyncMock(return_value=0))
 
     async def commit(self):
         return None
@@ -80,6 +81,32 @@ async def test_enqueue_build_waits_for_required_company_connections() -> None:
     assert result["status"] == "awaiting_connections"
     assert result["required_connections"] == ["github"]
     assert runtime.status == "awaiting_connections"
+
+
+@pytest.mark.asyncio
+async def test_enqueue_build_waits_for_documents_from_runtime_requirements() -> None:
+    runtime = SimpleNamespace(
+        id=uuid.uuid4(),
+        project_id=uuid.uuid4(),
+        status="preconfigured",
+        last_build_started=None,
+        error_message=None,
+        config={
+            "requires_documents": True,
+            "onboarding_requirements": {
+                "requires_documents": True,
+                "document_formats": ["pdf", "docx"],
+            },
+        },
+    )
+    service = RuntimeService(FakeUnitOfWork(runtime))
+
+    result = await service.enqueue_build(str(runtime.id), trigger="project_wizard")
+
+    assert result["status"] == "awaiting_documents"
+    assert result["required_documents"] is True
+    assert result["required_document_formats"] == ["pdf", "docx"]
+    assert runtime.status == "awaiting_documents"
 
 
 @pytest.mark.asyncio

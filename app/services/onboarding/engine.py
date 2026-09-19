@@ -1608,6 +1608,13 @@ class OnboardingEngine:
 
         if runtime is None:
             provider, model, fallback_models = self._runtime_model_selection(config)
+            application_requirements = config.get("application_requirements")
+            if not isinstance(application_requirements, dict):
+                application_requirements = {}
+            requires_documents = bool(
+                config.get("requires_documents")
+                or application_requirements.get("requires_documents")
+            )
             runtime_config = {
                 "onboarding_session_id": session_id,
                 "onboarding_requirements": config.get("application_requirements"),
@@ -1616,7 +1623,8 @@ class OnboardingEngine:
                 "capabilities": config.get("capabilities", {}),
                 "integration_mode": config.get("integration_mode"),
                 "integration_modes": config.get("integration_modes", {}),
-                "requires_documents": bool(config.get("requires_documents")),
+                "requires_documents": requires_documents,
+                "document_formats": application_requirements.get("document_formats", []),
                 "external_sources": config.get("external_sources", {}),
                 "memory_policy": config.get("memory_policy"),
                 "provider_preference": config.get("provider") or "automatic",

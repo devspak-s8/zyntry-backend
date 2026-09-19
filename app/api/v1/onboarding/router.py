@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.dependencies import get_current_user
@@ -141,6 +143,65 @@ async def send_onboarding_message(
                 "action": "retry",
             },
         ) from None
+
+
+def _sse_event(event: str, payload: dict[str, Any]) -> str:
+    """Encode one newline-delimited server-sent event."""
+
+    return f"event: {event}\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
+
+
+@router.post("/message/stream")
+async def stream_onboarding_message(
+    body: OnboardingMessageRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: AsyncSession = Depends(get_session),
+) -> StreamingResponse:
+    """Stream onboarding progress while the provider processes one turn.
+
+    The initial ``started`` event is flushed before the model call begins, so
+    clients can render progress immediately. The existing service remains the
+    single source of truth and is invoked exactly once for the turn.
+    """
+
+    async def events():
+        yield _sse_event("started", {"session_id": body.session_id, "status": "processing"})
+        service = OnboardingService(UnitOfWork(db))
+        try:
+            result = await service.send_chat_message(user_id=current_user.id, req=body)
+            yield _sse_event("complete", result.model_dump(mode="json"))
+        except ValueError:
+            yield _sse_event(
+                "error",
+                {
+                    "code": "invalid_onboarding_request",
+                    "message": "We couldn't process that onboarding message.",
+                    "retryable": False,
+                },
+            )
+        except OnboardingRequirementsError as exc:
+            detail = _safe_onboarding_error(exc).detail
+            yield _sse_event("error", detail if isinstance(detail, dict) else {"message": str(detail)})
+        except RuntimeError:
+            yield _sse_event(
+                "error",
+                {
+                    "code": "onboarding_unavailable",
+                    "message": "The onboarding assistant is temporarily unavailable. Please try again shortly.",
+                    "retryable": True,
+                    "action": "retry",
+                },
+            )
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/session/{session_id}", response_model=OnboardingSessionRead)

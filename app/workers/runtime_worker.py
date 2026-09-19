@@ -100,7 +100,16 @@ class RuntimeWorker:
             if self._runtime.status != "cancelled" and self._runtime.status != "failed":
                 self._runtime.status = "active"
                 self._runtime.health = 100.0
-                await uow.runtimes.update(self._runtime, status="active", health=100.0)
+                config = dict(self._runtime.config or {})
+                config.update(
+                    {
+                        "build_stage": "active",
+                        "build_progress": 100,
+                        "build_updated_at": datetime.now(UTC).isoformat(),
+                    }
+                )
+                self._runtime.config = config
+                await uow.runtimes.update(self._runtime, status="active", health=100.0, config=config)
                 project = await uow.projects.get(self._runtime.project_id)
                 if project:
                     await uow.projects.update(project, has_built_runtime=True)
@@ -129,6 +138,11 @@ class RuntimeWorker:
         if not self._runtime or not self._uow:
             return
         start_time = datetime.now(UTC)
+        stage_index = RUNTIME_STAGES.index(stage)
+        await self._update_build_progress(
+            stage=stage,
+            progress=int(stage_index / len(RUNTIME_STAGES) * 100),
+        )
         log = await self._uow.runtime_build_logs.create(
             runtime_id=self._runtime.id,
             stage=stage,
@@ -183,6 +197,30 @@ class RuntimeWorker:
             # stage must have a concrete implementation before it can be
             # included in RUNTIME_STAGES.
             raise RuntimeError(f"Runtime build stage is not implemented: {stage}")
+        await self._uow.session.commit()
+
+    async def _update_build_progress(self, *, stage: str, progress: int) -> None:
+        """Persist the currently executing stage for live clients.
+
+        Runtime status alone cannot distinguish the work happening inside a
+        build. Keeping this small, sanitized snapshot in ``config`` lets the
+        project wizard render the real stage without inventing client-side
+        progress or exposing build log contents.
+        """
+
+        if not self._runtime or not self._uow:
+            return
+        config = dict(self._runtime.config or {})
+        config.update(
+            {
+                "build_id": self.build_id,
+                "build_stage": stage,
+                "build_progress": max(0, min(100, progress)),
+                "build_updated_at": datetime.now(UTC).isoformat(),
+            }
+        )
+        self._runtime.config = config
+        await self._uow.runtimes.update(self._runtime, config=config)
         await self._uow.session.commit()
 
     async def _stage_collect_sources(self) -> None:

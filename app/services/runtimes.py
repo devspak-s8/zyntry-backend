@@ -317,12 +317,42 @@ class RuntimeService:
                 "trigger": trigger,
             }
 
-        requires_documents = any(
-            item.is_enabled and item.integration_slug == "document_storage"
-            for item in integrations
+        # Uploaded documents are a project resource, not a connector that
+        # needs a RuntimeIntegration row.  Newer onboarding flows therefore
+        # persist this requirement in the runtime configuration while the
+        # legacy flow may still materialize a ``document_storage`` row.  The
+        # build gate must honor both representations so a runtime cannot skip
+        # the upload step simply because there is no connector row.
+        runtime_config = runtime.config if isinstance(getattr(runtime, "config", None), dict) else {}
+        onboarding_requirements = runtime_config.get("onboarding_requirements")
+        if not isinstance(onboarding_requirements, dict):
+            onboarding_requirements = runtime_config.get("application_requirements")
+        if not isinstance(onboarding_requirements, dict):
+            onboarding_requirements = {}
+        runtime_plan = runtime_config.get("runtime_plan")
+        if not isinstance(runtime_plan, dict):
+            runtime_plan = {}
+        plan_components = runtime_plan.get("components")
+        has_document_component = any(
+            isinstance(component, dict) and component.get("key") == "document_processing"
+            for component in (plan_components if isinstance(plan_components, list) else [])
+        )
+        requires_documents = bool(
+            runtime_config.get("requires_documents")
+            or onboarding_requirements.get("requires_documents")
+            or has_document_component
+            or any(
+                item.is_enabled and item.integration_slug == "document_storage"
+                for item in integrations
+            )
         )
         if requires_documents and runtime.project_id:
-            document_count = await self.uow.documents.count_by_project(runtime.project_id)
+            documents_repo = getattr(self.uow, "documents", None)
+            document_count = (
+                await documents_repo.count_by_project(runtime.project_id)
+                if documents_repo is not None
+                else 0
+            )
             if document_count == 0:
                 await self.uow.runtimes.update(
                     runtime,
@@ -334,6 +364,7 @@ class RuntimeService:
                     "runtime_id": str(runtime.id),
                     "status": "awaiting_documents",
                     "required_documents": True,
+                    "required_document_formats": onboarding_requirements.get("document_formats", []),
                     "trigger": trigger,
                 }
 
@@ -359,7 +390,13 @@ class RuntimeService:
             )
             await self.uow.commit()
             raise RuntimeError("Unable to queue runtime build") from exc
-        return {"runtime_id": str(runtime.id), "status": "building", "trigger": trigger}
+        return {
+            "runtime_id": str(runtime.id),
+            "status": "building",
+            "build_stage": "collect_sources",
+            "build_progress": 0,
+            "trigger": trigger,
+        }
 
     async def detect_changes(self, runtime_id: str) -> dict[str, int]:
         """Return the persisted build footprint used by incremental propagation."""
