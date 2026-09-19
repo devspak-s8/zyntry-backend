@@ -429,6 +429,19 @@ def test_embedded_requirements_apply_explicit_target_users_answer() -> None:
     assert requirements.target_users == ["customers", "support agents"]
 
 
+def test_embedded_requirements_apply_explicit_primary_function_answer() -> None:
+    extractor = ModelBackedRequirementsExtractor(provider=None)
+    requirements = extractor.validate_embedded_requirements(
+        {},
+        message="Answer employees' questions using private company knowledge",
+        pending_requirement="primary_function",
+    )
+
+    assert requirements.primary_function == (
+        "Answer employees' questions using private company knowledge"
+    )
+
+
 def test_document_storage_is_a_resource_not_an_unsupported_connector() -> None:
     proposed_data = {
         "integrations": ["document_storage"],

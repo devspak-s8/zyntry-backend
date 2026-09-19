@@ -1122,10 +1122,22 @@ class ModelBackedRequirementsExtractor:
         one field from making the same question repeat forever.
         """
 
-        if pending_requirement != "application_type":
-            if pending_requirement != "target_users":
-                return requirements
+        if pending_requirement not in {"application_type", "primary_function", "target_users"}:
+            return requirements
         text = message.lower().replace("-", " ")
+        if pending_requirement == "primary_function":
+            # The model normally fills this field, but an answer to an active
+            # checkpoint must remain authoritative when the provider omits it
+            # from its structured payload. Keep this narrow so a short choice
+            # such as "yes" cannot become a fabricated product description.
+            candidate = message.strip()
+            if len(candidate) >= 8 and candidate.lower() not in {
+                "yes", "no", "okay", "ok", "continue", "something else",
+                "my internal team", "my customers", "developers", "students",
+                "customers", "support agents", "support teams",
+            }:
+                return requirements.model_copy(update={"primary_function": candidate[:1000]})
+            return requirements
         if pending_requirement == "target_users":
             users = list(requirements.target_users)
             if "customer" in text or "support agent" in text or "support team" in text:

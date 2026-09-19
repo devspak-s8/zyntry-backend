@@ -841,7 +841,15 @@ class OnboardingEngine:
         }
         pending_question = current_config.get("onboarding_pending_question")
         if pending_question:
-            asked_requirements.add(str(pending_question))
+            pending_name = str(pending_question)
+            # If the active checkpoint is still missing after this turn, do
+            # not let the "already asked" guard advance past it. This keeps a
+            # provider omission from silently leaving (for example)
+            # ``primary_function`` empty while asking about target users.
+            if pending_name in requirements.missing_requirements():
+                asked_requirements.discard(pending_name)
+            else:
+                asked_requirements.add(pending_name)
         question = self.clarification_service.next_conversation_question(
             requirements,
             asked_requirements=asked_requirements,
