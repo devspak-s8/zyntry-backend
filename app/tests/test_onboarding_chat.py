@@ -199,6 +199,7 @@ async def test_onboarding_returns_an_adaptive_question_before_plan_confirmation(
     assert response.is_complete is False
     assert response.clarification_question is not None
     assert "Does this sound right" not in response.response
+    assert response.clarification_question.question in response.response
 
 
 @pytest.mark.asyncio

@@ -1483,6 +1483,32 @@ class AdaptiveClarificationService:
                 return question
         return None
 
+    def question_for_requirement(self, requirement: str) -> ClarificationQuestion | None:
+        """Return the exact question descriptor for a persisted checkpoint."""
+
+        question = self._QUESTIONS.get(requirement)
+        if question:
+            return question
+        for _, contextual_question in self._CONTEXTUAL_QUESTIONS:
+            if contextual_question.requirement == requirement:
+                return contextual_question
+        if requirement == "external_retrieval_policy":
+            return ClarificationQuestion(
+                requirement=requirement,
+                question=(
+                    "When the runtime cannot find an answer in its connected data, "
+                    "should it ask for clarification, use approved external sources, "
+                    "or return that the information is unavailable?"
+                ),
+                suggested_answers=[
+                    "Ask for clarification",
+                    "Use approved external sources with citations",
+                    "Return that the information is unavailable",
+                    "I am not sure yet",
+                ],
+            )
+        return None
+
     def next_conversation_question(
         self,
         requirements: ApplicationRequirements,
@@ -1525,17 +1551,10 @@ class AdaptiveClarificationService:
             if question.requirement not in asked and any(term in context for term in terms):
                 return question
 
-        generic = ClarificationQuestion(
-            requirement="external_retrieval_policy",
-            question="When the runtime cannot find an answer in its connected data, should it ask for clarification, use approved external sources, or return that the information is unavailable?",
-            suggested_answers=[
-                "Ask for clarification",
-                "Use approved external sources with citations",
-                "Return that the information is unavailable",
-                "I am not sure yet",
-            ],
-        )
-        return generic if generic.requirement not in asked else None
+        generic = self.question_for_requirement("external_retrieval_policy")
+        if generic is None or generic.requirement in asked:
+            return None
+        return generic
 
 
 class RuntimePlanGenerator:

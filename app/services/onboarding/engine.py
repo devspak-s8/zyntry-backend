@@ -666,19 +666,15 @@ class OnboardingEngine:
         requirements_data = validated_config.get("application_requirements")
         if requirements_data:
             try:
-                requirements = ApplicationRequirements.model_validate(requirements_data)
-                asked_requirements = {
-                    str(item)
-                    for item in validated_config.get("onboarding_questions_asked", [])
-                    if item
-                }
+                ApplicationRequirements.model_validate(requirements_data)
                 pending_requirement = validated_config.get("onboarding_pending_question")
                 if pending_requirement:
-                    asked_requirements.add(str(pending_requirement))
-                clarification_question = self.clarification_service.next_conversation_question(
-                    requirements,
-                    asked_requirements=asked_requirements,
-                )
+                    # The response text already contains this checkpoint. Do
+                    # not calculate the *next* missing field here, otherwise
+                    # the API metadata can disagree with what the user sees.
+                    clarification_question = self.clarification_service.question_for_requirement(
+                        str(pending_requirement)
+                    )
             except Exception:
                 clarification_question = None
 
