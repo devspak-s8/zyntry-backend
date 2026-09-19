@@ -273,8 +273,8 @@ class OnboardingEngine:
                     "runtime_name": runtime_name,
                 }
             self._apply_explicit_integration_exclusions(ai_resp, initial_prompt)
-            self._filter_unavailable_integrations(ai_resp.proposed_data)
-            self._append_integration_availability_notice(ai_resp)
+            self._filter_unavailable_integrations(ai_resp.proposed_data, message=initial_prompt)
+            self._append_integration_availability_notice(ai_resp, message=initial_prompt)
             config, next_state = self._authorize_and_transition(
                 current_state="onboarding_started",
                 current_config={},
@@ -576,7 +576,7 @@ class OnboardingEngine:
             )
 
         # Step 3: Backend Authorizes & Validates LLM Proposals
-        self._filter_unavailable_integrations(ai_resp.proposed_data)
+        self._filter_unavailable_integrations(ai_resp.proposed_data, message=req.message)
         validated_config, next_state = self._authorize_and_transition(
             current_state=session.state,
             current_config=current_config,
@@ -584,7 +584,7 @@ class OnboardingEngine:
             proposed_data=ai_resp.proposed_data,
         )
         validated_config.pop("onboarding_model_error", None)
-        self._append_integration_availability_notice(ai_resp)
+        self._append_integration_availability_notice(ai_resp, message=req.message)
         # Keep planning behind the final conversational checkpoint. During
         # discovery and clarification we persist requirements only; a plan is
         # generated once the user confirms the completed configuration.
@@ -1005,7 +1005,11 @@ class OnboardingEngine:
         ai_resp.suggested_actions = ["Continue without integrations", "Add an integration later"]
 
     @staticmethod
-    def _filter_unavailable_integrations(proposed_data: dict[str, Any]) -> None:
+    def _filter_unavailable_integrations(
+        proposed_data: dict[str, Any],
+        *,
+        message: str | None = None,
+    ) -> None:
         """Keep beta/coming-soon/unknown connectors out of a runtime draft.
 
         This is intentionally a user-facing clarification rather than a hard
@@ -1028,11 +1032,17 @@ class OnboardingEngine:
 
         unsupported = [
             item for item in proposed_data.get("unsupported_integrations", [])
-            if isinstance(item, str) and item.strip() and not is_document_resource(item)
+            if isinstance(item, str)
+            and item.strip()
+            and not is_document_resource(item)
+            and (message is None or OnboardingEngine._integration_mentioned(item, message))
         ]
         coming_soon = [
             item for item in proposed_data.get("coming_soon_integrations", [])
-            if isinstance(item, str) and item.strip() and not is_document_resource(item)
+            if isinstance(item, str)
+            and item.strip()
+            and not is_document_resource(item)
+            and (message is None or OnboardingEngine._integration_mentioned(item, message))
         ]
         for item in raw_integrations:
             slug = item.get("slug") if isinstance(item, dict) else item
@@ -1044,7 +1054,11 @@ class OnboardingEngine:
                 continue
             definition = integration_registry.get(slug)
             if definition is None:
-                if slug and slug not in unsupported:
+                if (
+                    slug
+                    and slug not in unsupported
+                    and (message is None or OnboardingEngine._integration_mentioned(slug, message))
+                ):
                     unsupported.append(slug)
                 continue
             if (
@@ -1073,7 +1087,11 @@ class OnboardingEngine:
             proposed_data.pop("coming_soon_integrations", None)
 
     @staticmethod
-    def _append_integration_availability_notice(ai_resp: OnboardingModelResponse) -> None:
+    def _append_integration_availability_notice(
+        ai_resp: OnboardingModelResponse,
+        *,
+        message: str | None = None,
+    ) -> None:
         proposed_data = ai_resp.proposed_data
 
         def is_document_resource(value: str) -> bool:
@@ -1084,11 +1102,17 @@ class OnboardingEngine:
 
         unsupported_names = [
             item for item in proposed_data.get("unsupported_integrations", [])
-            if isinstance(item, str) and item.strip() and not is_document_resource(item)
+            if isinstance(item, str)
+            and item.strip()
+            and not is_document_resource(item)
+            and (message is None or OnboardingEngine._integration_mentioned(item, message))
         ]
         coming_soon_names = [
             item for item in proposed_data.get("coming_soon_integrations", [])
-            if isinstance(item, str) and item.strip() and not is_document_resource(item)
+            if isinstance(item, str)
+            and item.strip()
+            and not is_document_resource(item)
+            and (message is None or OnboardingEngine._integration_mentioned(item, message))
         ]
         # Keep the response state clean even when a conversational model leaves
         # stale document-resource labels in its proposed metadata.
@@ -1131,6 +1155,23 @@ class OnboardingEngine:
             "Continue without those sources",
             *ai_resp.suggested_actions,
         ]))[:8]
+
+    @staticmethod
+    def _integration_mentioned(value: str, message: str) -> bool:
+        """Only surface availability notices for services the user named.
+
+        The model receives the full registry for grounding. A provider can
+        still echo registry entries into its response, so stale/irrelevant
+        coming-soon lists must not leak into the conversation.
+        """
+        normalized_message = message.casefold()
+        normalized_value = value.casefold().strip().replace("_", " ")
+        if normalized_value and normalized_value in normalized_message:
+            return True
+        definition = integration_registry.get(value.strip().lower().replace(" ", "_"))
+        if definition and definition.name.casefold() in normalized_message:
+            return True
+        return False
 
     def _runtime_name_from_messages(self, messages: list[dict[str, Any]] | None) -> str | None:
         """Recover a name from an earlier user turn in an existing session.

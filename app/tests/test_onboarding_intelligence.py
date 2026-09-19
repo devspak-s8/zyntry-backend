@@ -916,6 +916,32 @@ def test_unavailable_integrations_are_explained_without_entering_the_draft() -> 
     assert "coming soon" in response.text
 
 
+def test_stale_unavailable_integrations_are_not_shown_for_unrelated_message() -> None:
+    response = OnboardingModelResponse(
+        text="I captured the private source requirements.",
+        proposed_intent="clarify_requirements",
+        proposed_data={
+            "integrations": [],
+            "unsupported_integrations": ["bitbucket"],
+            "coming_soon_integrations": ["Microsoft Teams"],
+        },
+    )
+
+    OnboardingEngine._filter_unavailable_integrations(
+        response.proposed_data,
+        message="Use private PDF files and read-only PostgreSQL. No external retrieval.",
+    )
+    OnboardingEngine._append_integration_availability_notice(
+        response,
+        message="Use private PDF files and read-only PostgreSQL. No external retrieval.",
+    )
+
+    assert "bitbucket" not in response.text.lower()
+    assert "microsoft teams" not in response.text.lower()
+    assert "unsupported_integrations" not in response.proposed_data
+    assert "coming_soon_integrations" not in response.proposed_data
+
+
 def test_runtime_name_extractor_handles_create_named_prompt() -> None:
     """The common ``create a runtime named ...`` form must survive onboarding."""
     from app.services.onboarding.models import FastOnboardingModelProvider
