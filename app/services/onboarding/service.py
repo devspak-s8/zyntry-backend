@@ -21,7 +21,11 @@ class OnboardingService:
         self.uow = uow
         self.engine = OnboardingEngine(uow)
 
-    def _clarification_question(self, configuration: dict[str, Any] | None) -> Any:
+    def _clarification_question(
+        self,
+        configuration: dict[str, Any] | None,
+        messages: list[dict[str, Any]] | None = None,
+    ) -> Any:
         requirements_data = (configuration or {}).get("application_requirements")
         if not requirements_data:
             return None
@@ -46,6 +50,20 @@ class OnboardingService:
             )
             if persisted_question:
                 return persisted_question
+        # Sessions created before checkpoint metadata was persisted can still
+        # be resumed safely by recovering the question from the latest visible
+        # assistant reply. This keeps the session reload consistent with the
+        # conversation instead of jumping to a different missing field.
+        for item in reversed(messages or []):
+            if item.get("role") != "assistant":
+                continue
+            checkpoint = self.engine._checkpoint_in_response(item.get("content"))
+            if checkpoint:
+                recovered_question = self.engine.clarification_service.question_for_requirement(
+                    checkpoint
+                )
+                if recovered_question:
+                    return recovered_question
         return self.engine.clarification_service.next_conversation_question(
             requirements,
             asked_requirements=asked,
@@ -75,7 +93,7 @@ class OnboardingService:
             "updated_at": session.updated_at.isoformat() if session.updated_at else None,
             "application_requirements": (session.configuration or {}).get("application_requirements"),
             "runtime_plan": (session.configuration or {}).get("runtime_plan") if plan_available else None,
-            "clarification_question": None if session.state == "completed" else self._clarification_question(session.configuration),
+            "clarification_question": None if session.state == "completed" else self._clarification_question(session.configuration, session.messages),
         }
 
     async def send_chat_message(self, user_id: UUID, req: OnboardingMessageRequest) -> OnboardingMessageResponse:
@@ -107,7 +125,7 @@ class OnboardingService:
             "updated_at": session.updated_at.isoformat() if session.updated_at else None,
             "application_requirements": (session.configuration or {}).get("application_requirements"),
             "runtime_plan": (session.configuration or {}).get("runtime_plan") if plan_available else None,
-            "clarification_question": None if session.state == "completed" else self._clarification_question(session.configuration),
+            "clarification_question": None if session.state == "completed" else self._clarification_question(session.configuration, session.messages),
         }
 
     # Legacy Onboarding Methods (Backwards compatibility)
