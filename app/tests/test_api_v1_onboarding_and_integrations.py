@@ -53,43 +53,29 @@ async def test_api_v1_onboarding_and_integrations_routes(
         assert resp_sess.status_code == 201
         session_data = resp_sess.json()
         session_id = session_data["id"]
-        assert session_data["state"] == "discovering_application_type"
+        assert session_data["state"] == "clarifying_requirements"
+        assert session_data["clarification_question"]["requirement"] == "access_and_actions"
 
-        # Step B: Choose Mode B
+        # Step B: Answer the only critical product question and include the
+        # requested services. Technical model/routing choices use safe defaults.
         resp_msg1 = await client.post(
             "/api/v1/onboarding/message",
             json={
                 "session_id": session_id,
-                "message": "End users will connect their own accounts (Mode B)",
+                "message": (
+                    "Only answer questions and keep it read-only. "
+                    "End users will connect their own GitHub and Slack accounts."
+                ),
             },
         )
         assert resp_msg1.status_code == 200
-        assert resp_msg1.json()["state"] == "selecting_integrations"
+        review_data = resp_msg1.json()
+        assert review_data["state"] == "confirming_configuration"
+        assert review_data["proposed_runtime"] is not None
+        assert review_data["runtime_plan"]["status"] == "validated"
+        assert set(review_data["configuration"]["integrations"]) >= {"github", "slack"}
 
-        # Step C: Select GitHub and Slack
-        resp_msg2 = await client.post(
-            "/api/v1/onboarding/message",
-            json={
-                "session_id": session_id,
-                "message": "Enable GitHub and Slack integrations",
-            },
-        )
-        assert resp_msg2.status_code == 200
-        assert resp_msg2.json()["state"] == "configuring_runtime"
-
-        # Step D: Configure Model
-        resp_msg3 = await client.post(
-            "/api/v1/onboarding/message",
-            json={
-                "session_id": session_id,
-                "message": "Use GPT-4o with balanced routing",
-            },
-        )
-        assert resp_msg3.status_code == 200
-        assert resp_msg3.json()["state"] == "confirming_configuration"
-        assert resp_msg3.json()["proposed_runtime"] is not None
-
-        # Step E: Complete Onboarding & Provision Runtime
+        # Step C: Complete Onboarding & Provision Runtime
         resp_comp = await client.post(
             "/api/v1/onboarding/complete",
             json={
