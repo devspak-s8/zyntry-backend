@@ -237,6 +237,12 @@ class OnboardingEngine:
                         message=initial_prompt,
                         current_data=None,
                     )
+                    if not self._has_meaningful_requirements(pre_extracted_requirements):
+                        # A provider can return a schema-valid object with no
+                        # usable facts. Treat that as an omitted extraction so
+                        # the dedicated model-backed extractor can interpret
+                        # the full prompt and registry.
+                        pre_extracted_requirements = None
                 except Exception as exc:
                     logger.warning(
                         "Embedded onboarding requirements were invalid: %s",
@@ -315,6 +321,33 @@ class OnboardingEngine:
                 continue
             bounded.append({"role": str(role), "content": str(content)[:12000]})
         return bounded
+
+    @staticmethod
+    def _has_meaningful_requirements(requirements: ApplicationRequirements) -> bool:
+        """Return whether an embedded model payload contains usable facts."""
+
+        return any(
+            (
+                requirements.application_type,
+                requirements.primary_function,
+                requirements.target_users,
+                requirements.inputs,
+                requirements.outputs,
+                requirements.requires_documents is not None,
+                requirements.document_formats,
+                requirements.requires_external_data is not None,
+                requirements.external_source_types,
+                requirements.requires_memory is not None,
+                requirements.memory_scope,
+                requirements.connection_ownership,
+                requirements.integrations,
+                requirements.integration_decisions,
+                requirements.requested_actions,
+                requirements.constraints,
+                requirements.data_sensitivity,
+                requirements.expected_scale,
+            )
+        )
 
     async def _persist_provider_error(
         self,
@@ -487,6 +520,11 @@ class OnboardingEngine:
                         or current_config.get("onboarding_pending_question")
                     ),
                 )
+                if not self._has_meaningful_requirements(pre_extracted_requirements):
+                    # Do not let an empty, schema-valid model object override
+                    # the dedicated extraction path. This previously caused
+                    # an application-type question after a useful reply.
+                    pre_extracted_requirements = None
             except Exception as exc:
                 # Do not trust an incomplete model object. The dedicated
                 # extractor still validates against the same schema and is
@@ -702,6 +740,14 @@ class OnboardingEngine:
         requirements_error: OnboardingRequirementsError | None = None,
     ) -> tuple[OnboardingModelResponse, ApplicationRequirements]:
         stored_requirements = current_config.get("application_requirements")
+        if (
+            pre_extracted_requirements is not None
+            and not self._has_meaningful_requirements(pre_extracted_requirements)
+        ):
+            # Keep this guard here as well as at the provider boundary so a
+            # caller cannot accidentally treat an empty schema-valid payload
+            # as authoritative.
+            pre_extracted_requirements = None
         # The connection mode is kept in the onboarding configuration while
         # the typed requirements intentionally stay provider-agnostic. Pass
         # the mode through as ownership context so extraction/planning does

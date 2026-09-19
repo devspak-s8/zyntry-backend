@@ -650,6 +650,56 @@ async def test_validated_requirements_override_model_connector_question_for_docu
     assert response.proposed_data["integrations"] == ["postgresql"]
 
 
+@pytest.mark.asyncio
+async def test_empty_embedded_requirements_fall_through_to_model_extraction() -> None:
+    class TrackingExtractor:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def extract(self, **kwargs: Any) -> ApplicationRequirements:
+            self.calls += 1
+            return ApplicationRequirements(
+                application_type="knowledge_search_rag",
+                primary_function="Answer internal knowledge questions",
+                target_users=["employees"],
+                inputs=["natural-language questions"],
+                outputs=["cited answers"],
+                requires_documents=True,
+                document_formats=["pdf"],
+                requires_external_data=False,
+                requires_tools=False,
+                requires_memory=True,
+                memory_scope="session",
+                extraction_source="model",
+            )
+
+    extractor = TrackingExtractor()
+    engine = OnboardingEngine.__new__(OnboardingEngine)
+    engine.requirements_extractor = extractor
+    engine.clarification_service = AdaptiveClarificationService()
+    engine.runtime_plan_generator = RuntimePlanGenerator()
+    response = OnboardingModelResponse(
+        text="I need the document formats.",
+        proposed_intent="clarify_requirements",
+        proposed_data={},
+    )
+
+    response, requirements = await engine._apply_requirements_intelligence(
+        ai_resp=response,
+        message="Create an internal knowledge assistant using private documents.",
+        current_state="clarifying_requirements",
+        current_config={},
+        history=[],
+        pre_extracted_requirements=ApplicationRequirements(),
+    )
+
+    assert extractor.calls == 1
+    assert requirements.application_type == "knowledge_search_rag"
+    assert response.proposed_data["application_requirements"]["application_type"] == (
+        "knowledge_search_rag"
+    )
+
+
 def test_onboarding_model_history_is_bounded_and_excludes_persistence_metadata() -> None:
     messages = [
         {
