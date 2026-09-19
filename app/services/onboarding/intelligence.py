@@ -177,6 +177,8 @@ class RuleBasedRequirementsExtractor:
             "no external websites",
             "without external",
             "without public web",
+            "disable external retrieval", "disabled external retrieval",
+            "external retrieval disabled", "external retrieval off",
         )):
             data["requires_external_data"] = False
         source_types = self._extract_external_source_types(lowered)
@@ -298,7 +300,9 @@ class RuleBasedRequirementsExtractor:
     def _application_type(text: str, current: str | None) -> str:
         if any(term in text for term in (
             "architecture investigation", "architecture analysis", "software architecture",
+            "architecture design", "architecture review", "architecture trade-off",
             "call graph", "dependency graph", "data-flow analysis", "engineering graph",
+            "system topology", "microservice architecture", "architecture",
         )):
             return "architecture_analysis"
         if current:
@@ -309,10 +313,16 @@ class RuleBasedRequirementsExtractor:
             return "ai_customer_support"
         if "triage" in text or ("issue" in text and "github" in text):
             return "autonomous_issue_triage_agent"
-        if "code" in text or "developer" in text or "repository" in text:
-            return "developer_ai_assistant"
-        if any(term in text for term in ("knowledge", "rag", "study", "course material", "research")):
+        if any(term in text for term in (
+            "knowledge", "knowledge base", "knowledge repository", "handbook", "compliance",
+            "policy", "rag", "study", "course material", "research",
+        )):
             return "knowledge_search_rag"
+        if any(term in text for term in (
+            "code", "coding", "developer", "repository", "api documentation",
+            "runtime error", "sql schema",
+        )):
+            return "developer_ai_assistant"
         if "agent" in text:
             return "autonomous_ai_agent"
         return "general_ai_application"
@@ -425,7 +435,9 @@ class GeminiLLMProvider(BaseLLMProvider):
     def _application_type(text: str, current: str | None) -> str:
         if any(term in text for term in (
             "architecture investigation", "architecture analysis", "software architecture",
+            "architecture design", "architecture review", "architecture trade-off",
             "call graph", "dependency graph", "data-flow analysis", "engineering graph",
+            "system topology", "microservice architecture", "architecture",
         )):
             return "architecture_analysis"
         if current:
@@ -436,10 +448,16 @@ class GeminiLLMProvider(BaseLLMProvider):
             return "ai_customer_support"
         if "triage" in text or ("issue" in text and "github" in text):
             return "autonomous_issue_triage_agent"
-        if "code" in text or "developer" in text or "repository" in text:
-            return "developer_ai_assistant"
-        if any(term in text for term in ("knowledge", "rag", "study", "course material", "research")):
+        if any(term in text for term in (
+            "knowledge", "knowledge base", "knowledge repository", "handbook", "compliance",
+            "policy", "rag", "study", "course material", "research",
+        )):
             return "knowledge_search_rag"
+        if any(term in text for term in (
+            "code", "coding", "developer", "repository", "api documentation",
+            "runtime error", "sql schema",
+        )):
+            return "developer_ai_assistant"
         if "agent" in text:
             return "autonomous_ai_agent"
         return "general_ai_application"
